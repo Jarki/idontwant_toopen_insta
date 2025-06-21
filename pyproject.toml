@@ -1,0 +1,23 @@
+[project]
+name = "ig-reel-downloader"
+version = "0.1.0"
+description = ""
+authors = [
+    {name = "Jarki",email = "yaroslav.ivashko@gmail.com"}
+]
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "yt-dlp (>=2025.6.9,<2026.0.0)",
+    "python-telegram-bot (>=22.1,<23.0)",
+    "python-dotenv (>=1.1.0,<2.0.0)"
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.group.testing.dependencies]
+pytest = "^8.4.1"
+

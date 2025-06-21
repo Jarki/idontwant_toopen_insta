@@ -1,0 +1,13 @@
+import pytest
+
+from ig_reel_downloader import utils
+
+@pytest.mark.parametrize('url, expected', [
+    ('https://www.instagram.com/reel/DFvr8JTuscr', ['https://www.instagram.com/reel/DFvr8JTuscr']),
+    ('No link here!', []),
+    ('https://www.instagram.com/reel/DGcc6bHIKFY\n\nhttps://www.instagram.com/reel/DFvr8JTuscr', ['https://www.instagram.com/reel/DGcc6bHIKFY', 'https://www.instagram.com/reel/DFvr8JTuscr']),
+    ('https://www.instagram.com/reel/DGcc6bHIKFY\n\nhttps://www.instagram.com/reel/DFvr8JTuscr And some random text',
+      ['https://www.instagram.com/reel/DGcc6bHIKFY', 'https://www.instagram.com/reel/DFvr8JTuscr']),
+])
+def test_get_urls_from_text(url, expected):
+    assert utils.get_urls_from_text(url) == expected
