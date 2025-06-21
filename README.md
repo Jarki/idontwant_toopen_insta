@@ -1,6 +1,6 @@
 # Instagram Reel Downloader
 
-This is a Telegram bot that downloads user-restricted Instagram reels.
+This is a Telegram bot that downloads Instagram reels.
 
 ## Installation
 
