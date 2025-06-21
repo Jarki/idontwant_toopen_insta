@@ -5,5 +5,5 @@ services:
     build: .
     volumes:
       - ./${OUTPUT_DIR}:/app/${OUTPUT_DIR}
+      - ./${COOKIE_FILEPATH}:/app/${COOKIE_FILEPATH}
       - ./.env:/app/.env
-      - ./cookies.txt:/app/cookies.txt
