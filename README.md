@@ -19,7 +19,14 @@ Note: Optional values can be skipped
 cp .env.example .env
 ```
 
-### 3. Run the bot using Docker Compose
+### 3. (Optional) Create a cookies.txt file
+
+If you want to download user-restricted reels, you need to create a cookies.txt file.
+Refer to https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp
+
+Create a file named `cookies.txt` and put it into the `assets` directory.
+
+### 4. Run the bot using Docker Compose
 
 ```bash
 docker-compose up -d --build

@@ -16,7 +16,7 @@ logger = logging.getLogger('ig_reel_downloader')
 
 def main():
     OUTPUT_DIR = os.getenv('OUTPUT_DIR', 'output')
-    COOKIE_FILEPATH = os.getenv('COOKIE_FILEPATH', 'cookies.txt')
+    COOKIE_FILEPATH = 'assets/cookies.txt'
     BOT_TOKEN = os.getenv('BOT_TOKEN')
     if BOT_TOKEN is None:
         raise ValueError('BOT_TOKEN is not set')
