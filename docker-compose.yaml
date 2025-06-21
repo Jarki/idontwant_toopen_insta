@@ -1,0 +1,9 @@
+name: ig-reel-downloader
+
+services:
+  downloader:
+    build: .
+    volumes:
+      - ./${OUTPUT_DIR}:/app/${OUTPUT_DIR}
+      - ./.env:/app/.env
+      - ./cookies.txt:/app/cookies.txt
