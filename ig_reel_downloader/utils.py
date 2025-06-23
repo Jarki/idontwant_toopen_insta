@@ -33,6 +33,6 @@ async def download_video_async(url: str, output_dir: str, cookie_filepath: str="
     return await asyncio.to_thread(download_video, url, output_dir, cookie_filepath)
 
 def get_urls_from_text(text: str) -> list[str]:
-    ig_regexp = r'(?P<url>https://www.instagram.com/reel/[a-zA-Z0-9_]+)' 
+    ig_regexp = r'(?P<url>https://www.instagram.com/reel/[a-zA-Z0-9_-]+)' 
     urls = re.findall(ig_regexp, text)
     return urls
