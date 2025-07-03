@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 
 from telegram import Update, InputMediaVideo
 from telegram.ext import MessageHandler, ApplicationBuilder, filters, ContextTypes
@@ -43,7 +44,8 @@ class IgReelDownloaderApp:
         db_reel = self.repository.get_reel_by_id(reel_id)
         if db_reel is not None:
             logger.debug(f"Find reel {reel_id} in database")
-            return db_reel, reel_url
+            if os.path.exists(db_reel.filepath):
+                return db_reel, reel_url
         reel = utils.download_video(reel_url, self.output_dir, self.cookie_filepath)
         self.repository.insert_reel(reel)
         logger.debug(f"Insert reel {reel_id} into database")
