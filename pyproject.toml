@@ -10,7 +10,8 @@ requires-python = ">=3.12"
 dependencies = [
     "yt-dlp (>=2025.6.9,<2026.0.0)",
     "python-telegram-bot (>=22.1,<23.0)",
-    "python-dotenv (>=1.1.0,<2.0.0)"
+    "python-dotenv (>=1.1.0,<2.0.0)",
+    "pydantic (>=2.11.7,<3.0.0)"
 ]
 
 
