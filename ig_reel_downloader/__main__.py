@@ -13,7 +13,6 @@ logging.basicConfig(
 )
 logging.getLogger('httpx').setLevel(logging.WARNING)
 logger = logging.getLogger('ig_reel_downloader')
-logger.setLevel(logging.DEBUG)
 
 def main():
     OUTPUT_DIR = os.getenv('OUTPUT_DIR', 'output')
