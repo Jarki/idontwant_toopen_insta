@@ -7,3 +7,4 @@ services:
       - ./${OUTPUT_DIR}:/app/${OUTPUT_DIR}
       - ./assets:/app/assets
       - ./.env:/app/.env
+      - ./data:/app/data
