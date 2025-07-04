@@ -31,7 +31,7 @@ def download_video(url: str, output_dir: str, cookie_filepath: str="cookies.txt"
                 filepath=filepath,
                 like_count=info['like_count'],
                 url=url,
-                comments=json.dumps(info['comments']),
+                comments=json.dumps(info.get('comments', [])),
             )
     except Exception as e:
         logger.exception(f"Failed to download video from {url} ({e})")
