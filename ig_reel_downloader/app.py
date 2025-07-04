@@ -47,6 +47,8 @@ class IgReelDownloaderApp:
             if os.path.exists(db_reel.filepath):
                 return db_reel, reel_url
         reel = utils.download_video(reel_url, self.output_dir, self.cookie_filepath)
+        if reel is None:
+            return None, reel_url
         self.repository.insert_reel(reel)
         logger.debug(f"Insert reel {reel_id} into database")
         return reel, reel_url
@@ -67,7 +69,7 @@ class IgReelDownloaderApp:
             return
 
         reels = await self._get_reels(urls)
-        errors = [f"Could not download {reel.url}" for reel in reels if reel[0] is None]
+        errors = [f"Could not download {reel[1]}" for reel in reels if reel[0] is None]
         videos = [r[0] for r in reels if r[0] is not None]
 
         logger.info(f"Download {len(videos)} videos for user {update.effective_sender.id}")
