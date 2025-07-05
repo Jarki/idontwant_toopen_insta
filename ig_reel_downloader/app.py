@@ -65,6 +65,7 @@ class IgReelDownloaderApp:
             return
         
         urls = utils.get_urls_from_text(text)
+        urls = list(set(urls))
         if not urls:
             return
 
