@@ -22,10 +22,15 @@ class IgReelDownloaderApp:
         self.output_dir = output
         self.cookie_filepath = cookie_filepath
 
+    async def _form_video_description(self, video: models.IgReel) -> str:
+        likes_count = f" • ❤️ {video.like_count}"
+        description_str = f"\n\n{video.description}" if video.description else ""
+        return f"{video.title}{likes_count}{description_str}"
+
     async def _send_single_video(self, update: Update, context: ContextTypes, video: models.IgReel) -> None:
         await update.effective_chat.send_video(
             video.filepath,
-            caption=video.title + "\n" + video.description,
+            caption=await self._form_video_description(video),
         )
 
     async def _send_videos(self, update: Update, context: ContextTypes, videos: list[models.IgReel]) -> None:

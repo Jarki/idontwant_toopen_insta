@@ -6,7 +6,7 @@ import pydantic
 class IgReel(pydantic.BaseModel):
     id: str
     title: str
-    description: str
+    description: str|None
     filepath: str
     url: str
     comments: str
