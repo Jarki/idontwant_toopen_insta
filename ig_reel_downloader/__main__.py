@@ -1,3 +1,4 @@
+import asyncio
 import logging
 import os
 
@@ -14,6 +15,11 @@ logging.basicConfig(
 logging.getLogger('httpx').setLevel(logging.WARNING)
 logger = logging.getLogger('ig_reel_downloader')
 
+async def _init_repo(db_path: str) -> ig_reel_downloader.repository.sqlite.SqliteRepository:
+    repo = ig_reel_downloader.repository.sqlite.SqliteRepository(db_path)
+    await repo.create_database()
+    return repo
+
 def main():
     OUTPUT_DIR = os.getenv('OUTPUT_DIR', 'output')
     COOKIE_FILEPATH = 'assets/cookies.txt'
@@ -25,8 +31,7 @@ def main():
     DB_PATH = "data/reels.db"
     path, _ = os.path.split(DB_PATH)
     os.makedirs(path, exist_ok=True)
-    repo = ig_reel_downloader.repository.sqlite.SqliteRepository(DB_PATH)
-    repo.create_database()
+    repo = asyncio.run(_init_repo(DB_PATH))
 
     app = ig_reel_downloader.app.IgReelDownloaderApp(BOT_TOKEN, repo)
     app.set_downloader_config(OUTPUT_DIR, COOKIE_FILEPATH)

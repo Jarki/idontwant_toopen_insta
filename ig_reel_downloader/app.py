@@ -44,22 +44,22 @@ class IgReelDownloaderApp:
                 medias.append(InputMediaVideo(f))
         await update.effective_chat.send_media_group(medias)
 
-    def _try_get_reel(self, reel_url: str) -> tuple[models.IgReel|None, str]: 
+    async def _try_get_reel(self, reel_url: str) -> tuple[models.IgReel | None, str]:
         reel_id = utils.get_id_from_url(reel_url)
-        db_reel = self.repository.get_reel_by_id(reel_id)
+        db_reel = await self.repository.get_reel_by_id(reel_id)
         if db_reel is not None:
             logger.debug(f"Find reel {reel_id} in database")
             if os.path.exists(db_reel.filepath):
                 return db_reel, reel_url
-        reel = utils.download_video(reel_url, self.output_dir, self.cookie_filepath)
+        reel = await utils.download_video_async(reel_url, self.output_dir, self.cookie_filepath)
         if reel is None:
             return None, reel_url
-        self.repository.insert_reel(reel)
+        await self.repository.insert_reel(reel)
         logger.debug(f"Insert reel {reel_id} into database")
         return reel, reel_url
-    
+
     async def _get_reels(self, reel_urls: list[str]) -> list[models.IgReel]:
-        tasks = [asyncio.to_thread(self._try_get_reel, reel_url) for reel_url in reel_urls]
+        tasks = [self._try_get_reel(reel_url) for reel_url in reel_urls]
         reels = await asyncio.gather(*tasks)
         return reels
 

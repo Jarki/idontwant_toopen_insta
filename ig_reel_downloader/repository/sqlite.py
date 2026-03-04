@@ -1,78 +1,49 @@
 import datetime
 import logging
-import threading
 
-import sqlite3
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from . import base, models
+from . import models
+from .orm import Base, ReelRow, from_orm, to_orm
 from .. import constants
-from .. import utils
 
 
 logger = logging.getLogger(__name__)
 
-class SqliteRepository(base.Repository):
-    def __init__(self, db_path: str="data/reels.db"):
-        self.db_path = db_path
-        self.conn = self._get_connection()
-        self.conn.row_factory = utils.ig_reel_model_factory
-        self.write_lock = threading.Lock()
 
-    def _get_connection(self):
+class SqliteRepository:
+    def __init__(self, db_path: str = "data/reels.db"):
+        self._engine = create_async_engine(f"sqlite+aiosqlite:///{db_path}")
+        self._session_factory = async_sessionmaker(self._engine, expire_on_commit=False)
+
+    async def create_database(self) -> None:
+        async with self._engine.begin() as conn:
+            await conn.run_sync(Base.metadata.create_all)
+
+    async def get_reel_by_id(self, reel_id: str) -> models.IgReel | None:
+        stale_cutoff = datetime.datetime.now() - constants.REEL_STALE_TIME
+        stmt = select(ReelRow).where(
+            ReelRow.id == reel_id,
+            ReelRow.created_at > stale_cutoff,
+        )
         try:
-            return self.conn
-        except AttributeError:
-            return sqlite3.connect(self.db_path, check_same_thread=False)
-        except Exception as e:
-            logger.exception(f"Failed to get connection: {e}")
+            async with self._session_factory() as session:
+                result = await session.execute(stmt)
+                row = result.scalars().first()
+        except Exception:
+            logger.exception(f"Failed to get reel by id: {reel_id}")
             return None
+        if row is None:
+            return None
+        return from_orm(row)
 
-    def create_database(self):
-        sql = """
-CREATE TABLE IF NOT EXISTS reels (
-    id TEXT PRIMARY KEY,
-    title TEXT,
-    description TEXT,
-    filepath TEXT,
-    url TEXT,
-    like_count INTEGER,
-    created_at DATETIME,
-    comments TEXT
-);
-        """
-        conn = self._get_connection()
-        conn.execute(sql)
-        conn.commit()
-
-    def get_reel_by_id(self, reel_id: str) -> models.IgReel:
-        sql = """
-SELECT * FROM reels 
-WHERE id = ?
-AND created_at > ?;
-"""
-        conn = self._get_connection()
+    async def insert_reel(self, reel: models.IgReel) -> None:
+        row = to_orm(reel)
         try:
-            cursor = conn.execute(sql, (reel_id, datetime.datetime.now() - constants.REEL_STALE_TIME))
-            reel = cursor.fetchone()
-        except Exception as e:
-            logger.exception(f"Failed to get reel by id: {e}")
-            return None
-        return reel
-    
-    def insert_reel(self, reel: models.IgReel) -> None: 
-        sql = """
-INSERT OR REPLACE INTO reels (id, title, description, filepath, url, like_count, created_at, comments)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?);
-"""
-        conn = self._get_connection()
-        with self.write_lock:
-            try:
-                conn.execute(
-                    sql,
-                    (reel.id, reel.title, reel.description, reel.filepath, reel.url, reel.like_count, reel.created_at, reel.comments) 
-                )
-                conn.commit()
-                logger.debug(f"Insert reel {reel.id}")
-            except Exception as e:
-                logger.exception(f"Failed to insert reels: {e}")
-                return
+            async with self._session_factory() as session:
+                async with session.begin():
+                    await session.merge(row)
+            logger.debug(f"Insert reel {reel.id}")
+        except Exception:
+            logger.exception(f"Failed to insert reel: {reel.id}")

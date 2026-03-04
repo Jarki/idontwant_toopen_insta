@@ -3,7 +3,6 @@ import json
 import logging
 import os
 import re
-import sqlite3
 
 import yt_dlp
 
@@ -51,7 +50,3 @@ def get_id_from_url(url: str) -> str|None:
     if match:
         return match.group('id')
     return None
-
-def ig_reel_model_factory(cursor: sqlite3.Cursor, row: tuple) -> models.IgReel:
-    fields = [col[0] for col in cursor.description]
-    return models.IgReel(**{k: v for k, v in zip(fields, row)})
