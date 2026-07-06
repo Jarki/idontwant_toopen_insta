@@ -8,3 +8,4 @@ services:
       - ./assets:/app/assets
       - ./.env:/app/.env
       - ./data:/app/data
+    restart: unless-stopped
