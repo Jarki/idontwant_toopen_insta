@@ -18,7 +18,34 @@ dependencies = [
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
+[tool.poe.tasks]
+# Testing
+test = "pytest"
+test-cov = "pytest --cov=ig_reel_downloader --cov-report=term-missing --cov-report=html"
+
+# Linting and formatting
+lint = "ruff check ."
+lint-fix = "ruff check --fix ."
+format = "ruff format ."
+format-check = "ruff format --check ."
+
+# Type checking
+typecheck = "mypy ig_reel_downloader"
+
+# Combined quality checks
+check = ["format-check", "lint", "typecheck", "test"]
+
+# Run the bot
+bot = "python -m ig_reel_downloader"
+
 [dependency-groups]
-testing = [
-    "pytest>=8.4.1",
+dev = [
+    "mypy>=1.19.0",
+    "poethepoet>=0.38.0",
+    "ruff>=0.14.7",
+    "types-yt-dlp>=2025.12.8.20251210",
+]
+test = [
+    "pytest>=9.0.1",
+    "pytest-cov>=7.0.0",
 ]
