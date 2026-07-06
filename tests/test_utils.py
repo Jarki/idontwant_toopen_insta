@@ -1,4 +1,5 @@
 import pytest
+from yt_dlp.utils import DownloadError
 
 from ig_reel_downloader import utils
 
@@ -50,3 +51,19 @@ def test_get_urls_from_text(url, expected):
 )
 def test_get_id_from_url(url, expected):
     assert utils.get_id_from_url(url) == expected
+
+
+def test_is_auth_required_download_error():
+    error = DownloadError(
+        "ERROR: [Instagram] DOricBOkqP6: Instagram sent an empty media response. "
+        "Check if this post is accessible in your browser without being logged-in. "
+        "If it is not, then use --cookies-from-browser or --cookies for the authentication."
+    )
+
+    assert utils.is_auth_required_download_error(error)
+
+
+def test_is_auth_required_download_error_rejects_other_download_errors():
+    assert not utils.is_auth_required_download_error(
+        DownloadError("ERROR: unavailable")
+    )

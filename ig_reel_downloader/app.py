@@ -17,7 +17,11 @@ from .repository import models
 
 logger = logging.getLogger(__name__)
 
-ReelFetchResult = tuple[models.IgReel | None, str]
+ReelFetchResult = tuple[
+    models.IgReel | None,
+    str,
+    utils.DownloadFailureReason | None,
+]
 
 
 class IgReelDownloaderApp:
@@ -76,21 +80,34 @@ class IgReelDownloaderApp:
     def _try_get_reel(self, reel_url: str) -> ReelFetchResult:
         reel_id = utils.get_id_from_url(reel_url)
         if reel_id is None:
-            return None, reel_url
+            return None, reel_url, "unknown"
 
         db_reel = self.repository.get_reel_by_id(reel_id)
         if db_reel is not None:
             logger.debug("Find reel %s in database", reel_id)
             if Path(db_reel.filepath).exists():
-                return db_reel, reel_url
+                return db_reel, reel_url, None
 
-        reel = utils.download_video(reel_url, self.output_dir, self.cookie_filepath)
-        if reel is None:
-            return None, reel_url
+        download_result = utils.download_video_result(
+            reel_url,
+            self.output_dir,
+            self.cookie_filepath,
+        )
+        if download_result.reel is None:
+            return None, reel_url, download_result.failure_reason
 
-        self.repository.insert_reel(reel)
+        self.repository.insert_reel(download_result.reel)
         logger.debug("Insert reel %s into database", reel_id)
-        return reel, reel_url
+        return download_result.reel, reel_url, None
+
+    def _format_download_error(
+        self,
+        reel_url: str,
+        failure_reason: utils.DownloadFailureReason | None,
+    ) -> str:
+        if failure_reason == "auth":
+            return f"Could not download (auth expired): {reel_url}"
+        return f"Could not download {reel_url}"
 
     async def _get_reels(self, reel_urls: list[str]) -> list[ReelFetchResult]:
         tasks = [
@@ -116,10 +133,13 @@ class IgReelDownloaderApp:
             return
 
         reels = await self._get_reels(urls)
-        errors = [
-            f"Could not download {reel_url}" for reel, reel_url in reels if reel is None
-        ]
-        videos = [reel for reel, _reel_url in reels if reel is not None]
+        errors: list[str] = []
+        videos: list[models.IgReel] = []
+        for reel, reel_url, failure_reason in reels:
+            if reel is None:
+                errors.append(self._format_download_error(reel_url, failure_reason))
+            else:
+                videos.append(reel)
 
         logger.info("Download %s videos for user %s", len(videos), sender_id)
 
