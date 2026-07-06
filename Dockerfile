@@ -1,20 +1,20 @@
-FROM python:3.12.10-slim-bookworm AS builder
+# syntax=docker/dockerfile:1.7
+FROM python:3.14-slim-trixie
+COPY --from=ghcr.io/astral-sh/uv:0.9.18 /uv /uvx /bin/
 
-RUN pip install poetry==2.1.3
-ENV POETRY_NO_INTERACTION=1 \
-    POETRY_VIRTUALENVS_IN_PROJECT=1 \
-    POETRY_VIRTUALENVS_CREATE=1
-
-WORKDIR /build
-COPY pyproject.toml poetry.lock ./
-RUN touch README.md
-
-RUN poetry install --no-root --no-cache
-
-FROM python:3.12.10-slim-bookworm AS runtime
+ENV UV_COMPILE_BYTECODE=1
+ENV UV_NO_DEV=1
+ENV UV_LINK_MODE=copy
 
 WORKDIR /app
-COPY --from=builder /build /app
-COPY ig_reel_downloader ig_reel_downloader
-COPY clean.sh docker_entrypoint.sh ./
+
+RUN --mount=type=cache,target=/root/.cache/uv \
+    --mount=type=bind,source=uv.lock,target=uv.lock \
+    --mount=type=bind,source=pyproject.toml,target=pyproject.toml \
+    uv sync --locked --no-install-project
+
+COPY . /app/
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --locked
+
 ENTRYPOINT [ "/bin/bash", "docker_entrypoint.sh" ] 

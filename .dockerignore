@@ -1,0 +1,17 @@
+.git
+.venv
+__pycache__
+*.py[cod]
+.pytest_cache
+.ruff_cache
+.mypy_cache
+.coverage
+.env
+.envrc
+assets
+cookies.txt
+data
+output
+*.db
+*.mp4
+.vscode

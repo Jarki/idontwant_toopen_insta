@@ -4,7 +4,7 @@ services:
   downloader:
     build: .
     volumes:
-      - ./${OUTPUT_DIR}:/app/${OUTPUT_DIR}
+      - ./${OUTPUT_DIR:-output}:/app/${OUTPUT_DIR:-output}
       - ./assets:/app/assets
       - ./.env:/app/.env
       - ./data:/app/data
