@@ -221,3 +221,5 @@ __marimo__/
 cookies.txt
 *.db
 output/
+
+docs/superpowers/specs/
