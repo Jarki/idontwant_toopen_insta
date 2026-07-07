@@ -17,16 +17,18 @@ def make_reel(
     title: str = "Original title",
     created_at: datetime.datetime | None = None,
 ) -> models.IgReel:
-    return models.IgReel(
-        id=reel_id,
-        title=title,
-        description="A description",
-        filepath=f"output/{reel_id}.mp4",
-        url=f"https://www.instagram.com/reel/{reel_id}",
-        comments="[]",
-        like_count=42,
-        created_at=created_at or datetime.datetime.now(),
-    )
+    kwargs: dict[str, object] = {
+        "id": reel_id,
+        "title": title,
+        "description": "A description",
+        "filepath": f"output/{reel_id}.mp4",
+        "url": f"https://www.instagram.com/reel/{reel_id}",
+        "comments": "[]",
+        "like_count": 42,
+    }
+    if created_at is not None:
+        kwargs["created_at"] = created_at
+    return models.IgReel(**kwargs)
 
 
 def raw_reel_count(db_path: Path) -> int:
@@ -37,7 +39,7 @@ def raw_reel_count(db_path: Path) -> int:
 
 
 def alembic_config() -> Config:
-    return Config("alembic.ini")
+    return Config(str(Path(__file__).resolve().parents[3] / "alembic.ini"))
 
 
 def current_alembic_version(db_path: Path) -> str:
@@ -255,6 +257,10 @@ def test_alembic_downgrade_preserves_reels_rows(tmp_path: Path) -> None:
     command.downgrade(config, "base")
 
     assert raw_reel_count(db_path) == 1
+
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute("SELECT version_num FROM alembic_version").fetchone()
+    assert row is None
 
 
 def test_alembic_cli_db_path_creates_parent_directory(
