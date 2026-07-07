@@ -1,9 +1,10 @@
 import asyncio
 import logging
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from pathlib import Path
 
 from telegram import InputMediaVideo, Update
+from telegram.error import TimedOut
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -17,6 +18,9 @@ from .repository import models
 
 logger = logging.getLogger(__name__)
 
+DEFAULT_TELEGRAM_MEDIA_WRITE_TIMEOUT = 120.0
+DEFAULT_TELEGRAM_READ_TIMEOUT = 30.0
+
 ReelFetchResult = tuple[
     models.IgReel | None,
     str,
@@ -25,8 +29,22 @@ ReelFetchResult = tuple[
 
 
 class IgReelDownloaderApp:
-    def __init__(self, bot_token: str, repository: repository.Repository) -> None:
-        self.app: Application = ApplicationBuilder().token(bot_token).build()
+    def __init__(
+        self,
+        bot_token: str,
+        repository: repository.Repository,
+        telegram_media_write_timeout: float = DEFAULT_TELEGRAM_MEDIA_WRITE_TIMEOUT,
+        telegram_read_timeout: float = DEFAULT_TELEGRAM_READ_TIMEOUT,
+    ) -> None:
+        self.telegram_media_write_timeout = telegram_media_write_timeout
+        self.telegram_read_timeout = telegram_read_timeout
+        self.app: Application = (
+            ApplicationBuilder()
+            .token(bot_token)
+            .media_write_timeout(telegram_media_write_timeout)
+            .read_timeout(telegram_read_timeout)
+            .build()
+        )
         self.app.add_handler(MessageHandler(filters.TEXT, self._message_handler))
         self.repository = repository
         self.output_dir = "output"
@@ -55,6 +73,8 @@ class IgReelDownloaderApp:
         await chat.send_video(
             video.filepath,
             caption=await self._form_video_description(video),
+            write_timeout=self.telegram_media_write_timeout,
+            read_timeout=self.telegram_read_timeout,
         )
 
     async def _send_videos(
@@ -75,7 +95,11 @@ class IgReelDownloaderApp:
                 medias.append(InputMediaVideo(video_file))
 
             if medias:
-                await chat.send_media_group(medias)
+                await chat.send_media_group(
+                    medias,
+                    write_timeout=self.telegram_media_write_timeout,
+                    read_timeout=self.telegram_read_timeout,
+                )
 
     def _try_get_reel(self, reel_url: str) -> ReelFetchResult:
         reel_id = utils.get_id_from_url(reel_url)
@@ -143,10 +167,25 @@ class IgReelDownloaderApp:
 
         logger.info("Download %s videos for user %s", len(videos), sender_id)
 
-        if len(videos) > 1:
-            await self._send_videos(update, context, videos)
-        elif len(videos) == 1:
-            await self._send_single_video(update, context, videos[0])
+        try:
+            if len(videos) > 1:
+                await self._send_videos(update, context, videos)
+            elif len(videos) == 1:
+                await self._send_single_video(update, context, videos[0])
+        except TimedOut:
+            logger.exception(
+                "Timed out while sending %s videos for user %s. "
+                "Increase TELEGRAM_MEDIA_WRITE_TIMEOUT if uploads are slow.",
+                len(videos),
+                sender_id,
+            )
+            chat = update.effective_chat
+            if chat is not None:
+                with suppress(TimedOut):
+                    await chat.send_message(
+                        "Timed out while uploading video(s) to Telegram. "
+                        "The file may be large or the network may be slow."
+                    )
 
         if errors:
             errors_text = "\n".join(errors)

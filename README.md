@@ -13,7 +13,7 @@ cd idontwant_toopen_insta
 
 ### 2. Copy .env.example to .env and fill in the required values using your preferred text editor
 
-Note: Optional values can be skipped
+Note: Optional values can be skipped. If uploads of large reels time out, increase `TELEGRAM_MEDIA_WRITE_TIMEOUT` in `.env`.
 
 ```bash
 cp .env.example .env
