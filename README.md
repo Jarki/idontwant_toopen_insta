@@ -38,9 +38,21 @@ Send an instagram reel link to the bot and it will download the reel.
 
 ## Database migrations
 
-The bot uses SQLite at `data/reels.db` and manages its schema with Alembic. Migrations run automatically on bot startup before polling begins, so normal Docker Compose users do not need to run migration commands manually.
+The bot uses SQLite at `data/reels.db` and manages its schema with Alembic. Migrations run separately from the bot process.
 
-Manual migration commands are available through Poe:
+With Docker Compose, the one-shot `migrate` service runs before the `downloader` service starts:
+
+```bash
+docker-compose up -d --build
+```
+
+To run migrations manually through Compose:
+
+```bash
+docker-compose run --rm migrate
+```
+
+Manual local migration commands are also available through Poe:
 
 ```bash
 uv run poe db-upgrade    # upgrade the configured database to the latest schema

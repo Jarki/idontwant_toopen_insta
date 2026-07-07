@@ -48,7 +48,6 @@ def main() -> None:
     Path(db_path).parent.mkdir(exist_ok=True)
 
     repo = ig_reel_downloader.repository.sqlite.SqliteRepository(db_path)
-    repo.create_database()
 
     app = ig_reel_downloader.app.IgReelDownloaderApp(
         bot_token,

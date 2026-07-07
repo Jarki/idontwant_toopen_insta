@@ -1,8 +1,19 @@
 name: ig-reel-downloader
 
 services:
+  migrate:
+    build: .
+    entrypoint: ["/app/.venv/bin/alembic"]
+    command: ["upgrade", "head"]
+    volumes:
+      - ./data:/app/data
+    restart: "no"
+
   downloader:
     build: .
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
     volumes:
       - ./${OUTPUT_DIR:-output}:/app/${OUTPUT_DIR:-output}
       - ./assets:/app/assets

@@ -10,7 +10,7 @@ _Last reviewed: 2026-07-07_
 - `yt-dlp` extracts Reel metadata and downloads the media file.
 - SQLite caches Reel metadata and local file paths for recently downloaded reels.
 - Alembic manages SQLite schema creation and migrations.
-- Docker Compose runs the bot with persistent `data/`, `output/`, `assets/`, and `.env` mounts.
+- Docker Compose runs migrations in a one-shot container before starting the bot with persistent `data/`, `output/`, `assets/`, and `.env` mounts.
 
 At a high level, the architecture is a simple layered app:
 
@@ -75,10 +75,11 @@ Startup responsibilities:
 4. Create the output directory.
 5. Create `data/`.
 6. Instantiate `SqliteRepository` for `data/reels.db`.
-7. Run Alembic migrations through `repo.create_database()`.
-8. Instantiate `IgReelDownloaderApp`.
-9. Configure download output and cookie path.
-10. Run Telegram polling.
+7. Instantiate `IgReelDownloaderApp`.
+8. Configure download output and cookie path.
+9. Run Telegram polling.
+
+The bot process does not run Alembic migrations. In Docker Compose deployments, the separate `migrate` service applies migrations before `downloader` starts.
 
 ## Core message flow
 
@@ -167,7 +168,7 @@ This keeps the app layer independent from the concrete persistence mechanism, ev
 - Keeps `IgReel` as the public/domain model and maps at repository boundaries.
 - Uses short-lived SQLAlchemy sessions for reads and writes.
 - Uses SQLite `ON CONFLICT DO UPDATE` upsert semantics so repeated downloads update existing records while preserving other rows.
-- Runs Alembic `upgrade head` in `create_database()` using the repository's configured SQLAlchemy connection, so runtime initialization always targets the same DB path as the repository even if migration-related environment variables are set.
+- Exposes `create_database()` for tests and explicit migration callers; normal Docker Compose deployments run Alembic through the separate `migrate` service instead of bot startup.
 
 The database table is:
 
@@ -186,7 +187,7 @@ CREATE TABLE IF NOT EXISTS reels (
 
 Alembic tracks applied migrations in `alembic_version`. The initial migration creates `reels` when missing. Existing unversioned databases with the legacy `reels` table are baselined without dropping rows; the migration validates that required columns exist before stamping the revision. The initial downgrade is intentionally data-preserving and does not drop `reels`.
 
-Manual database tasks are available through Poe:
+Docker Compose migrations run in the one-shot `migrate` service before `downloader` starts. Manual database tasks are also available through Poe:
 
 - `uv run poe db-upgrade`
 - `uv run poe db-downgrade`
@@ -228,16 +229,21 @@ The Docker image:
 5. Runs `uv sync --locked` to install the project.
 6. Uses `/bin/bash docker_entrypoint.sh` as the entrypoint.
 
-### Compose service
+### Compose services
 
-`docker-compose.yaml` runs one service, `downloader`, with these mounts:
+`docker-compose.yaml` defines two services:
+
+- `migrate`: a one-shot service that uses the app image to run `/app/.venv/bin/alembic upgrade head` with `./data:/app/data` mounted.
+- `downloader`: the long-running bot service. It depends on `migrate` completing successfully before startup.
+
+`downloader` has these mounts:
 
 - `./${OUTPUT_DIR:-output}:/app/${OUTPUT_DIR:-output}`
 - `./assets:/app/assets`
 - `./.env:/app/.env`
 - `./data:/app/data`
 
-The service restarts with `unless-stopped`.
+`downloader` restarts with `unless-stopped`; `migrate` does not restart.
 
 ### Cleanup loop
 
@@ -277,21 +283,12 @@ Developer tasks are defined in `pyproject.toml` via Poe:
 
 The current test suite includes unit tests for URL parsing/authentication-error detection and repository integration tests for SQLite/Alembic behavior.
 
-Inspection result on 2026-07-07:
-
-```text
-uv run poe check
-- ruff format --check: passed
-- ruff check: passed
-- mypy ig_reel_downloader: passed
-- pytest: 27 passed
-```
-
 ## Important architectural constraints and notes
 
 - The app is a single-process polling bot; there is no queue, scheduler, or web server.
 - Downloads are performed with blocking `yt-dlp` calls but are offloaded from the async Telegram handler with `asyncio.to_thread()`.
 - SQLite access goes through SQLAlchemy sessions; blocking repository work is still called from worker threads via the app's existing `asyncio.to_thread()` boundaries.
+- Schema migrations are separate from bot startup; Docker Compose runs them through the one-shot `migrate` service before `downloader` starts.
 - Multiple-video responses use a Telegram media group without per-item captions; single-video responses include the formatted caption.
 - Cache invalidation is time-based (`24h`) and file-existence-based.
 - Cleanup only removes media files; it does not prune stale SQLite rows.
