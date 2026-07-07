@@ -2,10 +2,9 @@ import asyncio
 import json
 import logging
 import re
-import sqlite3
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Literal
+from typing import TYPE_CHECKING, Literal
 
 import yt_dlp
 from yt_dlp.utils import DownloadError
@@ -111,11 +110,3 @@ def get_id_from_url(url: str) -> str | None:
     if match:
         return match.group("id")
     return None
-
-
-def ig_reel_model_factory(
-    cursor: sqlite3.Cursor,
-    row: tuple[Any, ...],
-) -> models.IgReel:
-    fields = [col[0] for col in cursor.description]
-    return models.IgReel(**dict(zip(fields, row, strict=True)))

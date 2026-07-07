@@ -9,6 +9,7 @@ _Last reviewed: 2026-07-07_
 - `python-telegram-bot` handles Telegram long-polling and message delivery.
 - `yt-dlp` extracts Reel metadata and downloads the media file.
 - SQLite caches Reel metadata and local file paths for recently downloaded reels.
+- Alembic manages SQLite schema creation and migrations.
 - Docker Compose runs the bot with persistent `data/`, `output/`, `assets/`, and `.env` mounts.
 
 At a high level, the architecture is a simple layered app:
@@ -39,12 +40,15 @@ IgReelDownloaderApp
 │   ├── __main__.py              # Runtime entry point and environment wiring
 │   ├── app.py                   # Telegram bot application and message flow
 │   ├── constants.py             # Shared constants, currently cache TTL
-│   ├── utils.py                 # yt-dlp integration, URL parsing, row factory
+│   ├── utils.py                 # yt-dlp integration, URL parsing, error classification
 │   └── repository/
 │       ├── base.py              # Repository Protocol
 │       ├── models.py            # Pydantic domain models
-│       └── sqlite.py            # SQLite Repository implementation
-├── tests/test_utils.py          # Unit tests for URL parsing and auth-error detection
+│       └── sqlite.py            # SQLAlchemy/Alembic SQLite Repository implementation
+├── migrations/                  # Alembic migration environment and revisions
+├── tests/unit/                  # Unit tests for pure helpers
+├── tests/integration/           # Integration tests, including repository/database tests
+├── tests/e2e/                   # Future end-to-end tests
 ├── Dockerfile                   # uv-based container build
 ├── docker-compose.yaml          # Production-ish local deployment
 ├── docker_entrypoint.sh         # Starts cleanup loop and bot process
@@ -69,11 +73,12 @@ Startup responsibilities:
    - `TELEGRAM_MEDIA_WRITE_TIMEOUT` defaults to `120` seconds.
    - `TELEGRAM_READ_TIMEOUT` defaults to `30` seconds.
 4. Create the output directory.
-5. Create `data/` and initialize `data/reels.db`.
-6. Instantiate `SqliteRepository`.
-7. Instantiate `IgReelDownloaderApp`.
-8. Configure download output and cookie path.
-9. Run Telegram polling.
+5. Create `data/`.
+6. Instantiate `SqliteRepository` for `data/reels.db`.
+7. Run Alembic migrations through `repo.create_database()`.
+8. Instantiate `IgReelDownloaderApp`.
+9. Configure download output and cookie path.
+10. Run Telegram polling.
 
 ## Core message flow
 
@@ -157,10 +162,12 @@ This keeps the app layer independent from the concrete persistence mechanism, ev
 
 `repository/sqlite.py` implements `SqliteRepository`:
 
-- Uses one long-lived `sqlite3.Connection` with `check_same_thread=False`.
-- Uses `utils.ig_reel_model_factory` as `row_factory` so query rows become `IgReel` models.
-- Protects inserts with `threading.Lock` because download work may run concurrently in worker threads.
-- Uses `INSERT OR REPLACE` so repeated downloads update existing records.
+- Uses SQLAlchemy 2.x for the concrete SQLite implementation.
+- Defines a private `ReelRecord` ORM mapping for the existing `reels` table.
+- Keeps `IgReel` as the public/domain model and maps at repository boundaries.
+- Uses short-lived SQLAlchemy sessions for reads and writes.
+- Uses SQLite `ON CONFLICT DO UPDATE` upsert semantics so repeated downloads update existing records while preserving other rows.
+- Runs Alembic `upgrade head` in `create_database()` using the repository's configured SQLAlchemy connection, so runtime initialization always targets the same DB path as the repository even if migration-related environment variables are set.
 
 The database table is:
 
@@ -176,6 +183,18 @@ CREATE TABLE IF NOT EXISTS reels (
     comments TEXT
 );
 ```
+
+Alembic tracks applied migrations in `alembic_version`. The initial migration creates `reels` when missing. Existing unversioned databases with the legacy `reels` table are baselined without dropping rows; the migration validates that required columns exist before stamping the revision. The initial downgrade is intentionally data-preserving and does not drop `reels`.
+
+Manual database tasks are available through Poe:
+
+- `uv run poe db-upgrade`
+- `uv run poe db-downgrade`
+- `uv run poe db-current`
+- `uv run poe db-history`
+- `uv run poe db-revision "message"`
+
+Manual commands target `data/reels.db` by default. Set `DATABASE_URL` or `DB_PATH` to target another database for CLI migration work.
 
 Cached reels are considered valid only while:
 
@@ -254,8 +273,9 @@ Developer tasks are defined in `pyproject.toml` via Poe:
 - `uv run poe typecheck`
 - `uv run poe test`
 - `uv run poe check` for all of the above
+- `uv run poe db-upgrade`, `db-current`, `db-history`, `db-downgrade`, and `db-revision` for Alembic migrations
 
-The current test suite focuses on `utils.py` URL parsing and authentication-error detection.
+The current test suite includes unit tests for URL parsing/authentication-error detection and repository integration tests for SQLite/Alembic behavior.
 
 Inspection result on 2026-07-07:
 
@@ -264,14 +284,14 @@ uv run poe check
 - ruff format --check: passed
 - ruff check: passed
 - mypy ig_reel_downloader: passed
-- pytest: 15 passed
+- pytest: 27 passed
 ```
 
 ## Important architectural constraints and notes
 
 - The app is a single-process polling bot; there is no queue, scheduler, or web server.
 - Downloads are performed with blocking `yt-dlp` calls but are offloaded from the async Telegram handler with `asyncio.to_thread()`.
-- SQLite writes are lock-protected, but reads and connection sharing rely on `check_same_thread=False` and the small scale of the app.
+- SQLite access goes through SQLAlchemy sessions; blocking repository work is still called from worker threads via the app's existing `asyncio.to_thread()` boundaries.
 - Multiple-video responses use a Telegram media group without per-item captions; single-video responses include the formatted caption.
 - Cache invalidation is time-based (`24h`) and file-existence-based.
 - Cleanup only removes media files; it does not prune stale SQLite rows.
@@ -285,5 +305,5 @@ Likely future extension points are:
 - Add repository implementations by satisfying `repository.base.Repository`.
 - Broaden URL extraction in `utils.get_urls_from_text()` for more Instagram URL variants.
 - Expand tests around `IgReelDownloaderApp` by injecting a fake `Repository` and mocking `utils.download_video_result()`.
-- Add DB cleanup or migrations if persisted metadata grows beyond the current single-table cache.
+- Add future DB schema changes as Alembic revisions under `migrations/versions/`.
 - Add richer media-group captions if Telegram API constraints and UX allow it.

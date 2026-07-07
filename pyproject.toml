@@ -12,6 +12,8 @@ dependencies = [
     "python-telegram-bot>=22.1,<23.0",
     "python-dotenv>=1.1.0,<2.0.0",
     "pydantic>=2.11.7,<3.0.0",
+    "sqlalchemy>=2.0,<3.0",
+    "alembic>=1.17,<2.0",
 ]
 
 [build-system]
@@ -34,6 +36,13 @@ typecheck = "mypy ig_reel_downloader"
 
 # Combined quality checks
 check = ["format-check", "lint", "typecheck", "test"]
+
+# Database migrations
+db-upgrade = "alembic upgrade head"
+db-downgrade = "alembic downgrade -1"
+db-current = "alembic current"
+db-history = "alembic history"
+db-revision = "alembic revision --autogenerate -m"
 
 # Run the bot
 bot = "python -m ig_reel_downloader"
