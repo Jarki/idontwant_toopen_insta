@@ -5,21 +5,26 @@ from . import models
 
 class Repository(Protocol):
     def create_database(self) -> None:
-        """
-        Create the database if it doesn't exist.
-        """
-        ...
+        """Apply Alembic migrations for explicit migration/test callers."""
+        raise NotImplementedError
+
+    def get_media_by_provider_item(
+        self,
+        provider: str,
+        media_kind: str,
+        provider_item_id: str,
+    ) -> models.MediaItem | None:
+        """Retrieve a fresh media item by provider identity."""
+        raise NotImplementedError
+
+    def insert_media(self, media: models.MediaItem) -> None:
+        """Insert or refresh a generic media item and replace its assets atomically."""
+        raise NotImplementedError
 
     def get_reel_by_id(self, reel_id: str) -> models.IgReel | None:
-        """
-        Retrieve an IgReel by its id.
-
-        Reel's created_at should be within constants.REEL_STALE_TIME hours.
-        """
-        ...
+        """Temporarily support legacy app flow until the generic app refactor."""
+        raise NotImplementedError
 
     def insert_reel(self, reel: models.IgReel) -> None:
-        """
-        Insert a reel into the database.
-        """
-        ...
+        """Temporarily support legacy app flow until the generic app refactor."""
+        raise NotImplementedError
