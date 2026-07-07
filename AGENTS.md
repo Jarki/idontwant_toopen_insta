@@ -8,19 +8,26 @@ Core technologies: `python-telegram-bot`, `yt-dlp`, SQLite, Alembic, Docker Comp
 
 For deeper system details, read `ARCH.md`. For detailed agent workflow guidance, see `docs/agent-workflow.md`.
 
+## Important
+
+Before making any commit, always read `docs/git-flow.md` first.
+
 ## Core workflow
 
 For non-trivial changes:
 
-1. Read `README.md`, `ARCH.md`, `pyproject.toml`, and relevant source/tests/docs.
-2. Restate the intended change and likely files before editing.
-3. Make the smallest change that satisfies the request.
-4. Add or update tests for behavior changes.
-5. Run focused checks while iterating.
-6. Run `uv run poe check` before declaring code changes complete, unless the user explicitly asks to skip it.
-7. Final response should include changed files, validation commands/results, and remaining risks or follow-ups.
+1. **Create a feature branch first** — never commit code changes directly to `main`. Read `docs/git-flow.md` for branch naming and flow. Stash or discard unrelated dirty working-tree entries before branching.
+2. Read `README.md`, `ARCH.md`, `pyproject.toml`, and relevant source/tests/docs.
+3. Restate the intended change and likely files before editing.
+4. Make the smallest change that satisfies the request.
+5. Add or update tests for behavior changes.
+6. Run focused checks while iterating.
+7. Run `uv run poe check` before declaring code changes complete, unless the user explicitly asks to skip it.
+8. Final response should include changed files, validation commands/results, and remaining risks or follow-ups.
 
 For documentation-only edits, focused validation may be enough. State when code checks were not run because no runtime code changed.
+
+Do not commit generated specs or plans, including files under `docs/superpowers/specs/` and `docs/superpowers/plans/`, unless the user explicitly asks for those artifacts to be committed.
 
 ## Validation commands
 
