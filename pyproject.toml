@@ -34,8 +34,9 @@ format-check = "ruff format --check ."
 # Type checking
 typecheck = "mypy ig_reel_downloader"
 
-# Combined quality checks
+# Combined quality checks (continues on failure so devs see all results)
 check = ["format-check", "lint", "typecheck", "test"]
+verify = {ref = "check"}
 
 # Database migrations
 db-upgrade = "alembic upgrade head"
