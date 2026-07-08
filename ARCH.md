@@ -1,6 +1,6 @@
 # Architecture
 
-_Last reviewed: 2026-07-07_
+_Last reviewed: 2026-07-08_
 
 ## Overview
 
@@ -8,28 +8,36 @@ _Last reviewed: 2026-07-07_
 
 - `python-telegram-bot` handles Telegram long-polling and message delivery.
 - `yt-dlp` extracts Reel metadata and downloads the media file.
-- SQLite caches Reel metadata and local file paths for recently downloaded reels.
+- SQLite caches generic media metadata and local file paths for recently downloaded items.
 - Alembic manages SQLite schema creation and migrations.
 - Docker Compose runs migrations in a one-shot container before starting the bot with persistent `data/`, `output/`, `assets/`, and `.env` mounts.
 
-At a high level, the architecture is a simple layered app:
+At a high level, the core runtime flow is:
 
 ```text
-Telegram user
+Telegram text
     │
     ▼
-Telegram Bot API / long polling
+DownloaderRegistry
+    ├── extracts provider URL spans
+    ├── resolves ProviderItemRef identity
+    ├── resolves overlaps
+    └── deduplicates by provider/media/item identity
     │
     ▼
 IgReelDownloaderApp
-    ├── URL extraction and deduplication
-    ├── cache lookup through Repository
-    ├── blocking yt-dlp work offloaded to worker threads
-    └── Telegram video/media-group responses
+    └── offloads each MediaFetchService.fetch(match) with asyncio.to_thread()
     │
-    ├── SQLite database: data/reels.db
-    ├── Downloaded files: output/<instagram-id>.<ext>
-    └── Optional cookies: assets/cookies.txt
+    ▼
+MediaFetchService
+    ├── checks generic SQLite cache by provider/media/item identity
+    ├── validates referenced asset files exist
+    ├── calls the matched downloader on cache miss
+    └── writes refreshed MediaItem/MediaAsset rows
+    │
+    ▼
+TelegramMediaRenderer
+    └── sends one-video Reels as a video or media group
 ```
 
 ## Repository layout
@@ -38,15 +46,21 @@ IgReelDownloaderApp
 .
 ├── ig_reel_downloader/
 │   ├── __main__.py              # Runtime entry point and environment wiring
-│   ├── app.py                   # Telegram bot application and message flow
+│   ├── app.py                   # Telegram bot application orchestration
 │   ├── constants.py             # Shared constants, currently cache TTL
-│   ├── utils.py                 # yt-dlp integration, URL parsing, error classification
+│   ├── media_fetch.py           # Cache lookup, file-existence validation, download refresh
+│   ├── telegram_renderer.py     # Telegram video/media-group rendering
+│   ├── utils.py                 # Download error classification helpers
+│   ├── downloaders/
+│   │   ├── base.py              # Downloader Protocol and shared download models
+│   │   ├── instagram.py         # Instagram Reel URL matching and yt-dlp downloader
+│   │   └── registry.py          # URL match resolution, overlap handling, deduplication
 │   └── repository/
 │       ├── base.py              # Repository Protocol
 │       ├── models.py            # Pydantic domain models
 │       └── sqlite.py            # SQLAlchemy/Alembic SQLite Repository implementation
 ├── migrations/                  # Alembic migration environment and revisions
-├── tests/unit/                  # Unit tests for pure helpers
+├── tests/unit/                  # Unit tests for app seams and pure helpers
 ├── tests/integration/           # Integration tests, including repository/database tests
 ├── tests/e2e/                   # Future end-to-end tests
 ├── Dockerfile                   # uv-based container build
@@ -75,8 +89,8 @@ Startup responsibilities:
 4. Create the output directory.
 5. Create `data/`.
 6. Instantiate `SqliteRepository` for `data/reels.db`.
-7. Instantiate `IgReelDownloaderApp`.
-8. Configure download output and cookie path.
+7. Instantiate the Instagram Reel downloader, `DownloaderRegistry`, `MediaFetchService`, and `TelegramMediaRenderer`.
+8. Instantiate `IgReelDownloaderApp` with those collaborators.
 9. Run Telegram polling.
 
 The bot process does not run Alembic migrations. In Docker Compose deployments, the separate `migrate` service applies migrations before `downloader` starts.
@@ -91,103 +105,110 @@ MessageHandler(filters.TEXT, self._message_handler)
 
 For each text message:
 
-1. The bot extracts Instagram Reel URLs with `utils.get_urls_from_text()`.
-2. Duplicate URLs are removed while preserving order.
-3. Each URL is processed concurrently using `asyncio.to_thread(...)` because `yt-dlp` and SQLite operations are blocking/synchronous.
-4. For each URL, `_try_get_reel()`:
-   - Extracts the Reel ID with `utils.get_id_from_url()`.
-   - Looks for a fresh cached DB row using `repository.get_reel_by_id()`.
-   - Reuses the cached row only if the referenced file still exists.
-   - Otherwise downloads the media through `utils.download_video_result()`.
-   - Inserts successful downloads into SQLite.
-5. Successful reels are sent back to the Telegram chat:
-   - One video: `chat.send_video(...)` with a caption containing title, likes, and description.
-   - Multiple videos: `chat.send_media_group(...)` with `InputMediaVideo` items.
-6. Failed downloads are summarized as chat messages.
+1. `DownloaderRegistry.extract_matches()` asks registered downloaders to extract URL spans.
+2. The registry resolves provider identities with `ProviderItemRef`, resolves overlapping spans, and deduplicates while preserving message order by provider/media/item identity.
+3. `IgReelDownloaderApp` offloads each `MediaFetchService.fetch(match)` call through `asyncio.to_thread(...)` because `yt-dlp` and SQLite operations are blocking/synchronous.
+4. `MediaFetchService`:
+   - Looks for a fresh generic cache row with `repository.get_media_by_provider_item(provider, media_kind, provider_item_id)`.
+   - Reuses the cached item only when all referenced asset files still exist.
+   - Calls the matched downloader on cache miss, stale cache, or missing local files.
+   - Verifies the downloader returned the expected provider/media/item identity.
+   - Persists successful downloads with `repository.insert_media(media)`.
+5. Successful media items are passed to `TelegramMediaRenderer`:
+   - One supported video: `chat.send_video(...)` with a caption containing title, likes, and description.
+   - Multiple supported videos: `chat.send_media_group(...)` with `InputMediaVideo` items.
+6. Failed downloads or unsupported rendered items are summarized as chat messages.
 7. Telegram upload `TimedOut` errors are logged and reported to the user with a friendly timeout message.
 
 ## Downloading and URL handling
 
-`utils.py` contains the app's integration with `yt-dlp`:
+Downloader interfaces live in `downloaders/base.py`:
 
-- `download_video_result(url, output_dir, cookie_filepath)` builds `yt-dlp` options:
+- `Downloader` defines URL extraction, provider identity resolution, and download operations.
+- `ProviderItemRef` identifies media as `provider`, `media_kind`, and `provider_item_id`; its cache id is `provider:media_kind:provider_item_id`.
+- `MediaDownloadResult` normalizes successful `MediaItem` downloads and failure reasons.
+
+`downloaders/instagram.py` contains the current `yt-dlp` integration:
+
+- URL matching intentionally targets `https://www.instagram.com/reel/<id>` links specifically.
+- `InstagramReelDownloader.download()` builds `yt-dlp` options:
   - Output template: `<output_dir>/%(id)s.%(ext)s`
   - Format: `best`
   - Quiet mode enabled
-  - Optional `cookiefile` if the configured cookie file exists
-- It extracts metadata first with `extract_info(..., download=False)`.
-- It computes the final local filepath with `prepare_filename(info)`.
-- It then downloads the URL and maps metadata into `models.IgReel`.
-
-URL parsing is intentionally narrow:
-
-- `get_urls_from_text()` finds `https://www.instagram.com/reel/<id>` substrings.
-- `get_id_from_url()` extracts the `<id>` portion from a Reel URL.
+  - Optional `cookiefile` if `assets/cookies.txt` exists
+- It extracts metadata first with `extract_info(..., download=False)`, computes the final local filepath with `prepare_filename(info)`, downloads the URL, and maps metadata into a generic `MediaItem` with one video `MediaAsset`.
 
 Download failures are normalized into:
 
 - `auth`: recognized `yt-dlp` errors that indicate Instagram authentication/cookies are required.
-- `unknown`: every other exception.
+- `unsupported`: URLs or media shapes not supported by the current downloader/renderer.
+- `unknown`: every other exception or mismatch.
+
+`utils.py` contains only the shared authentication-error classifier used by the Instagram downloader.
 
 ## Persistence model
 
 ### Domain model
 
-`repository/models.py` defines the main domain object:
+`repository/models.py` defines generic cache models:
 
 ```python
-class IgReel(pydantic.BaseModel):
+class MediaAsset(pydantic.BaseModel):
+    asset_index: int
+    asset_type: Literal["video", "image"]
+    filepath: str
+    mime_type: str | None = None
+    width: int | None = None
+    height: int | None = None
+    duration_seconds: float | None = None
+    file_size_bytes: int | None = None
+
+class MediaItem(pydantic.BaseModel):
     id: str
+    provider: str
+    media_kind: str
+    provider_item_id: str
+    original_url: str
     title: str
     description: str | None
-    filepath: str
-    url: str
-    comments: str
-    like_count: int
-    created_at: datetime.datetime = pydantic.Field(default_factory=datetime.datetime.now)
+    metadata: dict[str, Any]
+    assets: list[MediaAsset]
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
 ```
 
-`comments` is stored as a JSON string created from the `yt-dlp` metadata.
+`IgReel` remains only as a legacy model for migration tests and compatibility with existing `reels` rows. Runtime cache reads and writes use `MediaItem`/`MediaAsset`.
 
 ### Repository abstraction
 
-`repository/base.py` defines a `Repository` Protocol with three operations:
+`repository/base.py` defines a `Repository` Protocol with generic cache operations:
 
-- `create_database()`
-- `get_reel_by_id(reel_id)`
-- `insert_reel(reel)`
+- `create_database()` for explicit migration/test callers.
+- `get_media_by_provider_item(provider, media_kind, provider_item_id)`.
+- `insert_media(media)`.
 
-This keeps the app layer independent from the concrete persistence mechanism, even though SQLite is currently the only implementation.
+The app layer depends on `MediaFetchService` and the repository protocol rather than concrete SQLite APIs.
 
 ### SQLite implementation
 
 `repository/sqlite.py` implements `SqliteRepository`:
 
 - Uses SQLAlchemy 2.x for the concrete SQLite implementation.
-- Defines a private `ReelRecord` ORM mapping for the existing `reels` table.
-- Keeps `IgReel` as the public/domain model and maps at repository boundaries.
+- Enables SQLite foreign keys for every connection.
 - Uses short-lived SQLAlchemy sessions for reads and writes.
-- Uses SQLite `ON CONFLICT DO UPDATE` upsert semantics so repeated downloads update existing records while preserving other rows.
+- Reads fresh cache rows from `media_items` by provider/media/item identity.
+- Writes `media_items` with SQLite `ON CONFLICT DO UPDATE` upsert semantics and replaces child `media_assets` atomically.
+- Preserves the original `created_at` on refresh and uses `updated_at` for cache freshness.
 - Exposes `create_database()` for tests and explicit migration callers; normal Docker Compose deployments run Alembic through the separate `migrate` service instead of bot startup.
 
-The database table is:
+The generic cache tables are:
 
-```sql
-CREATE TABLE IF NOT EXISTS reels (
-    id TEXT PRIMARY KEY,
-    title TEXT,
-    description TEXT,
-    filepath TEXT,
-    url TEXT,
-    like_count INTEGER,
-    created_at DATETIME,
-    comments TEXT
-);
-```
+- `media_items`: one row per provider/media/item identity, with metadata stored as JSON text and a unique constraint on `(provider, media_kind, provider_item_id)`.
+- `media_assets`: ordered local assets for each media item, with a foreign key to `media_items` and a unique `(media_item_id, asset_index)` constraint.
 
-Alembic tracks applied migrations in `alembic_version`. The initial migration creates `reels` when missing. Existing unversioned databases with the legacy `reels` table are baselined without dropping rows; the migration validates that required columns exist before stamping the revision. The initial downgrade is intentionally data-preserving and does not drop `reels`.
+The legacy `reels` table remains in the database for compatibility and is not dropped in this milestone. Existing databases that already contain `reels` are baselined and then copied into `media_items`/`media_assets` during migration without deleting `reels` rows. If a preexisting `reels` table is missing required columns or constraints, migration fails instead of stamping an incompatible schema.
 
-Docker Compose migrations run in the one-shot `migrate` service before `downloader` starts. Manual database tasks are also available through Poe:
+Alembic tracks applied migrations in `alembic_version`. Docker Compose migrations run in the one-shot `migrate` service before `downloader` starts. Manual database tasks are also available through Poe:
 
 - `uv run poe db-upgrade`
 - `uv run poe db-downgrade`
@@ -197,12 +218,11 @@ Docker Compose migrations run in the one-shot `migrate` service before `download
 
 Manual commands target `data/reels.db` by default. Set `DATABASE_URL` or `DB_PATH` to target another database for CLI migration work.
 
-Cached reels are considered valid only while:
+Cached media rows are considered time-fresh only while:
 
-- `created_at > now - REEL_STALE_TIME`
-- the referenced media file still exists on disk
+- `media_items.updated_at > now - CACHE_STALE_TIME`
 
-`REEL_STALE_TIME` is currently `24` hours.
+`CACHE_STALE_TIME` is currently `24` hours. File existence is not checked by the repository; `MediaFetchService` validates referenced asset files before reusing cached rows.
 
 ## Filesystem state
 
@@ -212,7 +232,7 @@ Runtime state is split across three paths:
 - `data/reels.db`: SQLite cache metadata.
 - `assets/cookies.txt`: optional Instagram cookies for restricted reels.
 
-The DB can contain rows whose files were removed by cleanup. This is expected: `_try_get_reel()` verifies file existence before reusing a cached row and redownloads when the file is missing.
+The DB can contain rows whose files were removed by cleanup. This is expected: `MediaFetchService` verifies file existence before reusing a cached row and redownloads when any referenced file is missing.
 
 ## Deployment architecture
 
@@ -278,15 +298,16 @@ Developer tasks are defined in `pyproject.toml` via Poe:
 - `uv run poe lint`
 - `uv run poe typecheck`
 - `uv run poe test`
-- `uv run poe verify` for all of the above (auto-fixes + validation)
+- `uv run poe verify` for auto-format, lint-fix, typecheck, and tests
+- `uv run poe check` for the read-only CI quality gate
 - `uv run poe db-upgrade`, `db-current`, `db-history`, `db-downgrade`, and `db-revision` for Alembic migrations
 
-The current test suite includes unit tests for URL parsing/authentication-error detection and repository integration tests for SQLite/Alembic behavior.
+The current test suite includes unit tests for downloader registry, Instagram URL matching/downloading seams, media fetching, Telegram rendering, authentication-error detection, app orchestration, and repository integration tests for SQLite/Alembic behavior.
 
 ## Important architectural constraints and notes
 
 - The app is a single-process polling bot; there is no queue, scheduler, or web server.
-- Downloads are performed with blocking `yt-dlp` calls but are offloaded from the async Telegram handler with `asyncio.to_thread()`.
+- Downloads are performed with blocking `yt-dlp` calls and are offloaded from the async Telegram handler with `asyncio.to_thread()`.
 - SQLite access goes through SQLAlchemy sessions; blocking repository work is still called from worker threads via the app's existing `asyncio.to_thread()` boundaries.
 - Schema migrations are separate from bot startup; Docker Compose runs them through the one-shot `migrate` service before `downloader` starts.
 - Multiple-video responses use a Telegram media group without per-item captions; single-video responses include the formatted caption.
@@ -299,8 +320,8 @@ The current test suite includes unit tests for URL parsing/authentication-error 
 
 Likely future extension points are:
 
+- Add provider support by implementing `downloaders.base.Downloader` and registering it in `DownloaderRegistry`.
 - Add repository implementations by satisfying `repository.base.Repository`.
-- Broaden URL extraction in `utils.get_urls_from_text()` for more Instagram URL variants.
-- Expand tests around `IgReelDownloaderApp` by injecting a fake `Repository` and mocking `utils.download_video_result()`.
+- Add richer rendering behavior in `TelegramMediaRenderer` if Telegram API constraints and UX allow it.
 - Add future DB schema changes as Alembic revisions under `migrations/versions/`.
-- Add richer media-group captions if Telegram API constraints and UX allow it.
+- Broaden Instagram URL extraction inside `InstagramReelDownloader` if broader URL support is explicitly requested.

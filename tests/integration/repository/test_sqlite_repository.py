@@ -41,6 +41,17 @@ def raw_reel_count(db_path: Path) -> int:
     return int(row[0])
 
 
+def raw_reel_title(db_path: Path, reel_id: str) -> str | None:
+    with sqlite3.connect(db_path) as conn:
+        row = conn.execute(
+            "SELECT title FROM reels WHERE id = ?",
+            (reel_id,),
+        ).fetchone()
+    if row is None:
+        return None
+    return str(row[0])
+
+
 def make_media_item(
     item_id: str = "ABC123",
     *,
@@ -332,74 +343,6 @@ def test_generic_migration_rejects_preexisting_generic_table(tmp_path: Path) -> 
         repository.create_database()
 
 
-def test_insert_and_get_reel_round_trips_all_fields(tmp_path: Path) -> None:
-    db_path = tmp_path / "reels.db"
-    repository = SqliteRepository(str(db_path))
-    repository.create_database()
-    reel = make_reel()
-
-    repository.insert_reel(reel)
-
-    assert repository.get_reel_by_id(reel.id) == reel
-
-
-def test_insert_reel_replaces_same_id_and_preserves_other_rows(
-    tmp_path: Path,
-) -> None:
-    db_path = tmp_path / "reels.db"
-    repository = SqliteRepository(str(db_path))
-    repository.create_database()
-    repository.insert_reel(make_reel("reel-1", title="Old title"))
-    repository.insert_reel(make_reel("reel-2", title="Other title"))
-
-    repository.insert_reel(make_reel("reel-1", title="New title"))
-
-    updated = repository.get_reel_by_id("reel-1")
-    other = repository.get_reel_by_id("reel-2")
-    assert updated is not None
-    assert updated.title == "New title"
-    assert other is not None
-    assert other.title == "Other title"
-    assert raw_reel_count(db_path) == 2
-
-
-def test_get_reel_by_id_returns_none_for_stale_rows(tmp_path: Path) -> None:
-    db_path = tmp_path / "reels.db"
-    repository = SqliteRepository(str(db_path))
-    repository.create_database()
-    stale_reel = make_reel(
-        created_at=datetime.datetime.now()
-        - constants.REEL_STALE_TIME
-        - datetime.timedelta(minutes=1)
-    )
-    repository.insert_reel(stale_reel)
-
-    assert repository.get_reel_by_id(stale_reel.id) is None
-
-
-def test_get_reel_by_id_returns_fresh_rows(tmp_path: Path) -> None:
-    db_path = tmp_path / "reels.db"
-    repository = SqliteRepository(str(db_path))
-    repository.create_database()
-    fresh_reel = make_reel(
-        created_at=datetime.datetime.now()
-        - constants.REEL_STALE_TIME
-        + datetime.timedelta(minutes=1)
-    )
-    repository.insert_reel(fresh_reel)
-
-    assert repository.get_reel_by_id(fresh_reel.id) == fresh_reel
-
-
-def test_repository_reads_legacy_sqlite_rows_without_migration(tmp_path: Path) -> None:
-    db_path = tmp_path / "reels.db"
-    legacy_reel = make_reel("legacy-reel", title="Legacy title")
-    insert_legacy_reel(db_path, legacy_reel)
-    repository = SqliteRepository(str(db_path))
-
-    assert repository.get_reel_by_id(legacy_reel.id) == legacy_reel
-
-
 def test_create_database_is_idempotent_for_new_database(tmp_path: Path) -> None:
     db_path = tmp_path / "reels.db"
     repository = SqliteRepository(str(db_path))
@@ -478,7 +421,7 @@ def test_alembic_downgrade_preserves_reels_rows(tmp_path: Path) -> None:
     db_path = tmp_path / "reels.db"
     repository = SqliteRepository(str(db_path))
     repository.create_database()
-    repository.insert_reel(make_reel("downgrade-reel"))
+    insert_legacy_reel(db_path, make_reel("downgrade-reel"))
     config = alembic_config()
     config.attributes["database_url"] = f"sqlite:///{db_path}"
 
@@ -512,12 +455,18 @@ def test_create_database_preserves_existing_rows(tmp_path: Path) -> None:
 
     repository.create_database()
 
-    assert repository.get_reel_by_id(existing_reel.id) == existing_reel
+    media = repository.get_media_by_provider_item("instagram", "reel", existing_reel.id)
+    assert media is not None
+    assert media.title == existing_reel.title
+    assert raw_reel_title(db_path, existing_reel.id) == existing_reel.title
     assert raw_reel_count(db_path) == 1
     assert current_alembic_version(db_path) == "20260707_0002"
 
     repository.create_database()
 
-    assert repository.get_reel_by_id(existing_reel.id) == existing_reel
+    media = repository.get_media_by_provider_item("instagram", "reel", existing_reel.id)
+    assert media is not None
+    assert media.title == existing_reel.title
+    assert raw_reel_title(db_path, existing_reel.id) == existing_reel.title
     assert raw_reel_count(db_path) == 1
     assert current_alembic_version(db_path) == "20260707_0002"

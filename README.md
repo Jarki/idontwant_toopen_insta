@@ -68,4 +68,4 @@ By default, Alembic targets `data/reels.db`. For manual commands, set `DATABASE_
 DB_PATH=/tmp/reels.db uv run poe db-upgrade
 ```
 
-Existing databases that already contain the legacy `reels` table are baselined without deleting rows. If a `reels` table exists but is missing required columns, the migration fails instead of stamping an incompatible schema.
+Existing databases that already contain the legacy `reels` table are baselined and then copied into generic `media_items`/`media_assets` cache tables without deleting `reels` rows. If a `reels` table exists but is missing required columns, the migration fails instead of stamping an incompatible schema.
