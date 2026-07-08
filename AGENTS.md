@@ -21,8 +21,8 @@ For non-trivial changes:
 3. Restate the intended change and likely files before editing.
 4. Make the smallest change that satisfies the request.
 5. Add or update tests for behavior changes.
-6. Run focused checks while iterating.
-7. Run `uv run poe verify` (auto-fixes + validation) before declaring code changes complete, unless the user explicitly asks to skip it.
+6. Run focused tests while iterating (`uv run pytest <test_file> -v`).
+7. Run `uv run poe verify` as the single pre-handoff gate — it auto-formats, lint-fixes, typechecks, and tests. **Do not** run `check`, `typecheck`, `format`, or `lint` individually — `verify` covers all of them in one pass. `check` is for CI only (read-only, no auto-fixes).
 8. Final response should include changed files, validation commands/results, and remaining risks or follow-ups.
 
 For documentation-only edits, focused validation may be enough. State when code checks were not run because no runtime code changed.
@@ -31,14 +31,15 @@ Do not commit generated specs or plans, including files under `docs/superpowers/
 
 ## Validation commands
 
-Use Poe tasks through `uv`:
+Run `uv run poe verify` as the single pre-handoff gate (auto-format, lint-fix, typecheck, test).
+Do not run individual commands (`typecheck`, `format`, `lint`) separately, unless you specifically need it.
+
+Available Poe tasks:
 
 ```bash
-uv run poe verify        # pre-handoff: auto-format, lint-fix, typecheck, test
-uv run poe format-check  # formatting check
-uv run poe lint          # Ruff lint
-uv run poe typecheck     # mypy
-uv run poe test          # pytest
+uv run poe verify        # (agents) auto-format + lint-fix + typecheck + test
+uv run poe check         # (CI only) read-only format-check + lint + typecheck + test
+uv run poe test          # run tests only
 uv run poe bot           # run the bot locally
 ```
 
