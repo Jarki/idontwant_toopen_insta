@@ -27,6 +27,11 @@ Examples:
 - [ ] CI workflow changed (`.github/workflows/`)
 - [ ] Other: __________
 
+## Verification
+
+- [ ] `uv run poe verify` passes
+- [ ] Tested in dev
+
 ## Description
 
 <!--
