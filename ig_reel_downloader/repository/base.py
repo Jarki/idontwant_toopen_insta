@@ -20,11 +20,3 @@ class Repository(Protocol):
     def insert_media(self, media: models.MediaItem) -> None:
         """Insert or refresh a generic media item and replace its assets atomically."""
         raise NotImplementedError
-
-    def get_reel_by_id(self, reel_id: str) -> models.IgReel | None:
-        """Temporarily support legacy app flow until the generic app refactor."""
-        raise NotImplementedError
-
-    def insert_reel(self, reel: models.IgReel) -> None:
-        """Temporarily support legacy app flow until the generic app refactor."""
-        raise NotImplementedError

@@ -28,8 +28,8 @@ def _get_float_env(name: str, default: float) -> float:
 
 
 def main() -> None:
-    output_dir = os.getenv("OUTPUT_DIR", "output")
-    cookie_filepath = "assets/cookies.txt"
+    output_dir = Path(os.getenv("OUTPUT_DIR", "output"))
+    cookie_filepath = Path("assets/cookies.txt")
     bot_token = os.getenv("BOT_TOKEN")
     telegram_media_write_timeout = _get_float_env(
         "TELEGRAM_MEDIA_WRITE_TIMEOUT",
@@ -43,19 +43,32 @@ def main() -> None:
         msg = "BOT_TOKEN is not set"
         raise ValueError(msg)
 
-    Path(output_dir).mkdir(exist_ok=True)
+    output_dir.mkdir(exist_ok=True)
     db_path = "data/reels.db"
     Path(db_path).parent.mkdir(exist_ok=True)
 
     repo = ig_reel_downloader.repository.sqlite.SqliteRepository(db_path)
-
-    app = ig_reel_downloader.app.IgReelDownloaderApp(
-        bot_token,
+    downloader = ig_reel_downloader.downloaders.InstagramReelDownloader(
+        cookie_filepath=cookie_filepath,
+    )
+    registry = ig_reel_downloader.downloaders.DownloaderRegistry([downloader])
+    fetch_service = ig_reel_downloader.media_fetch.MediaFetchService(
         repo,
+        output_dir=output_dir,
+    )
+    renderer = ig_reel_downloader.telegram_renderer.TelegramMediaRenderer(
         telegram_media_write_timeout=telegram_media_write_timeout,
         telegram_read_timeout=telegram_read_timeout,
     )
-    app.set_downloader_config(output_dir, cookie_filepath)
+
+    app = ig_reel_downloader.app.IgReelDownloaderApp(
+        bot_token,
+        registry,
+        fetch_service,
+        renderer,
+        telegram_media_write_timeout=telegram_media_write_timeout,
+        telegram_read_timeout=telegram_read_timeout,
+    )
     app.run()
 
 
