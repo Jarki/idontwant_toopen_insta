@@ -87,7 +87,7 @@ When a schema change is needed:
 5. Run the full validation gate:
 
    ```bash
-   uv run poe check
+   uv run poe verify
    ```
 
 ## Existing database behavior

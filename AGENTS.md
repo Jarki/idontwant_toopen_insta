@@ -22,7 +22,7 @@ For non-trivial changes:
 4. Make the smallest change that satisfies the request.
 5. Add or update tests for behavior changes.
 6. Run focused checks while iterating.
-7. Run `uv run poe check` before declaring code changes complete, unless the user explicitly asks to skip it.
+7. Run `uv run poe verify` (auto-fixes + validation) before declaring code changes complete, unless the user explicitly asks to skip it.
 8. Final response should include changed files, validation commands/results, and remaining risks or follow-ups.
 
 For documentation-only edits, focused validation may be enough. State when code checks were not run because no runtime code changed.
@@ -34,7 +34,7 @@ Do not commit generated specs or plans, including files under `docs/superpowers/
 Use Poe tasks through `uv`:
 
 ```bash
-uv run poe check         # full validation
+uv run poe verify        # pre-handoff: auto-format, lint-fix, typecheck, test
 uv run poe format-check  # formatting check
 uv run poe lint          # Ruff lint
 uv run poe typecheck     # mypy

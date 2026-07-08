@@ -278,7 +278,7 @@ Developer tasks are defined in `pyproject.toml` via Poe:
 - `uv run poe lint`
 - `uv run poe typecheck`
 - `uv run poe test`
-- `uv run poe check` for all of the above
+- `uv run poe verify` for all of the above (auto-fixes + validation)
 - `uv run poe db-upgrade`, `db-current`, `db-history`, `db-downgrade`, and `db-revision` for Alembic migrations
 
 The current test suite includes unit tests for URL parsing/authentication-error detection and repository integration tests for SQLite/Alembic behavior.

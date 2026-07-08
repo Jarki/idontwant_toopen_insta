@@ -34,9 +34,10 @@ format-check = "ruff format --check ."
 # Type checking
 typecheck = "mypy ig_reel_downloader"
 
-# Combined quality checks (continues on failure so devs see all results)
-check = ["format-check", "lint", "typecheck", "test"]
+# Agent pre-handoff gate: auto-fixes then validates (continues on failure so devs see all results)
 verify = {sequence = ["format", "lint-fix", "typecheck", "test"], ignore_fail = "return_non_zero"}
+# CI gate: read-only check, no mutations
+check = ["format-check", "lint", "typecheck", "test"]
 
 # Database migrations
 db-upgrade = "alembic upgrade head"

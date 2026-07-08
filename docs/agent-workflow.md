@@ -36,7 +36,7 @@ Default workflow for non-trivial changes:
 3. Make the smallest change that satisfies the request.
 4. Add or update tests for behavior changes.
 5. Run focused checks while iterating.
-6. Run `uv run poe check` before declaring code changes complete, unless explicitly skipped.
+6. Run `uv run poe verify` before declaring code changes complete, unless explicitly skipped.
 7. Final response should include changed files, validation commands/results, and remaining risks or follow-ups.
 
 For documentation-only edits, focused validation may be enough. State when code checks were not run because no runtime code changed.
@@ -56,7 +56,7 @@ Preferred orchestration patterns:
 
 - Small change: parent agent edits directly, then runs focused checks.
 - Medium feature/fix: `scout/context-builder` → parent synthesis → `worker` → `reviewer` → validation.
-- Refactor: `reviewer` identifies focused opportunities → parent approves scope → `worker` applies changes → `reviewer` validates diff → `uv run poe check`.
+- Refactor: `reviewer` identifies focused opportunities → parent approves scope → `worker` applies changes → `reviewer` validates diff → `uv run poe verify`.
 - Architecture decision: `context-builder` gathers local constraints → `oracle` challenges assumptions → parent asks user for scope/product decisions → `worker` implements after approval.
 - External/library uncertainty: `researcher` checks upstream docs/issues → `context-builder` maps local impact → parent decides next step.
 

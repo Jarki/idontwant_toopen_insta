@@ -30,17 +30,17 @@ The gate runs:
 
 ```bash
 uv sync --locked --all-groups
-uv run poe check
+uv run poe verify
 ```
 
-`uv run poe check` currently includes formatting checks, Ruff linting, mypy, and pytest.
+`uv run poe verify` auto-formats, auto-fixes lint, then runs mypy and pytest.
 
 ## Merging
 
 Before merging a feature branch:
 
 1. Run the relevant focused checks locally while iterating.
-2. Run `uv run poe check` before final handoff for code changes.
+2. Run `uv run poe verify` before final handoff for code changes.
 3. Open a pull request into `main`.
 4. Wait for the GitHub Actions quality gate to pass.
 5. Merge into `main`.
