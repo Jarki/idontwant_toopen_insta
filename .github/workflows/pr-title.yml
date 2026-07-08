@@ -1,0 +1,37 @@
+name: PR title
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  pull-requests: read
+
+jobs:
+  check:
+    name: Conventional Commits
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check PR title
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+        run: |
+          if ! echo "$TITLE" | grep -qE '^(feat|fix|docs|test|refactor|build|chore|perf|ci|revert)(\(.+\))?: .{1,}$'; then
+            echo ""
+            echo "  ┌────────────────────────────────────────────────────┐"
+            echo "  │  PR title must follow Conventional Commits format │"
+            echo "  │                                                   │"
+            echo "  │    <type>: <description>                          │"
+            echo "  │    <type>(<scope>): <description>                 │"
+            echo "  │                                                   │"
+            echo "  │  Types: feat, fix, docs, test, refactor, build,  │"
+            echo "  │         chore, perf, ci, revert                   │"
+            echo "  │                                                   │"
+            echo "  │  Examples:                                        │"
+            echo "  │    feat: add tiktok downloader                    │"
+            echo "  │    fix: handle missing filepath in migration      │"
+            echo "  │    refactor(app): extract media fetch service     │"
+            echo "  └────────────────────────────────────────────────────┘"
+            echo ""
+            exit 1
+          fi
