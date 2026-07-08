@@ -470,3 +470,26 @@ def test_create_database_preserves_existing_rows(tmp_path: Path) -> None:
     assert raw_reel_title(db_path, existing_reel.id) == existing_reel.title
     assert raw_reel_count(db_path) == 1
     assert current_alembic_version(db_path) == "20260707_0002"
+
+
+def test_get_media_by_provider_item_raises_on_invalid_metadata_json(
+    tmp_path: Path,
+) -> None:
+    db_path = tmp_path / "reels.db"
+    repository = SqliteRepository(str(db_path))
+    repository.create_database()
+
+    media = make_media_item()
+    repository.insert_media(media)
+
+    with sqlite3.connect(db_path) as conn:
+        conn.execute(
+            "UPDATE media_items SET metadata_json = '[]' "
+            "WHERE provider_item_id = 'ABC123'"
+        )
+        conn.commit()
+
+    with pytest.raises(
+        ValueError, match=r"media_items.metadata_json is not a JSON object"
+    ):
+        repository.get_media_by_provider_item("instagram", "reel", "ABC123")

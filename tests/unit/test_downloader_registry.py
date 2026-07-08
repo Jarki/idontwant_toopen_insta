@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+import pytest
+
 from ig_reel_downloader.downloaders.base import (
     DownloadContext,
     MediaDownloadResult,
@@ -41,17 +43,16 @@ def test_registry_preserves_message_order_after_provider_iteration() -> None:
     assert [match.url for match in matches] == ["early-url", "later-url"]
 
 
-def test_registry_prefers_earlier_registered_downloader_for_overlaps() -> None:
+def test_registry_raises_on_overlapping_matches_from_different_downloaders() -> None:
     first = FakeDownloader("first", "clip", [("first-url", 0, 20, "first")])
     second = FakeDownloader("second", "clip", [("second-url", 5, 25, "second")])
     registry = DownloaderRegistry([first, second])
 
-    matches = registry.extract_matches("overlap text")
+    with pytest.raises(ValueError, match="Overlapping URL matches detected"):
+        registry.extract_matches("overlap text")
 
-    assert [match.url for match in matches] == ["first-url"]
 
-
-def test_registry_prefers_longest_same_downloader_overlap() -> None:
+def test_registry_raises_on_overlapping_matches_from_same_downloader() -> None:
     downloader = FakeDownloader(
         "same",
         "clip",
@@ -59,9 +60,8 @@ def test_registry_prefers_longest_same_downloader_overlap() -> None:
     )
     registry = DownloaderRegistry([downloader])
 
-    matches = registry.extract_matches("overlap text")
-
-    assert [match.url for match in matches] == ["longer"]
+    with pytest.raises(ValueError, match="Overlapping URL matches detected"):
+        registry.extract_matches("overlap text")
 
 
 def test_registry_deduplicates_by_provider_identity() -> None:

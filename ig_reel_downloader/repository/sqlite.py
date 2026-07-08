@@ -198,7 +198,8 @@ def _metadata_json_to_dict(value: str) -> dict[str, Any]:
     parsed = json.loads(value)
     if isinstance(parsed, dict):
         return parsed
-    return {}
+    msg = f"media_items.metadata_json is not a JSON object: {value!r}"
+    raise ValueError(msg)
 
 
 def _media_record_to_model(record: MediaItemRecord) -> models.MediaItem:

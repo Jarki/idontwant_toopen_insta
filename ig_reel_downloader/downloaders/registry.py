@@ -55,44 +55,21 @@ class DownloaderRegistry:
                 candidate.registration_index,
             ),
         )
-        kept: list[_Candidate] = []
-        for candidate in ordered:
-            overlapping_indexes = [
-                index
-                for index, existing in enumerate(kept)
-                if _overlaps(existing.match, candidate.match)
-            ]
-            if not overlapping_indexes:
-                kept.append(candidate)
-                continue
-
-            replacement = candidate
-            for index in overlapping_indexes:
-                replacement = _prefer_candidate(kept[index], replacement)
-            for index in reversed(overlapping_indexes):
-                del kept[index]
-            kept.append(replacement)
-            kept.sort(key=lambda item: (item.match.start, item.match.end))
-        return sorted(kept, key=lambda item: (item.match.start, item.match.end))
+        kept: list[_Candidate] = [ordered[0]] if ordered else []
+        for candidate in ordered[1:]:
+            if any(_overlaps(existing.match, candidate.match) for existing in kept):
+                overlapping = [
+                    f"{existing.match.downloader.__class__.__name__}:{existing.match.url}@[{existing.match.start},{existing.match.end})"
+                    for existing in kept
+                    if _overlaps(existing.match, candidate.match)
+                ] + [
+                    f"{candidate.match.downloader.__class__.__name__}:{candidate.match.url}@[{candidate.match.start},{candidate.match.end})"
+                ]
+                msg = f"Overlapping URL matches detected: {' vs '.join(overlapping)}"
+                raise ValueError(msg)
+            kept.append(candidate)
+        return kept
 
 
 def _overlaps(left: UrlMatch, right: UrlMatch) -> bool:
     return left.start < right.end and right.start < left.end
-
-
-def _prefer_candidate(left: _Candidate, right: _Candidate) -> _Candidate:
-    if left.registration_index != right.registration_index:
-        return left if left.registration_index < right.registration_index else right
-    left_len = left.match.end - left.match.start
-    right_len = right.match.end - right.match.start
-    if left_len != right_len:
-        return left if left_len > right_len else right
-    return (
-        left
-        if (left.match.start, left.match.end)
-        <= (
-            right.match.start,
-            right.match.end,
-        )
-        else right
-    )
