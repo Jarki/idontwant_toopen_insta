@@ -34,7 +34,7 @@ REEL_URL_PATTERN = re.compile(
     r"(?P<url>https://www\.instagram\.com/reel/(?P<id>[a-zA-Z0-9_-]+))"
 )
 POST_URL_PATTERN = re.compile(
-    r"(?P<url>https://www\.instagram\.com/p/(?P<id>[a-zA-Z0-9_-]+)(?:/)?(?:\?[^\s#]*)?(?:#[^\s]*)?)"
+    r"(?P<url>https://www\.instagram\.com/p/(?P<id>[a-zA-Z0-9_-]+)(?:/)?(?:\?[^\s#]*)?(?:#[^\s]*)?)(?=\s|$)"
 )
 IMAGE_EXTENSIONS = {"jpg", "jpeg", "png", "webp"}
 

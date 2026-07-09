@@ -108,6 +108,14 @@ def test_instagram_post_rejects_non_post_urls(text: str) -> None:
     assert downloader.extract_candidates(text) == []
 
 
+def test_instagram_post_rejects_extra_path_segments() -> None:
+    downloader = InstagramPostDownloader()
+
+    assert (
+        downloader.extract_candidates("https://www.instagram.com/p/ABC123/extra") == []
+    )
+
+
 def test_download_maps_ytdlp_info_to_media_item(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
