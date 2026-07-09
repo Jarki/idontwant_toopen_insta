@@ -49,6 +49,9 @@ db-revision = "alembic revision --autogenerate -m"
 # Run the bot
 bot = "python -m ig_reel_downloader"
 
+# Deploy: trigger the deploy-dev workflow on the current branch
+deploy = "bash scripts/deploy.sh"
+
 [dependency-groups]
 dev = [
     "mypy>=1.19.0",
