@@ -5,7 +5,7 @@ from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 
-from telegram import InputMediaVideo, Update
+from telegram import InputMediaPhoto, InputMediaVideo, Update
 
 from ig_reel_downloader.downloaders.base import DownloadFailureReason
 from ig_reel_downloader.repository.models import MediaItem
@@ -34,10 +34,8 @@ class TelegramMediaRenderer:
         update: Update,
         media_items: list[MediaItem],
     ) -> list[MediaRenderResult]:
-        unsupported = [
-            item for item in media_items if not _is_supported_single_video(item)
-        ]
-        supported = [item for item in media_items if _is_supported_single_video(item)]
+        unsupported = [item for item in media_items if not _is_supported(item)]
+        supported = [item for item in media_items if _is_supported(item)]
         results = [
             MediaRenderResult(media=item, sent=False, failure_reason="unsupported")
             for item in unsupported
@@ -53,22 +51,39 @@ class TelegramMediaRenderer:
                 for item in supported
             ]
 
-        if len(supported) == 1:
+        if len(supported) == 1 and len(supported[0].assets) == 1:
             item = supported[0]
-            await chat.send_video(
-                item.assets[0].filepath,
-                caption=_format_caption(item),
-                write_timeout=self.telegram_media_write_timeout,
-                read_timeout=self.telegram_read_timeout,
-            )
+            asset = item.assets[0]
+            if asset.asset_type == "video":
+                await chat.send_video(
+                    asset.filepath,
+                    caption=_format_caption(item),
+                    write_timeout=self.telegram_media_write_timeout,
+                    read_timeout=self.telegram_read_timeout,
+                )
+            else:
+                await chat.send_photo(
+                    asset.filepath,
+                    caption=_format_caption(item),
+                    write_timeout=self.telegram_media_write_timeout,
+                    read_timeout=self.telegram_read_timeout,
+                )
         else:
             with ExitStack() as stack:
-                medias = [
-                    InputMediaVideo(
-                        stack.enter_context(Path(item.assets[0].filepath).open("rb"))
-                    )
-                    for item in supported
-                ]
+                # Build flat list of all assets across all supported items,
+                # ordered by media item index then asset_index.
+                medias: list[InputMediaVideo | InputMediaPhoto] = []
+                for item in supported:
+                    for asset in sorted(item.assets, key=lambda a: a.asset_index):
+                        fp = stack.enter_context(Path(asset.filepath).open("rb"))
+                        caption = _format_caption(item) if not medias else None
+                        if asset.asset_type == "video":
+                            media: InputMediaVideo | InputMediaPhoto = InputMediaVideo(
+                                fp, caption=caption
+                            )
+                        else:
+                            media = InputMediaPhoto(fp, caption=caption)
+                        medias.append(media)
                 await chat.send_media_group(
                     medias,
                     write_timeout=self.telegram_media_write_timeout,
@@ -79,8 +94,10 @@ class TelegramMediaRenderer:
         ]
 
 
-def _is_supported_single_video(media: MediaItem) -> bool:
-    return len(media.assets) == 1 and media.assets[0].asset_type == "video"
+def _is_supported(media: MediaItem) -> bool:
+    return bool(media.assets) and all(
+        asset.asset_type in {"video", "image"} for asset in media.assets
+    )
 
 
 def _format_caption(media: MediaItem) -> str:

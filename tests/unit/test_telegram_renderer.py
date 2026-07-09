@@ -37,6 +37,7 @@ def make_media(
 class FakeChat:
     def __init__(self) -> None:
         self.sent_videos: list[dict[str, Any]] = []
+        self.sent_photos: list[dict[str, Any]] = []
         self.sent_groups: list[dict[str, Any]] = []
         self.raise_timeout = False
 
@@ -44,6 +45,11 @@ class FakeChat:
         if self.raise_timeout:
             raise TimedOut("timeout")
         self.sent_videos.append({"video": video, **kwargs})
+
+    async def send_photo(self, photo: str, **kwargs: Any) -> None:
+        if self.raise_timeout:
+            raise TimedOut("timeout")
+        self.sent_photos.append({"photo": photo, **kwargs})
 
     async def send_media_group(self, media: list[Any], **kwargs: Any) -> None:
         if self.raise_timeout:
@@ -98,12 +104,55 @@ def test_renderer_sends_multiple_videos_as_media_group(tmp_path: Path) -> None:
     assert len(chat.sent_groups[0]["media"]) == 2
 
 
-def test_renderer_returns_unsupported_for_non_video_shape(tmp_path: Path) -> None:
-    image = MediaAsset(
-        asset_index=0,
-        asset_type="image",
-        filepath=str(tmp_path / "image.jpg"),
+def test_renderer_sends_single_image_with_caption(tmp_path: Path) -> None:
+    image_path = tmp_path / "image.jpg"
+    image_path.write_bytes(b"image")
+    image = MediaAsset(asset_index=0, asset_type="image", filepath=str(image_path))
+    chat = FakeChat()
+    renderer = TelegramMediaRenderer(
+        telegram_media_write_timeout=120,
+        telegram_read_timeout=30,
     )
+
+    results = asyncio.run(
+        renderer.render(FakeUpdate(chat), [make_media(str(image_path), assets=[image])])
+    )
+
+    assert [result.sent for result in results] == [True]
+    assert chat.sent_photos[0]["photo"] == str(image_path)
+    assert chat.sent_photos[0]["caption"] == "Title • ❤️ 12\n\nDescription"
+
+
+def test_renderer_sends_multi_asset_item_as_media_group(tmp_path: Path) -> None:
+    image_path = tmp_path / "image.jpg"
+    video_path = tmp_path / "video.mp4"
+    image_path.write_bytes(b"image")
+    video_path.write_bytes(b"video")
+    media = make_media(
+        str(video_path),
+        assets=[
+            MediaAsset(asset_index=0, asset_type="image", filepath=str(image_path)),
+            MediaAsset(asset_index=1, asset_type="video", filepath=str(video_path)),
+        ],
+    )
+    chat = FakeChat()
+    renderer = TelegramMediaRenderer(
+        telegram_media_write_timeout=120,
+        telegram_read_timeout=30,
+    )
+
+    results = asyncio.run(renderer.render(FakeUpdate(chat), [media]))
+
+    assert [result.sent for result in results] == [True]
+    assert len(chat.sent_groups) == 1
+    assert len(chat.sent_groups[0]["media"]) == 2
+    assert (
+        chat.sent_groups[0]["media"][0].caption
+        == "Title • ❤️ 12\n\nDescription"
+    )
+
+
+def test_renderer_returns_unsupported_for_empty_assets(tmp_path: Path) -> None:
     chat = FakeChat()
     renderer = TelegramMediaRenderer(
         telegram_media_write_timeout=120,
@@ -113,7 +162,7 @@ def test_renderer_returns_unsupported_for_non_video_shape(tmp_path: Path) -> Non
     results = asyncio.run(
         renderer.render(
             FakeUpdate(chat),
-            [make_media(str(tmp_path / "image.jpg"), assets=[image])],
+            [make_media(str(tmp_path / "nonexistent.mp4"), assets=[])],
         )
     )
 
@@ -121,6 +170,25 @@ def test_renderer_returns_unsupported_for_non_video_shape(tmp_path: Path) -> Non
     assert results[0].failure_reason == "unsupported"
     assert chat.sent_videos == []
     assert chat.sent_groups == []
+
+
+def test_renderer_propagates_timed_out_for_single_image(tmp_path: Path) -> None:
+    image_path = tmp_path / "image.jpg"
+    image_path.write_bytes(b"image")
+    image = MediaAsset(asset_index=0, asset_type="image", filepath=str(image_path))
+    chat = FakeChat()
+    chat.raise_timeout = True
+    renderer = TelegramMediaRenderer(
+        telegram_media_write_timeout=120,
+        telegram_read_timeout=30,
+    )
+
+    with pytest.raises(TimedOut):
+        asyncio.run(
+            renderer.render(
+                FakeUpdate(chat), [make_media(str(image_path), assets=[image])]
+            )
+        )
 
 
 def test_renderer_propagates_timed_out_for_app_friendly_message(
