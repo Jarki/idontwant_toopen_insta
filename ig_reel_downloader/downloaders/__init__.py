@@ -14,6 +14,7 @@ from .base import (
 from .instagram import InstagramPostDownloader, InstagramReelDownloader
 from .registry import DownloaderRegistry
 from .tiktok import TikTokDownloader
+from .youtube import YouTubeDownloader
 
 __all__ = [
     "DownloadContext",
@@ -31,4 +32,5 @@ __all__ = [
     "TikTokDownloader",
     "UrlCandidate",
     "UrlMatch",
+    "YouTubeDownloader",
 ]
