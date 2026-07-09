@@ -7,7 +7,7 @@ import pytest
 from telegram.error import TimedOut
 
 from ig_reel_downloader.repository.models import MediaAsset, MediaItem
-from ig_reel_downloader.telegram_renderer import TelegramMediaRenderer
+from ig_reel_downloader.telegram_renderer import TelegramMediaRenderer, _format_caption
 
 
 def make_media(
@@ -15,6 +15,7 @@ def make_media(
     *,
     assets: list[MediaAsset] | None = None,
     description: str | None = "Description",
+    title: str = "Title",
 ) -> MediaItem:
     now = datetime.datetime.now()
     return MediaItem(
@@ -23,7 +24,7 @@ def make_media(
         media_kind="reel",
         provider_item_id="ABC123",
         original_url="https://www.instagram.com/reel/ABC123",
-        title="Title",
+        title=title,
         description=description,
         metadata={"like_count": 12, "comments": []},
         assets=assets
@@ -202,3 +203,61 @@ def test_renderer_propagates_timed_out_for_app_friendly_message(
 
     with pytest.raises(TimedOut):
         asyncio.run(renderer.render(FakeUpdate(chat), [make_media(str(media_file))]))
+
+
+def test_format_caption_no_description() -> None:
+    media = make_media("fake.mp4", description=None)
+    assert _format_caption(media) == "Title • ❤️ 12"
+
+
+def test_format_caption_empty_description() -> None:
+    media = make_media("fake.mp4", description="")
+    assert _format_caption(media) == "Title • ❤️ 12"
+
+
+def test_format_caption_long_description_truncated() -> None:
+    media = make_media("fake.mp4", description="D" * 2000)
+    caption = _format_caption(media)
+    assert len(caption) == 1024
+    assert caption.startswith("Title • ❤️ 12")
+    assert caption.endswith("…")
+
+
+def test_format_caption_exact_boundary_no_truncation() -> None:
+    # Title (5) + likes (8) + \n\n (2) + 1009-char description = 1024 exactly
+    media = make_media("fake.mp4", description="D" * 1009)
+    caption = _format_caption(media)
+    assert caption == f"Title • ❤️ 12\n\n{'D' * 1009}"
+    assert len(caption) == 1024
+
+
+def test_format_caption_just_over_boundary_truncates_description() -> None:
+    media = make_media("fake.mp4", description="D" * 1010)
+    caption = _format_caption(media)
+    assert len(caption) == 1024
+    assert caption.startswith("Title • ❤️ 12\n\n")
+    assert caption.endswith("…")
+
+
+def test_format_caption_long_title_truncates_title() -> None:
+    media = make_media("fake.mp4", title="T" * 1020, description=None)
+    caption = _format_caption(media)
+    assert len(caption) == 1024
+    assert caption.startswith("T" * 1015 + "…")
+    assert caption.endswith(" • ❤️ 12")
+
+
+def test_format_caption_long_title_drops_description() -> None:
+    media = make_media("fake.mp4", title="T" * 1017, description="D" * 100)
+    caption = _format_caption(media)
+    assert len(caption) == 1024
+    assert caption.startswith("T" * 1015 + "…")
+    assert "\n\n" not in caption
+    assert caption.endswith(" • ❤️ 12")
+
+
+def test_format_caption_title_exact_boundary_no_truncation() -> None:
+    media = make_media("fake.mp4", title="T" * 1016, description=None)
+    caption = _format_caption(media)
+    assert caption == f"{'T' * 1016} • ❤️ 12"
+    assert len(caption) == 1024
