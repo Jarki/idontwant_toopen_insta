@@ -41,7 +41,7 @@ Before merging a feature branch:
 
 1. Run the relevant focused checks locally while iterating.
 2. Run `uv run poe verify` before final handoff for code changes.
-3. Open a pull request into `main`.
+3. Open a pull request into `main`, using `.github/PULL_REQUEST_TEMPLATE.md` as the PR body structure.
 4. Wait for the GitHub Actions quality gate to pass.
 5. Squash-merge into `main`.
 
