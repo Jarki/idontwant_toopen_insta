@@ -146,10 +146,7 @@ def test_renderer_sends_multi_asset_item_as_media_group(tmp_path: Path) -> None:
     assert [result.sent for result in results] == [True]
     assert len(chat.sent_groups) == 1
     assert len(chat.sent_groups[0]["media"]) == 2
-    assert (
-        chat.sent_groups[0]["media"][0].caption
-        == "Title • ❤️ 12\n\nDescription"
-    )
+    assert chat.sent_groups[0]["media"][0].caption == "Title • ❤️ 12\n\nDescription"
 
 
 def test_renderer_returns_unsupported_for_empty_assets(tmp_path: Path) -> None:
