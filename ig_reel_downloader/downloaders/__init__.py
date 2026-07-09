@@ -13,6 +13,7 @@ from .base import (
 )
 from .instagram import InstagramPostDownloader, InstagramReelDownloader
 from .registry import DownloaderRegistry
+from .tiktok import TikTokDownloader
 
 __all__ = [
     "DownloadContext",
@@ -27,6 +28,7 @@ __all__ = [
     "ResolveResult",
     "ResolvedMediaRequest",
     "ResolvedUrlMatch",
+    "TikTokDownloader",
     "UrlCandidate",
     "UrlMatch",
 ]
