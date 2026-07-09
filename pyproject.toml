@@ -49,6 +49,14 @@ db-revision = "alembic revision --autogenerate -m"
 # Run the bot
 bot = "python -m ig_reel_downloader"
 
+# Trigger the Pi dev deployment via workflow_dispatch.
+# Agents must not run this task unless the user explicitly asks for a deployment.
+deploy = {shell = """
+  set -euo pipefail
+  echo "Triggering dev deployment from $workflow_ref (image: $image_tag, compose: $compose_ref)..."
+  gh workflow run deploy-dev.yml --ref "$workflow_ref" -f image_tag="$image_tag" -f compose_ref="$compose_ref"
+""", args = {image_tag = {default = "latest", help = "GHCR image tag to deploy"}, compose_ref = {default = "main", help = "Git ref to curl Compose files from"}, workflow_ref = {default = "main", help = "Git ref containing deploy-dev.yml"}}}
+
 [dependency-groups]
 dev = [
     "mypy>=1.19.0",
