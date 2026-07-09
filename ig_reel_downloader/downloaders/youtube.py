@@ -32,12 +32,13 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 URL_PATTERN = re.compile(
-    r"(?P<url>https://(?:www\.|m\.)?(?:youtube\.com|youtu\.be)/[^\s<>()]+)"
+    r"(?P<url>https://(?:www\.|m\.)?(?:youtube\.com|youtu\.be)/[^\s<>()]+)",
+    re.IGNORECASE,
 )
 YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com"}
 SHORTS_PATH_PREFIX = "/shorts/"
 MAX_VIDEO_DURATION_SECONDS = 60
-TRAILING_PUNCTUATION = ".,)"
+TRAILING_PUNCTUATION = ".,;:!?\"')]/"
 
 
 class YouTubeDownloader:
@@ -108,7 +109,7 @@ class YouTubeDownloader:
                 local_ref=ProviderItemRef(self.provider, "short", short_id),
             )
 
-        if parsed.path != "/watch":
+        if parsed.path.rstrip("/") != "/watch":
             return None
         watch_video_id = _watch_video_id(parsed.query)
         if watch_video_id is None:

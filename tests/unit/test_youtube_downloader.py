@@ -9,6 +9,7 @@ from ig_reel_downloader.downloaders.base import (
     ResolutionError,
     ResolvedMediaRequest,
 )
+from ig_reel_downloader.downloaders.registry import DownloaderRegistry
 from ig_reel_downloader.downloaders.youtube import YouTubeDownloader
 
 
@@ -58,6 +59,83 @@ def test_youtube_extracts_normal_video_candidates(url: str, expected: str) -> No
     assert len(candidates) == 1
     assert candidates[0].link_type == "video"
     assert candidates[0].normalized_url == expected
+    assert candidates[0].local_ref == ProviderItemRef("youtube", "video", "ABC123")
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        (
+            "https://m.youtube.com/watch/?v=ABC123",
+            "https://www.youtube.com/watch?v=ABC123",
+        ),
+        (
+            "https://www.youtube.com/watch/?v=ABC123&feature=share",
+            "https://www.youtube.com/watch?v=ABC123",
+        ),
+    ],
+)
+def test_youtube_extracts_watch_url_with_trailing_slash(
+    url: str, expected: str
+) -> None:
+    downloader = YouTubeDownloader()
+
+    candidates = downloader.extract_candidates(url)
+
+    assert len(candidates) == 1
+    assert candidates[0].link_type == "video"
+    assert candidates[0].normalized_url == expected
+    assert candidates[0].local_ref == ProviderItemRef("youtube", "video", "ABC123")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://m.youtube.com/watch?v=ABC123!",
+        "https://m.youtube.com/watch?v=ABC123?",
+        "https://m.youtube.com/watch?v=ABC123;",
+        "https://m.youtube.com/shorts/ABC123!",
+        "https://www.youtube.com/watch?v=ABC123!",
+        "https://youtu.be/ABC123!",
+    ],
+)
+def test_youtube_extracts_url_with_trailing_punctuation(url: str) -> None:
+    downloader = YouTubeDownloader()
+
+    candidates = downloader.extract_candidates(url)
+
+    assert len(candidates) == 1
+    assert candidates[0].url == url.rstrip(".,;:!?\"')]/")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://M.youtube.com/watch?v=ABC123",
+        "https://m.YOUTUBE.COM/watch?v=ABC123",
+        "https://YOUTU.BE/ABC123",
+    ],
+)
+def test_youtube_extracts_url_case_insensitive(url: str) -> None:
+    downloader = YouTubeDownloader()
+
+    candidates = downloader.extract_candidates(url)
+
+    assert len(candidates) == 1
+
+
+def test_youtube_mobile_url_passes_through_registry() -> None:
+    downloader = YouTubeDownloader()
+    registry = DownloaderRegistry([downloader])
+
+    candidates = registry.extract_candidates(
+        "Check out https://m.youtube.com/watch?v=ABC123"
+    )
+
+    assert len(candidates) == 1
+    assert candidates[0].provider == "youtube"
+    assert candidates[0].link_type == "video"
+    assert candidates[0].normalized_url == "https://www.youtube.com/watch?v=ABC123"
     assert candidates[0].local_ref == ProviderItemRef("youtube", "video", "ABC123")
 
 
