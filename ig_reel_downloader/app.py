@@ -24,9 +24,7 @@ DEFAULT_TELEGRAM_MEDIA_WRITE_TIMEOUT = 120.0
 
 def _duration_summary(media: models.MediaItem) -> str:
     durations = [
-        f"{a.asset_type}={a.duration_seconds or '?'}s"
-        for a in media.assets
-        if a.asset_type == "video"
+        f"{a.duration_seconds or '?'}s" for a in media.assets if a.asset_type == "video"
     ]
     return ", ".join(durations) if durations else "no video"
 
@@ -95,7 +93,7 @@ class IgReelDownloaderApp:
             return
 
         logger.info(
-            "Identified %d media request(s) from %s: %s",
+            "Received %d media request(s) from %s: %s",
             len(candidates),
             sender_id,
             [f"{c.provider}:{c.link_type}" for c in candidates],

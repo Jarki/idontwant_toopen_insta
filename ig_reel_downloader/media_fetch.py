@@ -57,7 +57,7 @@ class MediaFetchService:
             ref.provider_item_id,
         )
         if cached is not None and _is_reusable(cached):
-            logger.info(
+            logger.debug(
                 "Cache hit: %s:%s %s",
                 cached.provider,
                 cached.media_kind,
@@ -67,7 +67,7 @@ class MediaFetchService:
                 media=cached, url=request.normalized_url or request.url
             )
 
-        logger.info(
+        logger.debug(
             "Downloading %s:%s %s...",
             ref.provider,
             ref.media_kind,
@@ -107,7 +107,7 @@ class MediaFetchService:
             )
 
         duration_str = _duration_str(download_result.media)
-        logger.info(
+        logger.debug(
             "Downloaded %s:%s %s%s",
             download_result.media.provider,
             download_result.media.media_kind,
