@@ -25,12 +25,27 @@ def test_youtube_extracts_shorts_url() -> None:
     assert candidates[0].local_ref == ProviderItemRef("youtube", "short", "ABC123")
 
 
+def test_youtube_extracts_mobile_shorts_url() -> None:
+    downloader = YouTubeDownloader()
+
+    candidates = downloader.extract_candidates("https://m.youtube.com/shorts/ABC123")
+
+    assert len(candidates) == 1
+    assert candidates[0].link_type == "short"
+    assert candidates[0].normalized_url == "https://www.youtube.com/shorts/ABC123"
+    assert candidates[0].local_ref == ProviderItemRef("youtube", "short", "ABC123")
+
+
 @pytest.mark.parametrize(
     ("url", "expected"),
     [
         ("https://youtu.be/ABC123?si=tracking", "https://youtu.be/ABC123"),
         (
             "https://www.youtube.com/watch?v=ABC123&feature=share&utm_source=x",
+            "https://www.youtube.com/watch?v=ABC123",
+        ),
+        (
+            "https://m.youtube.com/watch?v=ABC123&feature=share",
             "https://www.youtube.com/watch?v=ABC123",
         ),
     ],

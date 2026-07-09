@@ -32,9 +32,9 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 URL_PATTERN = re.compile(
-    r"(?P<url>https://(?:www\.)?(?:youtube\.com|youtu\.be)/[^\s<>()]+)"
+    r"(?P<url>https://(?:www\.|m\.)?(?:youtube\.com|youtu\.be)/[^\s<>()]+)"
 )
-YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com"}
+YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com"}
 SHORTS_PATH_PREFIX = "/shorts/"
 MAX_VIDEO_DURATION_SECONDS = 60
 TRAILING_PUNCTUATION = ".,)"
@@ -69,8 +69,9 @@ class YouTubeDownloader:
     ) -> UrlCandidate | None:
         parsed = urlparse(url)
         host = parsed.netloc.lower()
+        canonical_host = "www.youtube.com" if host == "m.youtube.com" else host
 
-        if host == "youtu.be":
+        if canonical_host == "youtu.be":
             parts = _path_parts(parsed.path)
             if len(parts) != 1:
                 return None
@@ -88,7 +89,7 @@ class YouTubeDownloader:
                 local_ref=ProviderItemRef(self.provider, "video", video_id),
             )
 
-        if host not in YOUTUBE_HOSTS:
+        if canonical_host not in YOUTUBE_HOSTS:
             return None
 
         parts = _path_parts(parsed.path)
@@ -103,7 +104,7 @@ class YouTubeDownloader:
                 downloader=self,
                 provider=self.provider,
                 link_type="short",
-                normalized_url=f"https://{host}/shorts/{short_id}",
+                normalized_url=f"https://{canonical_host}/shorts/{short_id}",
                 local_ref=ProviderItemRef(self.provider, "short", short_id),
             )
 
@@ -119,7 +120,7 @@ class YouTubeDownloader:
             downloader=self,
             provider=self.provider,
             link_type="video",
-            normalized_url=f"https://{host}/watch?v={watch_video_id}",
+            normalized_url=f"https://{canonical_host}/watch?v={watch_video_id}",
             local_ref=ProviderItemRef(self.provider, "video", watch_video_id),
         )
 
