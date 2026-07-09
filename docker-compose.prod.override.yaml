@@ -1,0 +1,8 @@
+services:
+  migrate:
+    build: !reset null
+    image: ghcr.io/jarki/idontwant_toopen_insta:${IMAGE_TAG:-prod}
+
+  downloader:
+    build: !reset null
+    image: ghcr.io/jarki/idontwant_toopen_insta:${IMAGE_TAG:-prod}

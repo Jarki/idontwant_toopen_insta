@@ -41,6 +41,7 @@ uv run poe verify        # (agents) auto-format + lint-fix + typecheck + test
 uv run poe check         # (CI only) read-only format-check + lint + typecheck + test
 uv run poe test          # run tests only
 uv run poe bot           # run the bot locally
+uv run poe deploy        # (dev only) build & deploy the current branch to the dev environment on the Pi
 ```
 
 ## Critical constraints
@@ -57,6 +58,7 @@ Preserve these unless the user explicitly approves a change:
 - Large Telegram uploads may time out; timeout behavior should stay user-friendly.
 - URL parsing is intentionally narrow unless broadening support is part of the task.
 - Avoid adding queues, web servers, schedulers, ORMs, or new infrastructure unless requested.
+- **Agents are only allowed to deploy to dev.** Never trigger a prod deployment (`deploy-prod`, `Deploy Prod`, or the `prod` image tag). Prod deployments are done manually by the user from `main`.
 
 ## Project task memory
 
