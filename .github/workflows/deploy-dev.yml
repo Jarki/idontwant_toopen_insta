@@ -1,0 +1,112 @@
+name: Deploy Dev
+
+on:
+  workflow_dispatch:
+    inputs:
+      image_tag:
+        description: "GHCR image tag to deploy"
+        required: false
+        default: "latest"
+        type: string
+      compose_ref:
+        description: "Git ref to curl Compose files from"
+        required: false
+        default: "main"
+        type: string
+
+permissions:
+  contents: read
+  packages: read
+
+jobs:
+  deploy:
+    name: Deploy dev bot
+    runs-on: [self-hosted, pi]
+
+    steps:
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Prepare deployment directory
+        run: |
+          set -euo pipefail
+          deploy_dir="${HOME}/deploy/ig-reel-downloader-dev"
+          mkdir -p "${deploy_dir}/data" "${deploy_dir}/output" "${deploy_dir}/assets"
+
+          if [ ! -f "${deploy_dir}/.env" ]; then
+            echo "::error file=${deploy_dir}/.env::Create runner-local .env before deploying."
+            exit 1
+          fi
+
+      - name: Fetch Compose files
+        env:
+          COMPOSE_REF: ${{ inputs.compose_ref }}
+        run: |
+          set -euo pipefail
+          deploy_dir="${HOME}/deploy/ig-reel-downloader-dev"
+          raw_base="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${COMPOSE_REF}"
+
+          curl -fsSL "${raw_base}/docker-compose.yaml" \
+            -o "${deploy_dir}/docker-compose.yaml"
+          curl -fsSL "${raw_base}/docker-compose.dev.override.yaml" \
+            -o "${deploy_dir}/docker-compose.dev.override.yaml"
+
+      - name: Pull image
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          deploy_dir="${HOME}/deploy/ig-reel-downloader-dev"
+          cd "${deploy_dir}"
+
+          docker compose \
+            -p ig-reel-downloader-dev \
+            -f docker-compose.yaml \
+            -f docker-compose.dev.override.yaml \
+            pull
+
+      - name: Run migrations
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          deploy_dir="${HOME}/deploy/ig-reel-downloader-dev"
+          cd "${deploy_dir}"
+
+          docker compose \
+            -p ig-reel-downloader-dev \
+            -f docker-compose.yaml \
+            -f docker-compose.dev.override.yaml \
+            run --rm migrate
+
+      - name: Start downloader
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          deploy_dir="${HOME}/deploy/ig-reel-downloader-dev"
+          cd "${deploy_dir}"
+
+          docker compose \
+            -p ig-reel-downloader-dev \
+            -f docker-compose.yaml \
+            -f docker-compose.dev.override.yaml \
+            up -d --no-deps --remove-orphans downloader
+
+      - name: Show status
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          deploy_dir="${HOME}/deploy/ig-reel-downloader-dev"
+          cd "${deploy_dir}"
+
+          docker compose \
+            -p ig-reel-downloader-dev \
+            -f docker-compose.yaml \
+            -f docker-compose.dev.override.yaml \
+            ps
