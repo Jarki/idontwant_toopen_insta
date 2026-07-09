@@ -101,7 +101,24 @@ def _is_supported(media: MediaItem) -> bool:
 
 
 def _format_caption(media: MediaItem) -> str:
+    max_caption = 1024
     like_count = int(media.metadata.get("like_count") or 0)
     likes = f" • ❤️ {like_count}"
-    description = f"\n\n{media.description}" if media.description else ""
-    return f"{media.title}{likes}{description}"
+
+    title = media.title
+    if len(title) + len(likes) > max_caption:
+        max_title = max_caption - len(likes) - 1
+        title = (title[:max_title] + "…") if max_title > 0 else "…"
+
+    caption = f"{title}{likes}"
+
+    if media.description:
+        desc_with_prefix = f"\n\n{media.description}"
+        if len(caption) + len(desc_with_prefix) <= max_caption:
+            caption += desc_with_prefix
+        else:
+            room = max_caption - len(caption) - 2
+            if room >= 1:
+                caption += f"\n\n{media.description[: room - 1]}…"
+
+    return caption
