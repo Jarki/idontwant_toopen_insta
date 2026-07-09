@@ -43,7 +43,9 @@ Before merging a feature branch:
 2. Run `uv run poe verify` before final handoff for code changes.
 3. Open a pull request into `main`.
 4. Wait for the GitHub Actions quality gate to pass.
-5. Merge into `main`.
+5. Squash-merge into `main`.
+
+Use squash merges for PRs so `main` keeps one concise Conventional Commit-style commit per completed change. The squash commit title should follow the commit-message guidance below.
 
 After merge, the same quality gate runs on `main` to verify the final branch state.
 
