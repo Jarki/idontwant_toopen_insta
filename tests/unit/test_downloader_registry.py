@@ -6,7 +6,9 @@ from ig_reel_downloader.downloaders.base import (
     DownloadContext,
     MediaDownloadResult,
     ProviderItemRef,
-    UrlMatch,
+    ResolvedMediaRequest,
+    ResolveResult,
+    UrlCandidate,
 )
 from ig_reel_downloader.downloaders.registry import DownloaderRegistry
 
@@ -17,19 +19,39 @@ class FakeDownloader:
     media_kind: str
     matches: list[tuple[str, int, int, str | None]]
 
-    def extract_urls(self, text: str) -> list[UrlMatch]:
+    def extract_candidates(self, text: str) -> list[UrlCandidate]:
         return [
-            UrlMatch(url=url, start=start, end=end, downloader=self)
-            for url, start, end, _ in self.matches
+            UrlCandidate(
+                url=url,
+                start=start,
+                end=end,
+                downloader=self,
+                provider=self.provider,
+                link_type=self.media_kind,
+                local_ref=ProviderItemRef(self.provider, self.media_kind, item_id)
+                if item_id is not None
+                else None,
+            )
+            for url, start, end, item_id in self.matches
         ]
 
-    def get_provider_item_ref(self, url: str) -> ProviderItemRef | None:
-        for match_url, _, _, item_id in self.matches:
-            if match_url == url and item_id is not None:
-                return ProviderItemRef(self.provider, self.media_kind, item_id)
-        return None
+    def resolve(self, candidate: UrlCandidate) -> ResolveResult:
+        if candidate.local_ref is None:
+            return ResolveResult(request=None, failure_reason="unsupported")
+        return ResolveResult(
+            request=ResolvedMediaRequest(
+                url=candidate.url,
+                downloader=self,
+                provider_item_ref=candidate.local_ref,
+                normalized_url=candidate.normalized_url,
+            )
+        )
 
-    def download(self, url: str, context: DownloadContext) -> MediaDownloadResult:
+    def download(
+        self,
+        request: ResolvedMediaRequest,
+        context: DownloadContext,
+    ) -> MediaDownloadResult:
         return MediaDownloadResult(media=None, failure_reason="unknown")
 
 
@@ -38,9 +60,9 @@ def test_registry_preserves_message_order_after_provider_iteration() -> None:
     earlier_text_match = FakeDownloader("earlier", "clip", [("early-url", 5, 14, "1")])
     registry = DownloaderRegistry([later_provider, earlier_text_match])
 
-    matches = registry.extract_matches("text with multiple urls")
+    candidates = registry.extract_candidates("text with multiple urls")
 
-    assert [match.url for match in matches] == ["early-url", "later-url"]
+    assert [candidate.url for candidate in candidates] == ["early-url", "later-url"]
 
 
 def test_registry_raises_on_overlapping_matches_from_different_downloaders() -> None:
@@ -49,7 +71,7 @@ def test_registry_raises_on_overlapping_matches_from_different_downloaders() -> 
     registry = DownloaderRegistry([first, second])
 
     with pytest.raises(ValueError, match="Overlapping URL matches detected"):
-        registry.extract_matches("overlap text")
+        registry.extract_candidates("overlap text")
 
 
 def test_registry_raises_on_overlapping_matches_from_same_downloader() -> None:
@@ -61,7 +83,7 @@ def test_registry_raises_on_overlapping_matches_from_same_downloader() -> None:
     registry = DownloaderRegistry([downloader])
 
     with pytest.raises(ValueError, match="Overlapping URL matches detected"):
-        registry.extract_matches("overlap text")
+        registry.extract_candidates("overlap text")
 
 
 def test_registry_deduplicates_by_provider_identity() -> None:
@@ -72,12 +94,41 @@ def test_registry_deduplicates_by_provider_identity() -> None:
     )
     registry = DownloaderRegistry([downloader])
 
-    matches = registry.extract_matches("duplicate text")
+    candidates = registry.extract_candidates("duplicate text")
 
-    assert [match.url for match in matches] == ["first-url"]
+    assert [candidate.url for candidate in candidates] == ["first-url"]
 
 
-def test_registry_filters_unresolvable_matches() -> None:
+def test_registry_returns_candidates_without_requiring_identity() -> None:
+    unresolved = FakeDownloader(
+        "tiktok",
+        "share",
+        [("https://vm.tiktok.com/abc/", 5, 31, None)],
+    )
+    registry = DownloaderRegistry([unresolved])
+
+    candidates = registry.extract_candidates("see https://vm.tiktok.com/abc/ now")
+
+    assert len(candidates) == 1
+    assert candidates[0].url == "https://vm.tiktok.com/abc/"
+    assert candidates[0].link_type == "share"
+    assert candidates[0].local_ref is None
+
+
+def test_registry_deduplicates_only_when_local_identity_exists() -> None:
+    downloader = FakeDownloader(
+        "instagram",
+        "reel",
+        [("first-url", 0, 9, "ABC"), ("duplicate-url", 20, 33, "ABC")],
+    )
+    registry = DownloaderRegistry([downloader])
+
+    candidates = registry.extract_candidates("duplicate text")
+
+    assert [candidate.url for candidate in candidates] == ["first-url"]
+
+
+def test_extract_matches_compatibility_filters_unresolvable_candidates() -> None:
     downloader = FakeDownloader("instagram", "reel", [("bad-url", 0, 7, None)])
     registry = DownloaderRegistry([downloader])
 

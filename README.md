@@ -1,6 +1,6 @@
 # Instagram Reel Downloader
 
-This is a Telegram bot that downloads Instagram reels.
+This is a Telegram bot that downloads short videos and Instagram post media from supported social links.
 
 ## Installation
 
@@ -34,7 +34,13 @@ docker-compose up -d --build
 
 ## Usage
 
-Send an instagram reel link to the bot and it will download the reel.
+Send a supported link to the bot and it will download the media when supported:
+
+- Instagram Reels
+- Instagram posts, including carousel posts
+- TikTok videos
+- YouTube Shorts
+- Normal YouTube videos under 60 seconds
 
 ## Database migrations
 

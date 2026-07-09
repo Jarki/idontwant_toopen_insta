@@ -4,10 +4,10 @@ _Last reviewed: 2026-07-08_
 
 ## Overview
 
-`ig-reel-downloader` is a small Telegram bot that lets users send Instagram Reel links and receive the downloaded video back in Telegram. The app is implemented as a Python package with a single runtime process:
+`ig-reel-downloader` is a small Telegram bot that lets users send supported social media links and receive the downloaded media back in Telegram. The app is implemented as a Python package with a single runtime process:
 
 - `python-telegram-bot` handles Telegram long-polling and message delivery.
-- `yt-dlp` extracts Reel metadata and downloads the media file.
+- `yt-dlp` extracts metadata and downloads media files for Instagram, TikTok, and YouTube.
 - SQLite caches generic media metadata and local file paths for recently downloaded items.
 - Alembic manages SQLite schema creation and migrations.
 - Docker Compose runs migrations in a one-shot container before starting the bot with persistent `data/`, `output/`, `assets/`, and `.env` mounts.
@@ -19,8 +19,8 @@ Telegram text
     │
     ▼
 DownloaderRegistry
-    ├── extracts provider URL spans
-    ├── resolves ProviderItemRef identity
+    ├── extracts provider URL candidates
+    ├── resolves candidates with resolve()
     ├── resolves overlaps
     └── deduplicates by provider/media/item identity
     │
@@ -53,8 +53,11 @@ TelegramMediaRenderer
 │   ├── utils.py                 # Download error classification helpers
 │   ├── downloaders/
 │   │   ├── base.py              # Downloader Protocol and shared download models
-│   │   ├── instagram.py         # Instagram Reel URL matching and yt-dlp downloader
-│   │   └── registry.py          # URL match resolution, overlap handling, deduplication
+│   │   ├── instagram.py         # Instagram Reel and Post URL matching and yt-dlp downloader
+│   │   ├── tiktok.py            # TikTok video downloader with share-link resolution
+│   │   ├── youtube.py           # YouTube Shorts and video downloader with duration gate
+│   │   ├── yt_dlp_support.py    # Shared yt-dlp options, asset mapping, error helpers
+│   │   └── registry.py          # URL candidate extraction, overlap handling, deduplication
 │   └── repository/
 │       ├── base.py              # Repository Protocol
 │       ├── models.py            # Pydantic domain models
@@ -105,7 +108,7 @@ MessageHandler(filters.TEXT, self._message_handler)
 
 For each text message:
 
-1. `DownloaderRegistry.extract_matches()` asks registered downloaders to extract URL spans.
+1. `DownloaderRegistry.extract_candidates()` asks registered downloaders to extract `UrlCandidate` URL spans, which are then resolved through each downloader's `resolve()` method.
 2. The registry resolves provider identities with `ProviderItemRef`, resolves overlapping spans, and deduplicates while preserving message order by provider/media/item identity.
 3. `IgReelDownloaderApp` offloads each `MediaFetchService.fetch(match)` call through `asyncio.to_thread(...)` because `yt-dlp` and SQLite operations are blocking/synchronous.
 4. `MediaFetchService`:
@@ -120,6 +123,10 @@ For each text message:
 6. Failed downloads or unsupported rendered items are summarized as chat messages.
 7. Telegram upload `TimedOut` errors are logged and reported to the user with a friendly timeout message.
 
+### Quiet-skip behavior
+
+Normal YouTube videos over 60 seconds are skipped without producing any bot response. `YouTubeDownloader.resolve()` returns `ResolveResult(request=None, skipped=True)` for these videos, and `IgReelDownloaderApp` ignores skipped fetch results without sending error messages to the chat.
+
 ## Downloading and URL handling
 
 Downloader interfaces live in `downloaders/base.py`:
@@ -128,7 +135,7 @@ Downloader interfaces live in `downloaders/base.py`:
 - `ProviderItemRef` identifies media as `provider`, `media_kind`, and `provider_item_id`; its cache id is `provider:media_kind:provider_item_id`.
 - `MediaDownloadResult` normalizes successful `MediaItem` downloads and failure reasons.
 
-`downloaders/instagram.py` contains the current `yt-dlp` integration:
+`downloaders/instagram.py` contains the Instagram Reel and Post `yt-dlp` integration:
 
 - URL matching intentionally targets `https://www.instagram.com/reel/<id>` links specifically.
 - `InstagramReelDownloader.download()` builds `yt-dlp` options:
@@ -313,7 +320,7 @@ The current test suite includes unit tests for downloader registry, Instagram UR
 - Multiple-video responses use a Telegram media group without per-item captions; single-video responses include the formatted caption.
 - Cache invalidation is time-based (`24h`) and file-existence-based.
 - Cleanup only removes media files; it does not prune stale SQLite rows.
-- URL matching currently targets `https://www.instagram.com/reel/...` links specifically.
+- URL matching targets Instagram Reels, Instagram Posts, TikTok canonical/share links, YouTube Shorts, and YouTube Short/standard video links specifically.
 - Auth failure detection is based on a specific `yt-dlp` Instagram error message.
 
 ## Extension points

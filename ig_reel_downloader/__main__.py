@@ -48,10 +48,21 @@ def main() -> None:
     Path(db_path).parent.mkdir(exist_ok=True)
 
     repo = ig_reel_downloader.repository.sqlite.SqliteRepository(db_path)
-    downloader = ig_reel_downloader.downloaders.InstagramReelDownloader(
-        cookie_filepath=cookie_filepath,
-    )
-    registry = ig_reel_downloader.downloaders.DownloaderRegistry([downloader])
+    downloaders: list[ig_reel_downloader.downloaders.Downloader] = [
+        ig_reel_downloader.downloaders.InstagramReelDownloader(
+            cookie_filepath=cookie_filepath
+        ),
+        ig_reel_downloader.downloaders.InstagramPostDownloader(
+            cookie_filepath=cookie_filepath
+        ),
+        ig_reel_downloader.downloaders.TikTokDownloader(
+            cookie_filepath=cookie_filepath
+        ),
+        ig_reel_downloader.downloaders.YouTubeDownloader(
+            cookie_filepath=cookie_filepath
+        ),
+    ]
+    registry = ig_reel_downloader.downloaders.DownloaderRegistry(downloaders)
     fetch_service = ig_reel_downloader.media_fetch.MediaFetchService(
         repo,
         output_dir=output_dir,

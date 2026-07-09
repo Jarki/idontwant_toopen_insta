@@ -73,6 +73,21 @@ def test_main_does_not_run_migrations(monkeypatch, tmp_path: Path) -> None:
     )
     monkeypatch.setattr(
         main_module.ig_reel_downloader.downloaders,
+        "InstagramPostDownloader",
+        FakeDownloader,
+    )
+    monkeypatch.setattr(
+        main_module.ig_reel_downloader.downloaders,
+        "TikTokDownloader",
+        FakeDownloader,
+    )
+    monkeypatch.setattr(
+        main_module.ig_reel_downloader.downloaders,
+        "YouTubeDownloader",
+        FakeDownloader,
+    )
+    monkeypatch.setattr(
+        main_module.ig_reel_downloader.downloaders,
         "DownloaderRegistry",
         FakeRegistry,
     )
@@ -99,6 +114,12 @@ def test_main_does_not_run_migrations(monkeypatch, tmp_path: Path) -> None:
     assert app.bot_token == "telegram-token"
     assert app.fetch_service.repository.db_path == "data/reels.db"
     assert app.fetch_service.output_dir == Path("output")
+    assert [d.__class__.__name__ for d in app.registry.downloaders] == [
+        "FakeDownloader",
+        "FakeDownloader",
+        "FakeDownloader",
+        "FakeDownloader",
+    ]
     assert app.registry.downloaders[0].cookie_filepath == Path("assets/cookies.txt")
     assert app.renderer.telegram_media_write_timeout == 120.0
     assert app.renderer.telegram_read_timeout == 30.0

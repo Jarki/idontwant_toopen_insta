@@ -1,11 +1,17 @@
 import asyncio
 import datetime
-from typing import Any
 
 import pytest
 
 from ig_reel_downloader import app as app_module
-from ig_reel_downloader.downloaders import ProviderItemRef, ResolvedUrlMatch
+from ig_reel_downloader.downloaders import (
+    DownloadContext,
+    MediaDownloadResult,
+    ProviderItemRef,
+    ResolvedMediaRequest,
+    ResolveResult,
+    UrlCandidate,
+)
 from ig_reel_downloader.media_fetch import MediaFetchResult
 from ig_reel_downloader.repository.models import MediaAsset, MediaItem
 from ig_reel_downloader.telegram_renderer import MediaRenderResult
@@ -63,17 +69,17 @@ class FakeUpdate:
 class FakeRegistry:
     def __init__(
         self,
-        matches: list[ResolvedUrlMatch],
+        candidates: list[UrlCandidate],
         events: list[str],
     ) -> None:
-        self.matches = matches
+        self.candidates = candidates
         self.events = events
         self.texts: list[str] = []
 
-    def extract_matches(self, text: str) -> list[ResolvedUrlMatch]:
+    def extract_candidates(self, text: str) -> list[UrlCandidate]:
         self.events.append("registry")
         self.texts.append(text)
-        return self.matches
+        return self.candidates
 
 
 class FakeFetchService:
@@ -84,12 +90,12 @@ class FakeFetchService:
     ) -> None:
         self.results = results
         self.events = events
-        self.matches: list[ResolvedUrlMatch] = []
+        self.candidates: list[UrlCandidate] = []
 
-    def fetch(self, match: ResolvedUrlMatch) -> MediaFetchResult:
-        self.events.append(f"fetch:{match.url}")
-        self.matches.append(match)
-        return self.results[match.url]
+    def fetch(self, candidate: UrlCandidate) -> MediaFetchResult:
+        self.events.append(f"fetch:{candidate.url}")
+        self.candidates.append(candidate)
+        return self.results[candidate.url]
 
 
 class FakeRenderer:
@@ -113,11 +119,25 @@ class FakeDownloader:
     provider = "instagram"
     media_kind = "reel"
 
-    def extract_urls(self, text: str) -> list[Any]:
+    def extract_candidates(self, text: str) -> list[UrlCandidate]:
         return []
 
-    def get_provider_item_ref(self, url: str) -> ProviderItemRef | None:
-        return ProviderItemRef("instagram", "reel", "ABC123")
+    def resolve(self, candidate: UrlCandidate) -> ResolveResult:
+        return ResolveResult(
+            request=ResolvedMediaRequest(
+                url=candidate.url,
+                downloader=self,
+                provider_item_ref=ProviderItemRef("instagram", "reel", "ABC123"),
+                normalized_url=candidate.normalized_url,
+            )
+        )
+
+    def download(
+        self,
+        request: ResolvedMediaRequest,
+        context: DownloadContext,
+    ) -> MediaDownloadResult:
+        raise AssertionError("not used")
 
 
 def make_media(url: str, provider_item_id: str) -> MediaItem:
@@ -137,13 +157,16 @@ def make_media(url: str, provider_item_id: str) -> MediaItem:
     )
 
 
-def make_match(url: str, provider_item_id: str) -> ResolvedUrlMatch:
-    return ResolvedUrlMatch(
+def make_candidate(url: str, provider_item_id: str) -> UrlCandidate:
+    return UrlCandidate(
         url=url,
         start=0,
         end=len(url),
         downloader=FakeDownloader(),
-        provider_item_ref=ProviderItemRef("instagram", "reel", provider_item_id),
+        provider="instagram",
+        link_type="reel",
+        normalized_url=url,
+        local_ref=ProviderItemRef("instagram", "reel", provider_item_id),
     )
 
 
@@ -167,11 +190,11 @@ def test_message_handler_uses_registry_fetch_service_and_renderer(
 ) -> None:
     first_url = "https://www.instagram.com/reel/ABC123"
     second_url = "https://www.instagram.com/reel/DEF456"
-    first_match = make_match(first_url, "ABC123")
-    second_match = make_match(second_url, "DEF456")
+    first_candidate = make_candidate(first_url, "ABC123")
+    second_candidate = make_candidate(second_url, "DEF456")
     first_media = make_media(first_url, "ABC123")
     events: list[str] = []
-    registry = FakeRegistry([first_match, second_match], events)
+    registry = FakeRegistry([first_candidate, second_candidate], events)
     fetch_service = FakeFetchService(
         {
             first_url: MediaFetchResult(media=first_media, url=first_url),
@@ -191,7 +214,7 @@ def test_message_handler_uses_registry_fetch_service_and_renderer(
     asyncio.run(app._message_handler(update, object()))
 
     assert registry.texts == [f"reels: {first_url} {second_url}"]
-    assert fetch_service.matches == [first_match, second_match]
+    assert fetch_service.candidates == [first_candidate, second_candidate]
     assert renderer.updates == [update]
     assert renderer.media_items == [[first_media]]
     assert chat.sent_messages == [
@@ -206,9 +229,9 @@ def test_message_handler_sends_auth_failure_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     url = "https://www.instagram.com/reel/ABC123"
-    match = make_match(url, "ABC123")
+    candidate = make_candidate(url, "ABC123")
     events: list[str] = []
-    registry = FakeRegistry([match], events)
+    registry = FakeRegistry([candidate], events)
     fetch_service = FakeFetchService(
         {url: MediaFetchResult(media=None, url=url, failure_reason="auth")},
         events,
@@ -223,3 +246,24 @@ def test_message_handler_sends_auth_failure_error(
     assert chat.sent_messages == [
         "Could not download (auth expired): https://www.instagram.com/reel/ABC123"
     ]
+
+
+def test_message_handler_does_not_send_error_for_skipped_fetch_result(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = "https://youtu.be/long"
+    candidate = make_candidate(url, "long")
+    events: list[str] = []
+    registry = FakeRegistry([candidate], events)
+    fetch_service = FakeFetchService(
+        {url: MediaFetchResult(media=None, url=url, skipped=True)},
+        events,
+    )
+    renderer = FakeRenderer(events)
+    app = build_app(monkeypatch, registry, fetch_service, renderer)
+    chat = FakeChat()
+
+    asyncio.run(app._message_handler(FakeUpdate(url, chat), object()))
+
+    assert chat.sent_messages == []
+    assert renderer.media_items == []
