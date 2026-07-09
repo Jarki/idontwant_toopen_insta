@@ -20,6 +20,17 @@ from .telegram_renderer import TelegramMediaRenderer
 logger = logging.getLogger(__name__)
 
 DEFAULT_TELEGRAM_MEDIA_WRITE_TIMEOUT = 120.0
+
+
+def _duration_summary(media: models.MediaItem) -> str:
+    durations = [
+        f"{a.asset_type}={a.duration_seconds or '?'}s"
+        for a in media.assets
+        if a.asset_type == "video"
+    ]
+    return ", ".join(durations) if durations else "no video"
+
+
 DEFAULT_TELEGRAM_READ_TIMEOUT = 30.0
 
 
@@ -83,6 +94,13 @@ class IgReelDownloaderApp:
         if not candidates:
             return
 
+        logger.info(
+            "Identified %d media request(s) from %s: %s",
+            len(candidates),
+            sender_id,
+            [f"{c.provider}:{c.link_type}" for c in candidates],
+        )
+
         fetch_results = await self._get_media_items(candidates)
         errors: list[str] = []
         media_items: list[models.MediaItem] = []
@@ -99,7 +117,17 @@ class IgReelDownloaderApp:
         if not media_items and not errors:
             return
 
-        logger.info("Download %s videos for user %s", len(media_items), sender_id)
+        if media_items:
+            summaries = [
+                f"{m.provider}:{m.media_kind} ({_duration_summary(m)})"
+                for m in media_items
+            ]
+            logger.info(
+                "Delivering %d media item(s) to user %s: %s",
+                len(media_items),
+                sender_id,
+                summaries,
+            )
 
         try:
             render_results = await self.renderer.render(update, media_items)

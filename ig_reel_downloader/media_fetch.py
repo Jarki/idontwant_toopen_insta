@@ -57,15 +57,34 @@ class MediaFetchService:
             ref.provider_item_id,
         )
         if cached is not None and _is_reusable(cached):
+            logger.info(
+                "Cache hit: %s:%s %s",
+                cached.provider,
+                cached.media_kind,
+                cached.provider_item_id,
+            )
             return MediaFetchResult(
                 media=cached, url=request.normalized_url or request.url
             )
 
+        logger.info(
+            "Downloading %s:%s %s...",
+            ref.provider,
+            ref.media_kind,
+            ref.provider_item_id,
+        )
         download_result = request.downloader.download(
             request,
             DownloadContext(output_dir=self.output_dir),
         )
         if download_result.media is None:
+            logger.warning(
+                "Download failed for %s:%s %s: %s",
+                ref.provider,
+                ref.media_kind,
+                ref.provider_item_id,
+                download_result.failure_reason or "unknown",
+            )
             return MediaFetchResult(
                 media=None,
                 url=request.normalized_url or request.url,
@@ -87,11 +106,37 @@ class MediaFetchService:
                 failure_reason="unknown",
             )
 
+        duration_str = _duration_str(download_result.media)
+        logger.info(
+            "Downloaded %s:%s %s%s",
+            download_result.media.provider,
+            download_result.media.media_kind,
+            download_result.media.provider_item_id,
+            f" ({duration_str})" if duration_str else "",
+        )
         self.repository.insert_media(download_result.media)
         return MediaFetchResult(
             media=download_result.media,
             url=request.normalized_url or request.url,
         )
+
+
+def _duration_str(media: MediaItem) -> str:
+    parts = []
+    for asset in media.assets:
+        if asset.duration_seconds is not None:
+            parts.append(f"{asset.asset_type}={asset.duration_seconds}s")
+        elif asset.file_size_bytes is not None:
+            parts.append(f"{asset.asset_type}={_format_size(asset.file_size_bytes)}")
+    return ", ".join(parts)
+
+
+def _format_size(size_bytes: int) -> str:
+    if size_bytes >= 1024 * 1024:
+        return f"{size_bytes / 1024 / 1024:.1f}MiB"
+    if size_bytes >= 1024:
+        return f"{size_bytes / 1024:.1f}KiB"
+    return f"{size_bytes}B"
 
 
 def _is_reusable(media: MediaItem) -> bool:
