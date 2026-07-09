@@ -10,7 +10,6 @@ import yt_dlp
 
 from ig_reel_downloader.downloaders.base import (
     DownloadContext,
-    DownloadFailureReason,
     MediaDownloadResult,
     ProviderItemRef,
     ResolvedMediaRequest,
@@ -18,11 +17,14 @@ from ig_reel_downloader.downloaders.base import (
     UrlCandidate,
     UrlMatch,
 )
-from ig_reel_downloader.repository.models import MediaAsset, MediaItem
-from ig_reel_downloader.utils import is_auth_required_download_error
+from ig_reel_downloader.downloaders.yt_dlp_support import (
+    build_download_ytdlp_options,
+    classify_download_error,
+    map_video_asset,
+)
+from ig_reel_downloader.repository.models import MediaItem
 
 if TYPE_CHECKING:
-    from yt_dlp import _Params
     from yt_dlp.extractor.common import _InfoDict
 
 logger = logging.getLogger(__name__)
@@ -109,13 +111,13 @@ class InstagramReelDownloader:
             url = request.normalized_url or request.url
             ref = request.provider_item_ref
 
-        ydl_opts: _Params = {
-            "outtmpl": str(context.output_dir / "%(id)s.%(ext)s"),
-            "format": "best",
-            "quiet": True,
-        }
-        if self.cookie_filepath is not None and self.cookie_filepath.exists():
-            ydl_opts["cookiefile"] = str(self.cookie_filepath)
+        ydl_opts = build_download_ytdlp_options(
+            output_dir=context.output_dir,
+            cookie_filepath=self.cookie_filepath,
+            provider=ref.provider,
+            media_kind=ref.media_kind,
+            provider_item_id=ref.provider_item_id,
+        )
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -135,27 +137,13 @@ class InstagramReelDownloader:
                         "like_count": int(info.get("like_count") or 0),
                         "comments": info.get("comments", []),
                     },
-                    assets=[
-                        MediaAsset(
-                            asset_index=0,
-                            asset_type="video",
-                            filepath=filepath,
-                            width=_optional_int(info.get("width")),
-                            height=_optional_int(info.get("height")),
-                            duration_seconds=_optional_float(info.get("duration")),
-                            file_size_bytes=_optional_int(
-                                info.get("filesize") or info.get("filesize_approx")
-                            ),
-                        )
-                    ],
+                    assets=[map_video_asset(info, filepath=filepath)],
                     created_at=now,
                     updated_at=now,
                 )
                 return MediaDownloadResult(media=media)
         except Exception as error:
-            failure_reason: DownloadFailureReason = (
-                "auth" if is_auth_required_download_error(error) else "unknown"
-            )
+            failure_reason = classify_download_error(error)
             if failure_reason == "auth":
                 logger.warning(
                     "Failed to download video from %s: authentication required (%s)",
@@ -165,21 +153,3 @@ class InstagramReelDownloader:
             else:
                 logger.exception("Failed to download video from %s (%s)", url, error)
             return MediaDownloadResult(media=None, failure_reason=failure_reason)
-
-
-def _optional_int(value: object) -> int | None:
-    if value is None:
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float | str):
-        return int(value)
-    return None
-
-
-def _optional_float(value: object) -> float | None:
-    if value is None:
-        return None
-    if isinstance(value, int | float | str):
-        return float(value)
-    return None

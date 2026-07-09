@@ -107,7 +107,7 @@ def test_download_maps_ytdlp_info_to_media_item(
             }
 
         def prepare_filename(self, info: dict[str, object]) -> str:
-            return str(tmp_path / "ABC123.mp4")
+            return str(tmp_path / "instagram" / "reel" / "ABC123" / "ABC123.mp4")
 
         def download(self, urls: list[str]) -> None:
             calls.append(urls)
@@ -131,8 +131,15 @@ def test_download_maps_ytdlp_info_to_media_item(
     assert result.media.provider_item_id == "ABC123"
     assert result.media.metadata["like_count"] == 12
     assert result.media.metadata["comments"] == [{"text": "nice"}]
+    assert calls[0] == {
+        "outtmpl": str(tmp_path / "instagram" / "reel" / "ABC123" / "%(id)s.%(ext)s"),
+        "format": "best",
+        "quiet": True,
+    }
     assert result.media.assets[0].asset_type == "video"
-    assert result.media.assets[0].filepath == str(tmp_path / "ABC123.mp4")
+    assert result.media.assets[0].filepath == str(
+        tmp_path / "instagram" / "reel" / "ABC123" / "ABC123.mp4"
+    )
 
 
 def test_download_returns_auth_failure(
