@@ -4,7 +4,11 @@ from .base import (
     DownloadFailureReason,
     MediaDownloadResult,
     ProviderItemRef,
+    ResolutionError,
+    ResolvedMediaRequest,
     ResolvedUrlMatch,
+    ResolveResult,
+    UrlCandidate,
     UrlMatch,
 )
 from .instagram import InstagramReelDownloader
@@ -18,6 +22,10 @@ __all__ = [
     "InstagramReelDownloader",
     "MediaDownloadResult",
     "ProviderItemRef",
+    "ResolutionError",
+    "ResolveResult",
+    "ResolvedMediaRequest",
     "ResolvedUrlMatch",
+    "UrlCandidate",
     "UrlMatch",
 ]

@@ -3,21 +3,42 @@ from pathlib import Path
 import pytest
 from yt_dlp.utils import DownloadError
 
-from ig_reel_downloader.downloaders.base import DownloadContext
+from ig_reel_downloader.downloaders.base import (
+    DownloadContext,
+    ProviderItemRef,
+    ResolvedMediaRequest,
+)
 from ig_reel_downloader.downloaders.instagram import InstagramReelDownloader
 
 
-def test_extract_urls_returns_match_spans() -> None:
+def make_request(downloader: InstagramReelDownloader, url: str) -> ResolvedMediaRequest:
+    ref = ProviderItemRef("instagram", "reel", url.rsplit("/", maxsplit=1)[-1])
+    return ResolvedMediaRequest(
+        url=url,
+        downloader=downloader,
+        provider_item_ref=ref,
+        normalized_url=url,
+    )
+
+
+def test_extract_candidates_returns_match_spans_and_local_ref() -> None:
     downloader = InstagramReelDownloader()
     text = "before https://www.instagram.com/reel/ABC-123 after"
 
-    matches = downloader.extract_urls(text)
+    candidates = downloader.extract_candidates(text)
 
-    assert len(matches) == 1
-    assert matches[0].url == "https://www.instagram.com/reel/ABC-123"
-    assert matches[0].start == text.index("https://")
-    assert matches[0].end == matches[0].start + len(matches[0].url)
-    assert matches[0].downloader is downloader
+    assert len(candidates) == 1
+    assert candidates[0].url == "https://www.instagram.com/reel/ABC-123"
+    assert candidates[0].start == text.index("https://")
+    assert candidates[0].end == candidates[0].start + len(candidates[0].url)
+    assert candidates[0].downloader is downloader
+    assert candidates[0].provider == "instagram"
+    assert candidates[0].link_type == "reel"
+    assert candidates[0].normalized_url == candidates[0].url
+    assert candidates[0].local_ref is not None
+    assert candidates[0].local_ref.provider == "instagram"
+    assert candidates[0].local_ref.media_kind == "reel"
+    assert candidates[0].local_ref.provider_item_id == "ABC-123"
 
 
 @pytest.mark.parametrize(
@@ -29,25 +50,28 @@ def test_extract_urls_returns_match_spans() -> None:
         ("https://www.instagram.com/reel/D?", "D"),
     ],
 )
-def test_get_provider_item_ref_extracts_current_reel_ids(
+def test_resolve_extracts_current_reel_ids(
     url: str,
     expected: str,
 ) -> None:
     downloader = InstagramReelDownloader()
+    text = f"see {url}"
 
-    ref = downloader.get_provider_item_ref(url)
+    candidate = downloader.extract_candidates(text)[0]
+    result = downloader.resolve(candidate)
 
-    assert ref is not None
+    assert result.request is not None
+    ref = result.request.provider_item_ref
     assert ref.provider == "instagram"
     assert ref.media_kind == "reel"
     assert ref.provider_item_id == expected
     assert ref.media_id == f"instagram:reel:{expected}"
 
 
-def test_get_provider_item_ref_rejects_non_reel_url() -> None:
+def test_extract_candidates_rejects_non_reel_url() -> None:
     downloader = InstagramReelDownloader()
 
-    assert downloader.get_provider_item_ref("https://www.instagram.com/p/ABC") is None
+    assert downloader.extract_candidates("https://www.instagram.com/p/ABC") == []
 
 
 def test_download_maps_ytdlp_info_to_media_item(
@@ -95,7 +119,7 @@ def test_download_maps_ytdlp_info_to_media_item(
     downloader = InstagramReelDownloader(cookie_filepath=None)
 
     result = downloader.download(
-        "https://www.instagram.com/reel/ABC123",
+        make_request(downloader, "https://www.instagram.com/reel/ABC123"),
         DownloadContext(output_dir=tmp_path),
     )
 
@@ -138,7 +162,7 @@ def test_download_returns_auth_failure(
     downloader = InstagramReelDownloader()
 
     result = downloader.download(
-        "https://www.instagram.com/reel/ABC123",
+        make_request(downloader, "https://www.instagram.com/reel/ABC123"),
         DownloadContext(output_dir=tmp_path),
     )
 

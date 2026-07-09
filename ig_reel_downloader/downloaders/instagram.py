@@ -13,6 +13,9 @@ from ig_reel_downloader.downloaders.base import (
     DownloadFailureReason,
     MediaDownloadResult,
     ProviderItemRef,
+    ResolvedMediaRequest,
+    ResolveResult,
+    UrlCandidate,
     UrlMatch,
 )
 from ig_reel_downloader.repository.models import MediaAsset, MediaItem
@@ -35,15 +38,39 @@ class InstagramReelDownloader:
     def __init__(self, cookie_filepath: Path | None = None) -> None:
         self.cookie_filepath = cookie_filepath
 
+    def extract_candidates(self, text: str) -> list[UrlCandidate]:
+        candidates: list[UrlCandidate] = []
+        for match in REEL_URL_PATTERN.finditer(text):
+            url = match.group("url")
+            ref = ProviderItemRef(
+                provider=self.provider,
+                media_kind=self.media_kind,
+                provider_item_id=match.group("id"),
+            )
+            candidates.append(
+                UrlCandidate(
+                    url=url,
+                    start=match.start("url"),
+                    end=match.end("url"),
+                    downloader=self,
+                    provider=self.provider,
+                    link_type=self.media_kind,
+                    normalized_url=url,
+                    local_ref=ref,
+                )
+            )
+        return candidates
+
     def extract_urls(self, text: str) -> list[UrlMatch]:
         return [
             UrlMatch(
-                url=match.group("url"),
-                start=match.start("url"),
-                end=match.end("url"),
-                downloader=self,
+                url=candidate.url,
+                start=candidate.start,
+                end=candidate.end,
+                downloader=candidate.downloader,
+                normalized_url=candidate.normalized_url,
             )
-            for match in REEL_URL_PATTERN.finditer(text)
+            for candidate in self.extract_candidates(text)
         ]
 
     def get_provider_item_ref(self, url: str) -> ProviderItemRef | None:
@@ -56,10 +83,31 @@ class InstagramReelDownloader:
             provider_item_id=match.group("id"),
         )
 
-    def download(self, url: str, context: DownloadContext) -> MediaDownloadResult:
-        ref = self.get_provider_item_ref(url)
-        if ref is None:
-            return MediaDownloadResult(media=None, failure_reason="unsupported")
+    def resolve(self, candidate: UrlCandidate) -> ResolveResult:
+        if candidate.local_ref is None:
+            return ResolveResult(request=None, failure_reason="unsupported")
+        return ResolveResult(
+            request=ResolvedMediaRequest(
+                url=candidate.normalized_url or candidate.url,
+                downloader=self,
+                provider_item_ref=candidate.local_ref,
+                normalized_url=candidate.normalized_url,
+            )
+        )
+
+    def download(
+        self,
+        request: ResolvedMediaRequest | str,
+        context: DownloadContext,
+    ) -> MediaDownloadResult:
+        if isinstance(request, str):
+            url = request
+            ref = self.get_provider_item_ref(url)
+            if ref is None:
+                return MediaDownloadResult(media=None, failure_reason="unsupported")
+        else:
+            url = request.normalized_url or request.url
+            ref = request.provider_item_ref
 
         ydl_opts: _Params = {
             "outtmpl": str(context.output_dir / "%(id)s.%(ext)s"),
