@@ -24,6 +24,18 @@ def make_request(downloader: InstagramReelDownloader, url: str) -> ResolvedMedia
     )
 
 
+def make_post_request(
+    downloader: InstagramPostDownloader,
+    url: str = "https://www.instagram.com/p/ABC123/",
+) -> ResolvedMediaRequest:
+    return ResolvedMediaRequest(
+        url=url,
+        downloader=downloader,
+        provider_item_ref=ProviderItemRef("instagram", "post", "ABC123"),
+        normalized_url=url,
+    )
+
+
 def test_extract_candidates_returns_match_spans_and_local_ref() -> None:
     downloader = InstagramReelDownloader()
     text = "before https://www.instagram.com/reel/ABC-123 after"
@@ -184,7 +196,257 @@ def test_download_maps_ytdlp_info_to_media_item(
     )
 
 
-def test_instagram_post_download_maps_carousel_assets(
+def test_instagram_post_download_maps_mixed_carousel_assets(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    instances: list[object] = []
+    downloaded_images: list[tuple[str, Path, Path | None]] = []
+
+    class FakeYoutubeDL:
+        def __init__(self, options: dict[str, object]) -> None:
+            self.options = options
+            self.processed_infos: list[dict[str, object]] = []
+            instances.append(self)
+
+        def __enter__(self) -> "FakeYoutubeDL":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+        def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
+            assert url == "https://www.instagram.com/p/ABC123/"
+            assert download is False
+            return {
+                "id": "ABC123",
+                "title": "Post title",
+                "description": "Post description",
+                "like_count": 5,
+                "entries": [
+                    {
+                        "id": "child1",
+                        "thumbnails": [
+                            {
+                                "url": "https://cdn.example/child1-low.jpg",
+                                "width": 320,
+                                "height": 240,
+                                "ext": "jpg",
+                            },
+                            {
+                                "url": "https://cdn.example/child1-high.webp",
+                                "width": 800,
+                                "height": 600,
+                                "ext": "webp",
+                            },
+                        ],
+                    },
+                    {
+                        "id": "child2",
+                        "ext": "mp4",
+                        "formats": [
+                            {
+                                "url": "https://cdn.example/child2.mp4",
+                                "ext": "mp4",
+                                "vcodec": "h264",
+                            }
+                        ],
+                        "width": 1080,
+                        "height": 1920,
+                        "duration": 7,
+                    },
+                ],
+            }
+
+        def prepare_filename(self, info: dict[str, object]) -> str:
+            return str(tmp_path / f"{info['id']}.{info.get('ext', 'mp4')}")
+
+        def process_info(self, info: dict[str, object]) -> None:
+            self.processed_infos.append(info)
+
+    def fake_download_image_file(
+        url: str,
+        filepath: Path,
+        *,
+        cookie_filepath: Path | None,
+    ) -> None:
+        downloaded_images.append((url, filepath, cookie_filepath))
+        filepath.write_bytes(b"image-bytes")
+
+    monkeypatch.setattr(
+        "ig_reel_downloader.downloaders.instagram.yt_dlp.YoutubeDL",
+        FakeYoutubeDL,
+    )
+    monkeypatch.setattr(
+        "ig_reel_downloader.downloaders.instagram._download_image_file",
+        fake_download_image_file,
+    )
+    downloader = InstagramPostDownloader()
+
+    result = downloader.download(
+        make_post_request(downloader),
+        DownloadContext(output_dir=tmp_path),
+    )
+
+    assert result.failure_reason is None
+    assert result.media is not None
+    assert result.media.id == "instagram:post:ABC123"
+    assert [asset.asset_type for asset in result.media.assets] == ["image", "video"]
+    assert [asset.asset_index for asset in result.media.assets] == [0, 1]
+    assert result.media.assets[0].filepath == str(tmp_path / "child1.webp")
+    assert result.media.assets[0].width == 800
+    assert result.media.assets[0].height == 600
+    assert result.media.assets[0].file_size_bytes == len(b"image-bytes")
+    assert result.media.assets[1].filepath == str(tmp_path / "child2.mp4")
+    assert downloaded_images == [
+        ("https://cdn.example/child1-high.webp", tmp_path / "child1.webp", None)
+    ]
+    assert len(instances) == 2
+    extract_ydl = instances[0]
+    download_ydl = instances[1]
+    assert extract_ydl.options == {
+        "outtmpl": str(tmp_path / "instagram" / "post" / "ABC123" / "%(id)s.%(ext)s"),
+        "quiet": True,
+        "ignore_no_formats_error": True,
+    }
+    assert download_ydl.options == {
+        "outtmpl": str(tmp_path / "instagram" / "post" / "ABC123" / "%(id)s.%(ext)s"),
+        "format": "best",
+        "quiet": True,
+    }
+    assert len(download_ydl.processed_infos) == 1
+    assert download_ydl.processed_infos[0]["id"] == "child2"
+
+
+def test_instagram_post_download_maps_single_image_asset(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    downloaded_images: list[tuple[str, Path]] = []
+
+    class FakeYoutubeDL:
+        def __init__(self, options: dict[str, object]) -> None:
+            self.options = options
+
+        def __enter__(self) -> "FakeYoutubeDL":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+        def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
+            return {
+                "id": "ABC123",
+                "title": "Image post",
+                "thumbnails": [
+                    {
+                        "url": "https://cdn.example/post-image.jpg?width=1080",
+                        "width": 1080,
+                        "height": 1080,
+                    }
+                ],
+            }
+
+        def prepare_filename(self, info: dict[str, object]) -> str:
+            return str(tmp_path / f"{info['id']}.{info.get('ext', 'mp4')}")
+
+        def process_info(self, info: dict[str, object]) -> None:
+            raise AssertionError("single-image posts must not use video download")
+
+    def fake_download_image_file(
+        url: str,
+        filepath: Path,
+        *,
+        cookie_filepath: Path | None,
+    ) -> None:
+        assert cookie_filepath is None
+        downloaded_images.append((url, filepath))
+        filepath.write_bytes(b"image")
+
+    monkeypatch.setattr(
+        "ig_reel_downloader.downloaders.instagram.yt_dlp.YoutubeDL",
+        FakeYoutubeDL,
+    )
+    monkeypatch.setattr(
+        "ig_reel_downloader.downloaders.instagram._download_image_file",
+        fake_download_image_file,
+    )
+    downloader = InstagramPostDownloader()
+
+    result = downloader.download(
+        make_post_request(downloader),
+        DownloadContext(output_dir=tmp_path),
+    )
+
+    assert result.failure_reason is None
+    assert result.media is not None
+    assert [asset.asset_type for asset in result.media.assets] == ["image"]
+    assert result.media.assets[0].filepath == str(tmp_path / "ABC123.jpg")
+    assert result.media.assets[0].width == 1080
+    assert result.media.assets[0].height == 1080
+    assert downloaded_images == [
+        ("https://cdn.example/post-image.jpg?width=1080", tmp_path / "ABC123.jpg")
+    ]
+
+
+def test_instagram_post_download_maps_single_video_asset(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    processed_infos: list[dict[str, object]] = []
+
+    class FakeYoutubeDL:
+        def __init__(self, options: dict[str, object]) -> None:
+            self.options = options
+
+        def __enter__(self) -> "FakeYoutubeDL":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+        def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
+            return {
+                "id": "ABC123",
+                "title": "Video post",
+                "ext": "mp4",
+                "formats": [
+                    {
+                        "url": "https://cdn.example/post-video.mp4",
+                        "ext": "mp4",
+                        "vcodec": "h264",
+                    }
+                ],
+                "duration": 4.5,
+            }
+
+        def prepare_filename(self, info: dict[str, object]) -> str:
+            return str(tmp_path / f"{info['id']}.{info.get('ext', 'mp4')}")
+
+        def process_info(self, info: dict[str, object]) -> None:
+            processed_infos.append(info)
+
+    monkeypatch.setattr(
+        "ig_reel_downloader.downloaders.instagram.yt_dlp.YoutubeDL",
+        FakeYoutubeDL,
+    )
+    downloader = InstagramPostDownloader()
+
+    result = downloader.download(
+        make_post_request(downloader),
+        DownloadContext(output_dir=tmp_path),
+    )
+
+    assert result.failure_reason is None
+    assert result.media is not None
+    assert [asset.asset_type for asset in result.media.assets] == ["video"]
+    assert result.media.assets[0].filepath == str(tmp_path / "ABC123.mp4")
+    assert result.media.assets[0].duration_seconds == 4.5
+    assert len(processed_infos) == 1
+    assert processed_infos[0]["id"] == "ABC123"
+
+
+def test_instagram_post_download_returns_unknown_for_empty_entries(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -199,47 +461,62 @@ def test_instagram_post_download_maps_carousel_assets(
             return None
 
         def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
-            return {
-                "id": "ABC123",
-                "title": "Post title",
-                "description": "Post description",
-                "like_count": 5,
-                "entries": [
-                    {"id": "child1", "ext": "jpg", "width": 800, "height": 600},
-                    {
-                        "id": "child2",
-                        "ext": "mp4",
-                        "width": 1080,
-                        "height": 1920,
-                        "duration": 7,
-                    },
-                ],
-            }
+            return {"id": "ABC123", "entries": []}
 
         def prepare_filename(self, info: dict[str, object]) -> str:
             return str(tmp_path / f"{info['id']}.{info.get('ext', 'mp4')}")
 
-        def download(self, urls: list[str]) -> None:
-            assert urls == ["https://www.instagram.com/p/ABC123/"]
+        def process_info(self, info: dict[str, object]) -> None:
+            raise AssertionError("empty post entries have no video asset to download")
 
     monkeypatch.setattr(
         "ig_reel_downloader.downloaders.instagram.yt_dlp.YoutubeDL",
         FakeYoutubeDL,
     )
     downloader = InstagramPostDownloader()
-    request = ResolvedMediaRequest(
-        url="https://www.instagram.com/p/ABC123/",
-        downloader=downloader,
-        provider_item_ref=ProviderItemRef("instagram", "post", "ABC123"),
-        normalized_url="https://www.instagram.com/p/ABC123/",
+
+    result = downloader.download(
+        make_post_request(downloader),
+        DownloadContext(output_dir=tmp_path),
     )
 
-    result = downloader.download(request, DownloadContext(output_dir=tmp_path))
+    assert result.media is None
+    assert result.failure_reason == "unknown"
 
-    assert result.media is not None
-    assert result.media.id == "instagram:post:ABC123"
-    assert [asset.asset_type for asset in result.media.assets] == ["image", "video"]
-    assert [asset.asset_index for asset in result.media.assets] == [0, 1]
+
+def test_instagram_post_download_returns_auth_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FakeYoutubeDL:
+        def __init__(self, options: dict[str, object]) -> None:
+            self.options = options
+
+        def __enter__(self) -> "FakeYoutubeDL":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+        def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
+            raise DownloadError(
+                "Instagram sent an empty media response. "
+                "Use --cookies for the authentication."
+            )
+
+    monkeypatch.setattr(
+        "ig_reel_downloader.downloaders.instagram.yt_dlp.YoutubeDL",
+        FakeYoutubeDL,
+    )
+    downloader = InstagramPostDownloader()
+
+    result = downloader.download(
+        make_post_request(downloader),
+        DownloadContext(output_dir=tmp_path),
+    )
+
+    assert result.media is None
+    assert result.failure_reason == "auth"
 
 
 def test_download_returns_auth_failure(
