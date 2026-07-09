@@ -49,8 +49,22 @@ db-revision = "alembic revision --autogenerate -m"
 # Run the bot
 bot = "python -m ig_reel_downloader"
 
-# Deploy: trigger the deploy workflow on the current branch
-deploy = "bash scripts/deploy.sh"
+# Trigger the Pi dev deployment via workflow_dispatch.
+# Agents must not run this task unless the user explicitly asks for a deployment.
+deploy = {shell = """
+  set -euo pipefail
+  current_branch="$(git branch --show-current)"
+  if [ -z "$current_branch" ]; then
+    echo "Cannot infer current branch from detached HEAD. Pass workflow_ref and compose_ref explicitly." >&2
+    exit 1
+  fi
+
+  compose_ref="${compose_ref:-$current_branch}"
+  workflow_ref="${workflow_ref:-$current_branch}"
+
+  echo "Triggering dev deployment from $workflow_ref (image: $image_tag, compose: $compose_ref)..."
+  gh workflow run deploy-dev.yml --ref "$workflow_ref" -f image_tag="$image_tag" -f compose_ref="$compose_ref"
+""", args = {image_tag = {default = "latest", help = "GHCR image tag to deploy"}, compose_ref = {default = "", help = "Git ref to curl Compose files from; defaults to current branch"}, workflow_ref = {default = "", help = "Git ref containing deploy-dev.yml; defaults to current branch"}}}
 
 [dependency-groups]
 dev = [

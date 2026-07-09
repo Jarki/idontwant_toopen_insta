@@ -24,6 +24,7 @@ Examples:
 - [ ] New Alembic revision
 - [ ] Environment variables or `.env` changed
 - [ ] Build / dependency files changed (`pyproject.toml`, `Dockerfile`, etc.)
+- [ ] Deployment helper/config changed (Poe deploy tasks, Compose files, runner config)
 - [ ] CI workflow changed (`.github/workflows/`)
 - [ ] Other: __________
 

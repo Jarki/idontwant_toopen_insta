@@ -41,8 +41,10 @@ uv run poe verify        # (agents) auto-format + lint-fix + typecheck + test
 uv run poe check         # (CI only) read-only format-check + lint + typecheck + test
 uv run poe test          # run tests only
 uv run poe bot           # run the bot locally
-uv run poe deploy        # (dev only) build & deploy the current branch to the dev environment on the Pi
+uv run poe deploy        # triggers Pi dev deployment; agents must not run unless explicitly asked
 ```
+
+`uv run poe deploy` triggers the `deploy-dev.yml` workflow on the Pi self-hosted runner. Agents must not run it as validation, during normal handoff, or proactively; use it only when the user explicitly asks for a deployment.
 
 ## Critical constraints
 
