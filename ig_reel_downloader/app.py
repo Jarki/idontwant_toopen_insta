@@ -12,7 +12,7 @@ from telegram.ext import (
     filters,
 )
 
-from .downloaders import DownloaderRegistry, DownloadFailureReason, ResolvedUrlMatch
+from .downloaders import DownloaderRegistry, DownloadFailureReason, UrlCandidate
 from .media_fetch import MediaFetchResult, MediaFetchService
 from .repository import models
 from .telegram_renderer import TelegramMediaRenderer
@@ -58,10 +58,11 @@ class IgReelDownloaderApp:
 
     async def _get_media_items(
         self,
-        matches: list[ResolvedUrlMatch],
+        candidates: list[UrlCandidate],
     ) -> list[MediaFetchResult]:
         tasks = [
-            asyncio.to_thread(self.fetch_service.fetch, match) for match in matches
+            asyncio.to_thread(self.fetch_service.fetch, candidate)
+            for candidate in candidates
         ]
         return list(await asyncio.gather(*tasks))
 
@@ -78,20 +79,25 @@ class IgReelDownloaderApp:
         if message is None or not message.text:
             return
 
-        matches = self.registry.extract_matches(message.text)
-        if not matches:
+        candidates = self.registry.extract_candidates(message.text)
+        if not candidates:
             return
 
-        fetch_results = await self._get_media_items(matches)
+        fetch_results = await self._get_media_items(candidates)
         errors: list[str] = []
         media_items: list[models.MediaItem] = []
         for result in fetch_results:
+            if result.skipped:
+                continue
             if result.media is None:
                 errors.append(
                     self._format_download_error(result.url, result.failure_reason)
                 )
             else:
                 media_items.append(result.media)
+
+        if not media_items and not errors:
+            return
 
         logger.info("Download %s videos for user %s", len(media_items), sender_id)
 
