@@ -11,7 +11,7 @@ from .base import (
     UrlCandidate,
     UrlMatch,
 )
-from .instagram import InstagramReelDownloader
+from .instagram import InstagramPostDownloader, InstagramReelDownloader
 from .registry import DownloaderRegistry
 
 __all__ = [
@@ -19,6 +19,7 @@ __all__ = [
     "DownloadFailureReason",
     "Downloader",
     "DownloaderRegistry",
+    "InstagramPostDownloader",
     "InstagramReelDownloader",
     "MediaDownloadResult",
     "ProviderItemRef",

@@ -8,7 +8,10 @@ from ig_reel_downloader.downloaders.base import (
     ProviderItemRef,
     ResolvedMediaRequest,
 )
-from ig_reel_downloader.downloaders.instagram import InstagramReelDownloader
+from ig_reel_downloader.downloaders.instagram import (
+    InstagramPostDownloader,
+    InstagramReelDownloader,
+)
 
 
 def make_request(downloader: InstagramReelDownloader, url: str) -> ResolvedMediaRequest:
@@ -72,6 +75,37 @@ def test_extract_candidates_rejects_non_reel_url() -> None:
     downloader = InstagramReelDownloader()
 
     assert downloader.extract_candidates("https://www.instagram.com/p/ABC") == []
+
+
+def test_instagram_post_extracts_and_normalizes_url() -> None:
+    downloader = InstagramPostDownloader()
+    text = "post https://www.instagram.com/p/ABC-123/?igsh=track&utm_source=x#frag now"
+
+    candidates = downloader.extract_candidates(text)
+
+    assert len(candidates) == 1
+    assert (
+        candidates[0].url
+        == "https://www.instagram.com/p/ABC-123/?igsh=track&utm_source=x#frag"
+    )
+    assert candidates[0].normalized_url == "https://www.instagram.com/p/ABC-123/"
+    assert candidates[0].local_ref == ProviderItemRef("instagram", "post", "ABC-123")
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "https://www.instagram.com/reel/ABC123/",
+        "https://www.instagram.com/stories/user/123/",
+        "https://www.instagram.com/explore/tags/test/",
+        "https://example.com/p/ABC123/",
+        "https://www.instagram.com/p/",
+    ],
+)
+def test_instagram_post_rejects_non_post_urls(text: str) -> None:
+    downloader = InstagramPostDownloader()
+
+    assert downloader.extract_candidates(text) == []
 
 
 def test_download_maps_ytdlp_info_to_media_item(
@@ -140,6 +174,64 @@ def test_download_maps_ytdlp_info_to_media_item(
     assert result.media.assets[0].filepath == str(
         tmp_path / "instagram" / "reel" / "ABC123" / "ABC123.mp4"
     )
+
+
+def test_instagram_post_download_maps_carousel_assets(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FakeYoutubeDL:
+        def __init__(self, options: dict[str, object]) -> None:
+            self.options = options
+
+        def __enter__(self) -> "FakeYoutubeDL":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+        def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
+            return {
+                "id": "ABC123",
+                "title": "Post title",
+                "description": "Post description",
+                "like_count": 5,
+                "entries": [
+                    {"id": "child1", "ext": "jpg", "width": 800, "height": 600},
+                    {
+                        "id": "child2",
+                        "ext": "mp4",
+                        "width": 1080,
+                        "height": 1920,
+                        "duration": 7,
+                    },
+                ],
+            }
+
+        def prepare_filename(self, info: dict[str, object]) -> str:
+            return str(tmp_path / f"{info['id']}.{info.get('ext', 'mp4')}")
+
+        def download(self, urls: list[str]) -> None:
+            assert urls == ["https://www.instagram.com/p/ABC123/"]
+
+    monkeypatch.setattr(
+        "ig_reel_downloader.downloaders.instagram.yt_dlp.YoutubeDL",
+        FakeYoutubeDL,
+    )
+    downloader = InstagramPostDownloader()
+    request = ResolvedMediaRequest(
+        url="https://www.instagram.com/p/ABC123/",
+        downloader=downloader,
+        provider_item_ref=ProviderItemRef("instagram", "post", "ABC123"),
+        normalized_url="https://www.instagram.com/p/ABC123/",
+    )
+
+    result = downloader.download(request, DownloadContext(output_dir=tmp_path))
+
+    assert result.media is not None
+    assert result.media.id == "instagram:post:ABC123"
+    assert [asset.asset_type for asset in result.media.assets] == ["image", "video"]
+    assert [asset.asset_index for asset in result.media.assets] == [0, 1]
 
 
 def test_download_returns_auth_failure(
