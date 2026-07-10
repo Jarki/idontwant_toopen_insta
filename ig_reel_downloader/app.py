@@ -4,7 +4,7 @@ import logging
 from contextlib import suppress
 
 from telegram import Update
-from telegram.error import TimedOut
+from telegram.error import BadRequest, TimedOut
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -103,13 +103,20 @@ class IgReelDownloaderApp:
             gif_url = judgmental_module.pick_gif(self.judgmental_gifs)
             chat = update.effective_chat
             if chat is not None:
-                await chat.send_animation(
-                    animation=gif_url,
-                    reply_to_message_id=message.message_id,
-                    write_timeout=self.telegram_media_write_timeout,
-                    read_timeout=self.telegram_read_timeout,
-                )
-            return
+                try:
+                    await chat.send_animation(
+                        animation=gif_url,
+                        reply_to_message_id=message.message_id,
+                        write_timeout=self.telegram_media_write_timeout,
+                        read_timeout=self.telegram_read_timeout,
+                    )
+                except BadRequest as exc:
+                    logger.warning("Failed to send judgmental GIF %s: %s", gif_url, exc)
+                else:
+                    # Only skip download if the GIF was sent successfully.
+                    return
+            else:
+                return
 
         logger.info(
             "Received %d media request(s) from %s: %s",
