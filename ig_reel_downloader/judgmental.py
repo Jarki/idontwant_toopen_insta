@@ -23,8 +23,10 @@ from collections.abc import Sequence
 # Each entry must be a direct link to a .gif file.
 # ---------------------------------------------------------------------------
 JUDGMENTAL_GIFS: Sequence[str] = [
-    # Dog side-eye (contributed by user)
     "https://tenor.com/bWuiJ.gif",
+    "https://tenor.com/erAjbcsZFIW.gif",
+    "https://tenor.com/mJbElkQy5lN.gif",
+    "https://tenor.com/uqq6cvUAgPT.gif",
 ]
 
 
