@@ -39,6 +39,7 @@ def main() -> None:
         "TELEGRAM_READ_TIMEOUT",
         ig_reel_downloader.app.DEFAULT_TELEGRAM_READ_TIMEOUT,
     )
+    judgmental_chance = _get_float_env("JUDGMENTAL_CHANCE", 0.0)
     if bot_token is None:
         msg = "BOT_TOKEN is not set"
         raise ValueError(msg)
@@ -79,6 +80,8 @@ def main() -> None:
         renderer,
         telegram_media_write_timeout=telegram_media_write_timeout,
         telegram_read_timeout=telegram_read_timeout,
+        judgmental_chance=judgmental_chance,
+        judgmental_gifs=ig_reel_downloader.judgmental.JUDGMENTAL_GIFS,
     )
     app.run()
 

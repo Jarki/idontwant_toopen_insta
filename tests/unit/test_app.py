@@ -1,5 +1,9 @@
+from __future__ import annotations
+
 import asyncio
 import datetime
+from dataclasses import dataclass
+from unittest.mock import patch
 
 import pytest
 
@@ -29,13 +33,13 @@ class FakeApplication:
 
 
 class FakeApplicationBuilder:
-    def token(self, token: str) -> "FakeApplicationBuilder":
+    def token(self, token: str) -> FakeApplicationBuilder:
         return self
 
-    def media_write_timeout(self, value: float) -> "FakeApplicationBuilder":
+    def media_write_timeout(self, value: float) -> FakeApplicationBuilder:
         return self
 
-    def read_timeout(self, value: float) -> "FakeApplicationBuilder":
+    def read_timeout(self, value: float) -> FakeApplicationBuilder:
         return self
 
     def build(self) -> FakeApplication:
@@ -46,17 +50,38 @@ class FakeSender:
     id = 123
 
 
+@dataclass
+class SentAnimation:
+    animation: str
+    reply_to_message_id: int | None
+
+
 class FakeMessage:
     def __init__(self, text: str | None) -> None:
         self.text = text
+        self.message_id = 42
 
 
 class FakeChat:
     def __init__(self) -> None:
         self.sent_messages: list[str] = []
+        self.sent_animations: list[SentAnimation] = []
 
     async def send_message(self, text: str) -> None:
         self.sent_messages.append(text)
+
+    async def send_animation(
+        self,
+        animation: str,
+        reply_to_message_id: int | None = None,
+        **kwargs: object,
+    ) -> None:
+        self.sent_animations.append(
+            SentAnimation(
+                animation=animation,
+                reply_to_message_id=reply_to_message_id,
+            )
+        )
 
 
 class FakeUpdate:
@@ -267,3 +292,44 @@ def test_message_handler_does_not_send_error_for_skipped_fetch_result(
 
     assert chat.sent_messages == []
     assert renderer.media_items == []
+
+
+def test_message_handler_sends_judgmental_gif_when_chance_triggers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = "https://www.instagram.com/reel/ABC123"
+    candidate = make_candidate(url, "ABC123")
+    gif_url = "https://example.com/judgmental.gif"
+    events: list[str] = []
+    registry = FakeRegistry([candidate], events)
+    fetch_service = FakeFetchService({}, events)
+    renderer = FakeRenderer(events)
+
+    monkeypatch.setattr(app_module, "ApplicationBuilder", FakeApplicationBuilder)
+    app = app_module.IgReelDownloaderApp(
+        "telegram-token",
+        registry,
+        fetch_service,
+        renderer,
+        judgmental_chance=0.5,
+        judgmental_gifs=[gif_url],
+    )
+
+    chat = FakeChat()
+    update = FakeUpdate(url, chat)
+
+    # Patch the judgmental module functions used inside _message_handler
+    with (
+        patch.object(app_module.judgmental_module, "should_fire", return_value=True),
+        patch.object(app_module.judgmental_module, "pick_gif", return_value=gif_url),
+    ):
+        asyncio.run(app._message_handler(update, object()))
+
+    # Should have sent the GIF as a reply, not downloaded
+    assert len(chat.sent_animations) == 1
+    anim = chat.sent_animations[0]
+    assert anim.animation == gif_url
+    assert anim.reply_to_message_id == 42  # matches FakeMessage.message_id
+    assert chat.sent_messages == []  # no download error
+    # Registry is called to check/collect candidates, but fetch/renderer never run
+    assert events == ["registry"]

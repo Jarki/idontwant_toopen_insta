@@ -48,6 +48,8 @@ def test_main_does_not_run_migrations(monkeypatch, tmp_path: Path) -> None:
             *,
             telegram_media_write_timeout: float,
             telegram_read_timeout: float,
+            judgmental_chance: float = 0.0,
+            judgmental_gifs: object = None,
         ) -> None:
             self.bot_token = bot_token
             self.registry = registry
@@ -55,6 +57,8 @@ def test_main_does_not_run_migrations(monkeypatch, tmp_path: Path) -> None:
             self.renderer = renderer
             self.telegram_media_write_timeout = telegram_media_write_timeout
             self.telegram_read_timeout = telegram_read_timeout
+            self.judgmental_chance = judgmental_chance
+            self.judgmental_gifs = judgmental_gifs
             self.did_run = False
             app_instances.append(self)
 
@@ -123,6 +127,8 @@ def test_main_does_not_run_migrations(monkeypatch, tmp_path: Path) -> None:
     assert app.registry.downloaders[0].cookie_filepath == Path("assets/cookies.txt")
     assert app.renderer.telegram_media_write_timeout == 120.0
     assert app.renderer.telegram_read_timeout == 30.0
+    assert app.judgmental_chance == 0.0  # default when env var absent
+    assert app.judgmental_gifs is not None
     assert app.did_run is True
     assert Path("output").is_dir()
     assert Path("data").is_dir()

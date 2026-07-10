@@ -1,4 +1,5 @@
 import asyncio
+import collections
 import logging
 from contextlib import suppress
 
@@ -12,6 +13,7 @@ from telegram.ext import (
     filters,
 )
 
+from . import judgmental as judgmental_module
 from .downloaders import DownloaderRegistry, DownloadFailureReason, UrlCandidate
 from .media_fetch import MediaFetchResult, MediaFetchService
 from .repository import models
@@ -41,12 +43,16 @@ class IgReelDownloaderApp:
         renderer: TelegramMediaRenderer,
         telegram_media_write_timeout: float = DEFAULT_TELEGRAM_MEDIA_WRITE_TIMEOUT,
         telegram_read_timeout: float = DEFAULT_TELEGRAM_READ_TIMEOUT,
+        judgmental_chance: float = 0.0,
+        judgmental_gifs: collections.abc.Sequence[str] | None = None,
     ) -> None:
         self.telegram_media_write_timeout = telegram_media_write_timeout
         self.telegram_read_timeout = telegram_read_timeout
         self.registry = registry
         self.fetch_service = fetch_service
         self.renderer = renderer
+        self.judgmental_chance = judgmental_chance
+        self.judgmental_gifs = list(judgmental_gifs) if judgmental_gifs else []
         self.app: Application = (
             ApplicationBuilder()
             .token(bot_token)
@@ -90,6 +96,19 @@ class IgReelDownloaderApp:
 
         candidates = self.registry.extract_candidates(message.text)
         if not candidates:
+            return
+
+        # Judgmental GIF chance — replace the download response with a GIF.
+        if judgmental_module.should_fire(self.judgmental_chance, self.judgmental_gifs):
+            gif_url = judgmental_module.pick_gif(self.judgmental_gifs)
+            chat = update.effective_chat
+            if chat is not None:
+                await chat.send_animation(
+                    animation=gif_url,
+                    reply_to_message_id=message.message_id,
+                    write_timeout=self.telegram_media_write_timeout,
+                    read_timeout=self.telegram_read_timeout,
+                )
             return
 
         logger.info(
