@@ -26,7 +26,6 @@ JUDGMENTAL_GIFS: Sequence[str] = [
     "https://media.tenor.com/ideJ1JyDphoAAAAM/bellebows-tiktok.gif",
     "https://media1.tenor.com/m/Md0HsCwc7fAAAAAd/cat-judgemental-thebeatenbush-judge-judging.gif",
     "https://media1.tenor.com/m/klnn9S0MyhUAAAAd/good-morning.gif",
-    "https://media1.tenor.com/m/7AJwOIW-SSMAAAAd/confused-wtf.gif",
 ]
 
 
