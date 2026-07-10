@@ -57,8 +57,13 @@ class SentAnimation:
 
 
 class FakeAnimation:
-    def __init__(self, file_id: str) -> None:
+    def __init__(
+        self,
+        file_id: str,
+        file_unique_id: str | None = "unique-animation-id",
+    ) -> None:
         self.file_id = file_id
+        self.file_unique_id = file_unique_id
 
 
 class FakeSentMessage:
@@ -67,9 +72,16 @@ class FakeSentMessage:
 
 
 class FakeMessage:
-    def __init__(self, text: str | None) -> None:
+    def __init__(
+        self,
+        text: str | None,
+        reply_to_message: FakeMessage | None = None,
+        animation: FakeAnimation | None = None,
+    ) -> None:
         self.text = text
         self.message_id = 42
+        self.reply_to_message = reply_to_message
+        self.animation = animation
 
 
 class FakeChat:
@@ -96,8 +108,17 @@ class FakeChat:
 
 
 class FakeUpdate:
-    def __init__(self, text: str | None, chat: FakeChat | None = None) -> None:
-        self.message = FakeMessage(text) if text is not None else None
+    def __init__(
+        self,
+        text: str | None,
+        chat: FakeChat | None = None,
+        reply_to_message: FakeMessage | None = None,
+    ) -> None:
+        self.message = (
+            FakeMessage(text, reply_to_message=reply_to_message)
+            if text is not None
+            else None
+        )
         self.effective_chat = chat
         self.effective_sender = FakeSender()
 
@@ -118,14 +139,43 @@ class FakeRegistry:
         return self.candidates
 
 
+class FakeRepository:
+    def __init__(self) -> None:
+        self.judgmental_file_ids: list[str] = []
+        self.added_judgmental_file_ids: list[tuple[str, str | None]] = []
+        self.deleted_judgmental_file_ids: list[str] = []
+
+    def add_judgmental_animation_file_id(
+        self,
+        file_id: str,
+        file_unique_id: str | None,
+    ) -> None:
+        self.added_judgmental_file_ids.append((file_id, file_unique_id))
+        if file_id not in self.judgmental_file_ids:
+            self.judgmental_file_ids.append(file_id)
+
+    def list_judgmental_animation_file_ids(self) -> list[str]:
+        return list(self.judgmental_file_ids)
+
+    def delete_judgmental_animation_file_id(self, file_id: str) -> None:
+        self.deleted_judgmental_file_ids.append(file_id)
+        self.judgmental_file_ids = [
+            stored_file_id
+            for stored_file_id in self.judgmental_file_ids
+            if stored_file_id != file_id
+        ]
+
+
 class FakeFetchService:
     def __init__(
         self,
         results: dict[str, MediaFetchResult],
         events: list[str],
+        repository: FakeRepository | None = None,
     ) -> None:
         self.results = results
         self.events = events
+        self.repository = repository or FakeRepository()
         self.candidates: list[UrlCandidate] = []
 
     def fetch(self, candidate: UrlCandidate) -> MediaFetchResult:
@@ -303,6 +353,92 @@ def test_message_handler_does_not_send_error_for_skipped_fetch_result(
 
     assert chat.sent_messages == []
     assert renderer.media_items == []
+
+
+def test_add_judgmental_command_stores_replied_animation_file_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    registry = FakeRegistry([], events)
+    repository = FakeRepository()
+    fetch_service = FakeFetchService({}, events, repository=repository)
+    renderer = FakeRenderer(events)
+    app = build_app(monkeypatch, registry, fetch_service, renderer)
+    chat = FakeChat()
+    replied_animation = FakeMessage(
+        None,
+        animation=FakeAnimation("telegram-file-id", "telegram-unique-id"),
+    )
+    update = FakeUpdate("/add-judgmental", chat, reply_to_message=replied_animation)
+
+    asyncio.run(app._add_judgmental_handler(update, object()))
+
+    assert repository.added_judgmental_file_ids == [
+        ("telegram-file-id", "telegram-unique-id")
+    ]
+    assert repository.judgmental_file_ids == ["telegram-file-id"]
+    assert chat.sent_messages == ["Saved judgmental GIF."]
+
+
+def test_add_judgmental_command_requires_replied_animation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    registry = FakeRegistry([], events)
+    repository = FakeRepository()
+    fetch_service = FakeFetchService({}, events, repository=repository)
+    renderer = FakeRenderer(events)
+    app = build_app(monkeypatch, registry, fetch_service, renderer)
+    chat = FakeChat()
+    update = FakeUpdate("/add-judgmental", chat)
+
+    asyncio.run(app._add_judgmental_handler(update, object()))
+
+    assert repository.added_judgmental_file_ids == []
+    assert chat.sent_messages == [
+        "Reply to a Telegram GIF/animation with /add-judgmental and I will remember it."
+    ]
+
+
+def test_message_handler_prefers_stored_judgmental_file_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = "https://www.instagram.com/reel/ABC123"
+    candidate = make_candidate(url, "ABC123")
+    events: list[str] = []
+    registry = FakeRegistry([candidate], events)
+    repository = FakeRepository()
+    repository.judgmental_file_ids = ["stored-file-id"]
+    fetch_service = FakeFetchService({}, events, repository=repository)
+    renderer = FakeRenderer(events)
+
+    monkeypatch.setattr(app_module, "ApplicationBuilder", FakeApplicationBuilder)
+    app = app_module.IgReelDownloaderApp(
+        "telegram-token",
+        registry,
+        fetch_service,
+        renderer,
+        judgmental_chance=0.5,
+        judgmental_gifs=["https://example.com/broken.gif"],
+    )
+    chat = FakeChat()
+    update = FakeUpdate(url, chat)
+
+    with (
+        patch.object(app_module.judgmental_module, "should_fire", return_value=True),
+        patch.object(
+            app_module.judgmental_module,
+            "pick_gif",
+            return_value="stored-file-id",
+        ),
+    ):
+        asyncio.run(app._message_handler(update, object()))
+
+    assert [animation.animation for animation in chat.sent_animations] == [
+        "stored-file-id"
+    ]
+    assert events == ["registry"]
+    assert app._judgmental_file_ids == {}
 
 
 def test_message_handler_sends_judgmental_gif_when_chance_triggers(

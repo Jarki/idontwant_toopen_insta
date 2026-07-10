@@ -13,6 +13,8 @@ from ig_reel_downloader import constants
 from ig_reel_downloader.repository import models
 from ig_reel_downloader.repository.sqlite import SqliteRepository
 
+LATEST_REVISION = "20260710_0003"
+
 
 def make_reel(
     reel_id: str = "reel-1",
@@ -156,7 +158,7 @@ def test_create_database_creates_reels_table(tmp_path: Path) -> None:
             "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'reels'"
         ).fetchone()
     assert row == ("reels",)
-    assert current_alembic_version(db_path) == "20260707_0002"
+    assert current_alembic_version(db_path) == LATEST_REVISION
 
 
 def test_create_database_creates_generic_media_tables(tmp_path: Path) -> None:
@@ -172,8 +174,32 @@ def test_create_database_creates_generic_media_tables(tmp_path: Path) -> None:
                 "SELECT name FROM sqlite_master WHERE type = 'table'"
             ).fetchall()
         }
-    assert {"reels", "media_items", "media_assets"}.issubset(table_names)
-    assert current_alembic_version(db_path) == "20260707_0002"
+    assert {
+        "reels",
+        "media_items",
+        "media_assets",
+        "judgmental_animations",
+    }.issubset(table_names)
+    assert current_alembic_version(db_path) == LATEST_REVISION
+
+
+def test_judgmental_animation_file_ids_round_trip(tmp_path: Path) -> None:
+    db_path = tmp_path / "reels.db"
+    repository = SqliteRepository(str(db_path))
+    repository.create_database()
+
+    repository.add_judgmental_animation_file_id("file-id-1", "unique-id-1")
+    repository.add_judgmental_animation_file_id("file-id-2", "unique-id-2")
+    repository.add_judgmental_animation_file_id("file-id-1-refreshed", "unique-id-1")
+
+    assert repository.list_judgmental_animation_file_ids() == [
+        "file-id-1-refreshed",
+        "file-id-2",
+    ]
+
+    repository.delete_judgmental_animation_file_id("file-id-2")
+
+    assert repository.list_judgmental_animation_file_ids() == ["file-id-1-refreshed"]
 
 
 def test_insert_and_get_media_round_trips_item_with_assets(tmp_path: Path) -> None:
@@ -350,7 +376,7 @@ def test_create_database_is_idempotent_for_new_database(tmp_path: Path) -> None:
     repository.create_database()
     repository.create_database()
 
-    assert current_alembic_version(db_path) == "20260707_0002"
+    assert current_alembic_version(db_path) == LATEST_REVISION
 
 
 def test_create_database_uses_repository_path_over_environment(
@@ -366,7 +392,7 @@ def test_create_database_uses_repository_path_over_environment(
 
     repository.create_database()
 
-    assert current_alembic_version(repo_db_path) == "20260707_0002"
+    assert current_alembic_version(repo_db_path) == LATEST_REVISION
     assert not env_db_path.exists()
 
 
@@ -444,7 +470,7 @@ def test_alembic_cli_db_path_creates_parent_directory(
 
     command.upgrade(config, "head")
 
-    assert current_alembic_version(db_path) == "20260707_0002"
+    assert current_alembic_version(db_path) == LATEST_REVISION
 
 
 def test_create_database_preserves_existing_rows(tmp_path: Path) -> None:
@@ -460,7 +486,7 @@ def test_create_database_preserves_existing_rows(tmp_path: Path) -> None:
     assert media.title == existing_reel.title
     assert raw_reel_title(db_path, existing_reel.id) == existing_reel.title
     assert raw_reel_count(db_path) == 1
-    assert current_alembic_version(db_path) == "20260707_0002"
+    assert current_alembic_version(db_path) == LATEST_REVISION
 
     repository.create_database()
 
@@ -469,7 +495,7 @@ def test_create_database_preserves_existing_rows(tmp_path: Path) -> None:
     assert media.title == existing_reel.title
     assert raw_reel_title(db_path, existing_reel.id) == existing_reel.title
     assert raw_reel_count(db_path) == 1
-    assert current_alembic_version(db_path) == "20260707_0002"
+    assert current_alembic_version(db_path) == LATEST_REVISION
 
 
 def test_get_media_by_provider_item_raises_on_invalid_metadata_json(
