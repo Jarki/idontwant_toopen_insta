@@ -3,7 +3,6 @@ import collections
 import logging
 from contextlib import suppress
 
-import httpx
 from telegram import Update
 from telegram.error import BadRequest, TimedOut
 from telegram.ext import (
@@ -54,6 +53,10 @@ class IgReelDownloaderApp:
         self.renderer = renderer
         self.judgmental_chance = judgmental_chance
         self.judgmental_gifs = list(judgmental_gifs) if judgmental_gifs else []
+        # In-memory cache of Telegram file_ids for judgmental animations.
+        # After the first successful URL-based send, we store the returned
+        # file_id so subsequent sends use it directly (zero traffic, instant).
+        self._judgmental_file_ids: dict[str, str] = {}
         self.app: Application = (
             ApplicationBuilder()
             .token(bot_token)
@@ -105,19 +108,28 @@ class IgReelDownloaderApp:
             chat = update.effective_chat
             if chat is not None:
                 try:
-                    # Download the GIF ourselves instead of passing a URL to
-                    # Telegram — this avoids "Wrong type of the web page content"
-                    # errors and gives us proper timeout/retry control.
-                    async with httpx.AsyncClient(timeout=10.0) as client:
-                        resp = await client.get(gif_url)
-                        resp.raise_for_status()
-                    await chat.send_animation(
-                        animation=resp.content,
-                        reply_to_message_id=message.message_id,
-                        write_timeout=self.telegram_media_write_timeout,
-                        read_timeout=self.telegram_read_timeout,
-                    )
-                except (BadRequest, httpx.HTTPError) as exc:
+                    # Use cached Telegram file_id (zero traffic, instant) or
+                    # send via URL on first use and cache the returned file_id.
+                    file_id = self._judgmental_file_ids.get(gif_url)
+                    if file_id is not None:
+                        await chat.send_animation(
+                            animation=file_id,
+                            reply_to_message_id=message.message_id,
+                            write_timeout=self.telegram_media_write_timeout,
+                            read_timeout=self.telegram_read_timeout,
+                        )
+                    else:
+                        sent = await chat.send_animation(
+                            animation=gif_url,
+                            reply_to_message_id=message.message_id,
+                            write_timeout=self.telegram_media_write_timeout,
+                            read_timeout=self.telegram_read_timeout,
+                        )
+                        if sent and sent.animation:
+                            self._judgmental_file_ids[gif_url] = sent.animation.file_id
+                except BadRequest as exc:
+                    # Invalid cached file_id? Clear it.
+                    self._judgmental_file_ids.pop(gif_url, None)
                     logger.warning("Failed to send judgmental GIF %s: %s", gif_url, exc)
                 else:
                     # Only skip download if the GIF was sent successfully.

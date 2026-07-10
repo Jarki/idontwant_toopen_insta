@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 from dataclasses import dataclass
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -56,6 +56,16 @@ class SentAnimation:
     reply_to_message_id: int | None
 
 
+class FakeAnimation:
+    def __init__(self, file_id: str) -> None:
+        self.file_id = file_id
+
+
+class FakeSentMessage:
+    def __init__(self, file_id: str) -> None:
+        self.animation = FakeAnimation(file_id)
+
+
 class FakeMessage:
     def __init__(self, text: str | None) -> None:
         self.text = text
@@ -75,13 +85,14 @@ class FakeChat:
         animation: str,
         reply_to_message_id: int | None = None,
         **kwargs: object,
-    ) -> None:
+    ) -> FakeSentMessage:
         self.sent_animations.append(
             SentAnimation(
                 animation=animation,
                 reply_to_message_id=reply_to_message_id,
             )
         )
+        return FakeSentMessage(file_id=f"file_id:{animation}")
 
 
 class FakeUpdate:
@@ -300,7 +311,6 @@ def test_message_handler_sends_judgmental_gif_when_chance_triggers(
     url = "https://www.instagram.com/reel/ABC123"
     candidate = make_candidate(url, "ABC123")
     gif_url = "https://example.com/judgmental.gif"
-    gif_bytes = b"fake-gif-content"
     events: list[str] = []
     registry = FakeRegistry([candidate], events)
     fetch_service = FakeFetchService({}, events)
@@ -319,31 +329,61 @@ def test_message_handler_sends_judgmental_gif_when_chance_triggers(
     chat = FakeChat()
     update = FakeUpdate(url, chat)
 
-    # Mock the httpx download so we don't make real HTTP requests
-    mock_resp = MagicMock()
-    mock_resp.content = gif_bytes
-    mock_resp.raise_for_status.return_value = None
-
-    mock_client = MagicMock()
-    mock_client.get = AsyncMock(return_value=mock_resp)
-
-    mock_client_cm = MagicMock()
-    mock_client_cm.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client_cm.__aexit__ = AsyncMock(return_value=None)
-
     with (
         patch.object(app_module.judgmental_module, "should_fire", return_value=True),
         patch.object(app_module.judgmental_module, "pick_gif", return_value=gif_url),
-        patch.object(app_module.httpx, "AsyncClient", return_value=mock_client_cm),
     ):
         asyncio.run(app._message_handler(update, object()))
 
     # Should have sent the GIF as a reply, not downloaded
     assert len(chat.sent_animations) == 1
     anim = chat.sent_animations[0]
-    # send_animation receives the downloaded bytes, not the URL
-    assert anim.animation == gif_bytes
+    assert anim.animation == gif_url
     assert anim.reply_to_message_id == 42  # matches FakeMessage.message_id
     assert chat.sent_messages == []  # no download error
     # Registry is called to check/collect candidates, but fetch/renderer never run
+    assert events == ["registry"]
+    # The file_id should have been cached
+    assert app._judgmental_file_ids.get(gif_url) == f"file_id:{gif_url}"
+
+
+def test_judgmental_gif_uses_cached_file_id_on_subsequent_send(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = "https://www.instagram.com/reel/ABC123"
+    candidate = make_candidate(url, "ABC123")
+    gif_url = "https://example.com/judgmental.gif"
+    events: list[str] = []
+    registry = FakeRegistry([candidate], events)
+    fetch_service = FakeFetchService({}, events)
+    renderer = FakeRenderer(events)
+
+    monkeypatch.setattr(app_module, "ApplicationBuilder", FakeApplicationBuilder)
+    app = app_module.IgReelDownloaderApp(
+        "telegram-token",
+        registry,
+        fetch_service,
+        renderer,
+        judgmental_chance=0.5,
+        judgmental_gifs=[gif_url],
+    )
+
+    # Pre-populate the cache with a file_id
+    cached_file_id = "cached_file_id_123"
+    app._judgmental_file_ids[gif_url] = cached_file_id
+
+    chat = FakeChat()
+    update = FakeUpdate(url, chat)
+
+    with (
+        patch.object(app_module.judgmental_module, "should_fire", return_value=True),
+        patch.object(app_module.judgmental_module, "pick_gif", return_value=gif_url),
+    ):
+        asyncio.run(app._message_handler(update, object()))
+
+    # Should have sent via file_id (not URL)
+    assert len(chat.sent_animations) == 1
+    anim = chat.sent_animations[0]
+    assert anim.animation == cached_file_id
+    assert anim.reply_to_message_id == 42
     assert events == ["registry"]
