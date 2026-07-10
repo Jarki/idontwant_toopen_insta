@@ -23,11 +23,11 @@ from collections.abc import Sequence
 # Each entry must be a direct link to a .gif file.
 # ---------------------------------------------------------------------------
 JUDGMENTAL_GIFS: Sequence[str] = [
-    # Direct Tenor GIF URLs (media.tenor.com — raw GIF content)
+    # Direct Tenor media URLs — these serve raw GIF/MP4 content.
     "https://media.tenor.com/ideJ1JyDphoAAAAM/bellebows-tiktok.gif",
-    "https://media.tenor.com/MfDKbkvA_NwAAAAM/cat-cat-meme.gif",
-    "https://media.tenor.com/HXanH5etpUUAAAAM/rain-dance.gif",
-    "https://media.tenor.com/TsmJ8yVex4kAAAAM/what-the-dog-dog-loading.gif",
+    "https://media.tenor.com/Md0HsCwc7fAAAAPo/cat-judgemental-thebeatenbush-judge-judging.mp4",
+    "https://media.tenor.com/klnn9S0MyhUAAAPo/good-morning.mp4",
+    "https://media.tenor.com/7AJwOIW-SSMAAAPo/confused-wtf.mp4",
 ]
 
 
