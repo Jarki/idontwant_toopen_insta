@@ -3,7 +3,7 @@ from __future__ import annotations
 import asyncio
 import datetime
 from dataclasses import dataclass
-from unittest.mock import patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -300,6 +300,7 @@ def test_message_handler_sends_judgmental_gif_when_chance_triggers(
     url = "https://www.instagram.com/reel/ABC123"
     candidate = make_candidate(url, "ABC123")
     gif_url = "https://example.com/judgmental.gif"
+    gif_bytes = b"fake-gif-content"
     events: list[str] = []
     registry = FakeRegistry([candidate], events)
     fetch_service = FakeFetchService({}, events)
@@ -318,17 +319,30 @@ def test_message_handler_sends_judgmental_gif_when_chance_triggers(
     chat = FakeChat()
     update = FakeUpdate(url, chat)
 
-    # Patch the judgmental module functions used inside _message_handler
+    # Mock the httpx download so we don't make real HTTP requests
+    mock_resp = MagicMock()
+    mock_resp.content = gif_bytes
+    mock_resp.raise_for_status.return_value = None
+
+    mock_client = MagicMock()
+    mock_client.get = AsyncMock(return_value=mock_resp)
+
+    mock_client_cm = MagicMock()
+    mock_client_cm.__aenter__ = AsyncMock(return_value=mock_client)
+    mock_client_cm.__aexit__ = AsyncMock(return_value=None)
+
     with (
         patch.object(app_module.judgmental_module, "should_fire", return_value=True),
         patch.object(app_module.judgmental_module, "pick_gif", return_value=gif_url),
+        patch.object(app_module.httpx, "AsyncClient", return_value=mock_client_cm),
     ):
         asyncio.run(app._message_handler(update, object()))
 
     # Should have sent the GIF as a reply, not downloaded
     assert len(chat.sent_animations) == 1
     anim = chat.sent_animations[0]
-    assert anim.animation == gif_url
+    # send_animation receives the downloaded bytes, not the URL
+    assert anim.animation == gif_bytes
     assert anim.reply_to_message_id == 42  # matches FakeMessage.message_id
     assert chat.sent_messages == []  # no download error
     # Registry is called to check/collect candidates, but fetch/renderer never run

@@ -3,6 +3,7 @@ import collections
 import logging
 from contextlib import suppress
 
+import httpx
 from telegram import Update
 from telegram.error import BadRequest, TimedOut
 from telegram.ext import (
@@ -104,13 +105,19 @@ class IgReelDownloaderApp:
             chat = update.effective_chat
             if chat is not None:
                 try:
+                    # Download the GIF ourselves instead of passing a URL to
+                    # Telegram — this avoids "Wrong type of the web page content"
+                    # errors and gives us proper timeout/retry control.
+                    async with httpx.AsyncClient(timeout=10.0) as client:
+                        resp = await client.get(gif_url)
+                        resp.raise_for_status()
                     await chat.send_animation(
-                        animation=gif_url,
+                        animation=resp.content,
                         reply_to_message_id=message.message_id,
                         write_timeout=self.telegram_media_write_timeout,
                         read_timeout=self.telegram_read_timeout,
                     )
-                except BadRequest as exc:
+                except (BadRequest, httpx.HTTPError) as exc:
                     logger.warning("Failed to send judgmental GIF %s: %s", gif_url, exc)
                 else:
                     # Only skip download if the GIF was sent successfully.
