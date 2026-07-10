@@ -42,6 +42,16 @@ Send a supported link to the bot and it will download the media when supported:
 - YouTube Shorts
 - Normal YouTube videos under 60 seconds
 
+### Judgmental GIFs
+
+If `JUDGMENTAL_CHANCE` is enabled, the bot can reply with a stored judgmental Telegram GIF instead of downloading. To seed one, send a GIF/animation to Telegram, then reply to that GIF with:
+
+```text
+/add-judgmental
+```
+
+The bot stores Telegram's `file_id` in SQLite and reuses it later, avoiding unreliable external GIF URLs.
+
 ## Database migrations
 
 The bot uses SQLite at `data/reels.db` and manages its schema with Alembic. Migrations run separately from the bot process.

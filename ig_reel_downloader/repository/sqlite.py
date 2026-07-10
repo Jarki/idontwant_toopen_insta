@@ -65,6 +65,26 @@ class MediaItemRecord(Base):
     )
 
 
+class JudgmentalAnimationRecord(Base):
+    __tablename__ = "judgmental_animations"
+    __table_args__ = (
+        UniqueConstraint(
+            "file_id",
+            name="uq_judgmental_animations_file_id",
+        ),
+        UniqueConstraint(
+            "file_unique_id",
+            name="uq_judgmental_animations_file_unique_id",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    file_id: Mapped[str] = mapped_column(String, nullable=False)
+    file_unique_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
+
+
 class MediaAssetRecord(Base):
     __tablename__ = "media_assets"
     __table_args__ = (
@@ -184,6 +204,60 @@ class SqliteRepository(base.Repository):
             )
             for asset in media.assets:
                 session.add(_asset_model_to_record(media.id, asset, media.updated_at))
+            session.commit()
+
+    def add_judgmental_animation_file_id(
+        self,
+        file_id: str,
+        file_unique_id: str | None,
+    ) -> None:
+        now = datetime.datetime.now()
+        with self.session_factory() as session:
+            existing: JudgmentalAnimationRecord | None = None
+            if file_unique_id is not None:
+                existing = session.scalar(
+                    select(JudgmentalAnimationRecord).where(
+                        JudgmentalAnimationRecord.file_unique_id == file_unique_id
+                    )
+                )
+            if existing is None:
+                existing = session.scalar(
+                    select(JudgmentalAnimationRecord).where(
+                        JudgmentalAnimationRecord.file_id == file_id
+                    )
+                )
+            if existing is None:
+                session.add(
+                    JudgmentalAnimationRecord(
+                        file_id=file_id,
+                        file_unique_id=file_unique_id,
+                        created_at=now,
+                        updated_at=now,
+                    )
+                )
+            else:
+                existing.file_id = file_id
+                existing.file_unique_id = file_unique_id or existing.file_unique_id
+                existing.updated_at = now
+            session.commit()
+
+    def list_judgmental_animation_file_ids(self) -> list[str]:
+        with self.session_factory() as session:
+            return list(
+                session.scalars(
+                    select(JudgmentalAnimationRecord.file_id).order_by(
+                        JudgmentalAnimationRecord.id
+                    )
+                )
+            )
+
+    def delete_judgmental_animation_file_id(self, file_id: str) -> None:
+        with self.session_factory() as session:
+            session.execute(
+                delete(JudgmentalAnimationRecord).where(
+                    JudgmentalAnimationRecord.file_id == file_id
+                )
+            )
             session.commit()
 
 

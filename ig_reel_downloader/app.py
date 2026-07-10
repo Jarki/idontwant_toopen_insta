@@ -1,9 +1,10 @@
 import asyncio
+import collections
 import logging
 from contextlib import suppress
 
 from telegram import Update
-from telegram.error import TimedOut
+from telegram.error import BadRequest, TimedOut
 from telegram.ext import (
     Application,
     ApplicationBuilder,
@@ -12,6 +13,7 @@ from telegram.ext import (
     filters,
 )
 
+from . import judgmental as judgmental_module
 from .downloaders import DownloaderRegistry, DownloadFailureReason, UrlCandidate
 from .media_fetch import MediaFetchResult, MediaFetchService
 from .repository import models
@@ -41,18 +43,32 @@ class IgReelDownloaderApp:
         renderer: TelegramMediaRenderer,
         telegram_media_write_timeout: float = DEFAULT_TELEGRAM_MEDIA_WRITE_TIMEOUT,
         telegram_read_timeout: float = DEFAULT_TELEGRAM_READ_TIMEOUT,
+        judgmental_chance: float = 0.0,
+        judgmental_gifs: collections.abc.Sequence[str] | None = None,
     ) -> None:
         self.telegram_media_write_timeout = telegram_media_write_timeout
         self.telegram_read_timeout = telegram_read_timeout
         self.registry = registry
         self.fetch_service = fetch_service
         self.renderer = renderer
+        self.judgmental_chance = judgmental_chance
+        self.judgmental_gifs = list(judgmental_gifs) if judgmental_gifs else []
+        # In-memory cache of Telegram file_ids for judgmental animations.
+        # After the first successful URL-based send, we store the returned
+        # file_id so subsequent sends use it directly (zero traffic, instant).
+        self._judgmental_file_ids: dict[str, str] = {}
         self.app: Application = (
             ApplicationBuilder()
             .token(bot_token)
             .media_write_timeout(telegram_media_write_timeout)
             .read_timeout(telegram_read_timeout)
             .build()
+        )
+        self.app.add_handler(
+            MessageHandler(
+                filters.Regex(r"^/add-judgmental(?:@\w+)?(?:\s|$)"),
+                self._add_judgmental_handler,
+            )
         )
         self.app.add_handler(MessageHandler(filters.TEXT, self._message_handler))
 
@@ -75,6 +91,110 @@ class IgReelDownloaderApp:
         ]
         return list(await asyncio.gather(*tasks))
 
+    async def _add_judgmental_handler(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        del context
+        message = update.message
+        chat = update.effective_chat
+        if message is None or chat is None:
+            return
+
+        reply = message.reply_to_message
+        animation = getattr(reply, "animation", None) if reply is not None else None
+        file_id = getattr(animation, "file_id", None)
+        if not isinstance(file_id, str) or not file_id:
+            await chat.send_message(
+                "Reply to a Telegram GIF/animation with /add-judgmental "
+                "and I will remember it."
+            )
+            return
+
+        file_unique_id = getattr(animation, "file_unique_id", None)
+        if not isinstance(file_unique_id, str):
+            file_unique_id = None
+        await asyncio.to_thread(
+            self.fetch_service.repository.add_judgmental_animation_file_id,
+            file_id,
+            file_unique_id,
+        )
+        await chat.send_message("Saved judgmental GIF.")
+
+    async def _list_judgmental_file_ids(self) -> list[str]:
+        try:
+            return await asyncio.to_thread(
+                self.fetch_service.repository.list_judgmental_animation_file_ids
+            )
+        except Exception:
+            logger.exception("Failed to list judgmental animation file_ids")
+            return []
+
+    async def _send_judgmental_animation(
+        self,
+        update: Update,
+        reply_to_message_id: int,
+        file_ids: collections.abc.Sequence[str],
+    ) -> bool:
+        chat = update.effective_chat
+        if chat is None:
+            return False
+
+        if file_ids:
+            animation = judgmental_module.pick_gif(file_ids)
+            try:
+                await chat.send_animation(
+                    animation=animation,
+                    reply_to_message_id=reply_to_message_id,
+                    write_timeout=self.telegram_media_write_timeout,
+                    read_timeout=self.telegram_read_timeout,
+                )
+            except BadRequest as exc:
+                await asyncio.to_thread(
+                    self.fetch_service.repository.delete_judgmental_animation_file_id,
+                    animation,
+                )
+                logger.warning(
+                    "Failed to send stored judgmental GIF file_id %s: %s",
+                    animation,
+                    exc,
+                )
+                return False
+            return True
+
+        gif_url = judgmental_module.pick_gif(self.judgmental_gifs)
+        try:
+            # Fallback for deployments that have not seeded Telegram file_ids yet.
+            # This path remains best-effort because Telegram must fetch the URL.
+            file_id = self._judgmental_file_ids.get(gif_url)
+            if file_id is not None:
+                sent = await chat.send_animation(
+                    animation=file_id,
+                    reply_to_message_id=reply_to_message_id,
+                    write_timeout=self.telegram_media_write_timeout,
+                    read_timeout=self.telegram_read_timeout,
+                )
+            else:
+                sent = await chat.send_animation(
+                    animation=gif_url,
+                    reply_to_message_id=reply_to_message_id,
+                    write_timeout=self.telegram_media_write_timeout,
+                    read_timeout=self.telegram_read_timeout,
+                )
+            if sent and sent.animation:
+                self._judgmental_file_ids[gif_url] = sent.animation.file_id
+                await asyncio.to_thread(
+                    self.fetch_service.repository.add_judgmental_animation_file_id,
+                    sent.animation.file_id,
+                    getattr(sent.animation, "file_unique_id", None),
+                )
+        except BadRequest as exc:
+            self._judgmental_file_ids.pop(gif_url, None)
+            logger.warning("Failed to send judgmental GIF %s: %s", gif_url, exc)
+            return False
+        return True
+
     async def _message_handler(
         self,
         update: Update,
@@ -91,6 +211,19 @@ class IgReelDownloaderApp:
         candidates = self.registry.extract_candidates(message.text)
         if not candidates:
             return
+
+        # Judgmental GIF chance — replace the download response with a GIF.
+        judgmental_file_ids = await self._list_judgmental_file_ids()
+        judgmental_options = judgmental_file_ids or self.judgmental_gifs
+        if judgmental_module.should_fire(self.judgmental_chance, judgmental_options):
+            sent_judgmental_animation = await self._send_judgmental_animation(
+                update,
+                message.message_id,
+                judgmental_file_ids,
+            )
+            if sent_judgmental_animation:
+                # Only skip download if the GIF was sent successfully.
+                return
 
         logger.info(
             "Received %d media request(s) from %s: %s",
