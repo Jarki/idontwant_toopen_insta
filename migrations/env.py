@@ -7,7 +7,7 @@ from pathlib import Path
 from alembic import context
 from sqlalchemy import engine_from_config, make_url, pool
 
-from ig_reel_downloader.repository.sqlite import Base
+from ig_reel_downloader.repository.schema import Base
 
 config = context.config
 
@@ -19,15 +19,15 @@ target_metadata = Base.metadata
 
 def _database_url() -> str:
     configured_url = config.attributes.get("database_url")
-    if isinstance(configured_url, str):
+    if isinstance(configured_url, str) and configured_url:
         return configured_url
 
     env_url = os.getenv("DATABASE_URL")
     if env_url:
         return env_url
 
-    db_path = os.getenv("DB_PATH", "data/reels.db")
-    return f"sqlite:///{Path(db_path)}"
+    msg = "DATABASE_URL is required for Alembic migrations"
+    raise RuntimeError(msg)
 
 
 def _ensure_sqlite_parent(url: str) -> None:
@@ -35,6 +35,22 @@ def _ensure_sqlite_parent(url: str) -> None:
     if parsed_url.drivername != "sqlite" or parsed_url.database in (None, ":memory:"):
         return
     Path(parsed_url.database).parent.mkdir(parents=True, exist_ok=True)
+
+
+def _restrict_app_role(connection: object) -> None:
+    dialect = getattr(connection, "dialect", None)
+    if getattr(dialect, "name", None) != "postgresql":
+        return
+
+    app_user = os.getenv("DB_APP_USER")
+    if not app_user:
+        msg = "DB_APP_USER is required for PostgreSQL migrations"
+        raise RuntimeError(msg)
+    quoted_user = dialect.identifier_preparer.quote(app_user)
+    for table in ("alembic_version", "reels"):
+        connection.exec_driver_sql(
+            f"REVOKE ALL PRIVILEGES ON TABLE {table} FROM {quoted_user}"
+        )
 
 
 def run_migrations_offline() -> None:
@@ -57,6 +73,7 @@ def run_migrations_online() -> None:
         )
         with context.begin_transaction():
             context.run_migrations()
+            _restrict_app_role(existing_connection)
         return
 
     database_url = _database_url()
@@ -74,6 +91,7 @@ def run_migrations_online() -> None:
 
         with context.begin_transaction():
             context.run_migrations()
+            _restrict_app_role(connection)
 
 
 if context.is_offline_mode():

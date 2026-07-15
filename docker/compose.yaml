@@ -1,0 +1,98 @@
+name: ig-reel-downloader
+
+services:
+  postgres:
+    image: postgres:17.10-alpine
+    restart: unless-stopped
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    expose:
+      - "5432"
+
+  postgres-bootstrap:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.app
+    entrypoint: ["/app/.venv/bin/python", "docker/scripts/postgres_bootstrap.py"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_MIGRATION_USER: ${DB_MIGRATION_USER}
+      DB_MIGRATION_PASSWORD: ${DB_MIGRATION_PASSWORD}
+      DB_APP_USER: ${DB_APP_USER}
+      DB_APP_PASSWORD: ${DB_APP_PASSWORD}
+    restart: "no"
+
+  postgres-transfer:
+    profiles: ["transfer"]
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.app
+    entrypoint: ["/app/.venv/bin/python", "docker/scripts/sqlite_to_postgres.py"]
+    command: ["--sqlite-path", "/app/data/reels.db", "--upgrade-schema", "--verify"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+      postgres-bootstrap:
+        condition: service_completed_successfully
+    environment:
+      DB_MIGRATION_URL: ${DB_MIGRATION_URL}
+      DB_APP_USER: ${DB_APP_USER}
+      OUTPUT_DIR: /app/${OUTPUT_DIR:-output}
+    volumes:
+      - ../data:/app/data:ro
+      - ../${OUTPUT_DIR:-output}:/app/${OUTPUT_DIR:-output}:ro
+    restart: "no"
+
+  migrate:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.app
+    entrypoint: ["/app/.venv/bin/alembic"]
+    command: ["upgrade", "head"]
+    depends_on:
+      postgres-bootstrap:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: ${DB_MIGRATION_URL}
+      DB_APP_USER: ${DB_APP_USER}
+    restart: "no"
+
+  downloader:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.app
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DATABASE_URL: ${DATABASE_URL}
+      BOT_TOKEN: ${BOT_TOKEN}
+      OUTPUT_DIR: ${OUTPUT_DIR:-output}
+      MAX_FILES: "${MAX_FILES:-100}"
+      TELEGRAM_MEDIA_WRITE_TIMEOUT: "${TELEGRAM_MEDIA_WRITE_TIMEOUT:-120}"
+      TELEGRAM_READ_TIMEOUT: "${TELEGRAM_READ_TIMEOUT:-30}"
+      JUDGMENTAL_CHANCE: "${JUDGMENTAL_CHANCE:-0}"
+    volumes:
+      - ../${OUTPUT_DIR:-output}:/app/${OUTPUT_DIR:-output}
+      - ../assets:/app/assets
+    restart: unless-stopped
+
+volumes:
+  pgdata:

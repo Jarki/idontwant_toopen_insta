@@ -13,18 +13,18 @@ Important paths:
 - `ig_reel_downloader/app.py` — Telegram application and message flow.
 - `ig_reel_downloader/utils.py` — URL parsing, `yt-dlp` integration, and error classification.
 - `ig_reel_downloader/constants.py` — shared constants.
-- `ig_reel_downloader/repository/` — repository protocol, Pydantic models, and SQLite implementation.
+- `ig_reel_downloader/repository/` — repository protocol, Pydantic models, shared schema, and PostgreSQL runtime implementation.
 - `migrations/` — Alembic migration environment and revisions.
+- `docker/scripts/sqlite_to_postgres.py` — read-only legacy SQLite transfer tooling.
 - `tests/` — pytest suite.
 - `.github/workflows/quality.yml` — GitHub Actions quality gate.
-- `Dockerfile`, `docker-compose.yaml`, `docker_entrypoint.sh`, `clean.sh` — container deployment, one-shot migration service, and cleanup loop.
+- `docker/` — Dockerfile, Compose definitions, entrypoint, cleanup, preflight, and transfer tooling.
 - `.env.example` — documented runtime configuration.
 
 Runtime/local state paths:
 
 - `.env` — local secrets/config; never commit.
 - `assets/cookies.txt` — optional Instagram cookies; never commit.
-- `data/reels.db` — local SQLite cache; never commit.
 - `output/` — downloaded media files; never commit.
 
 ## Detailed workflow

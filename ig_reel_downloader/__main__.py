@@ -45,10 +45,15 @@ def main() -> None:
         raise ValueError(msg)
 
     output_dir.mkdir(exist_ok=True)
-    db_path = "data/reels.db"
-    Path(db_path).parent.mkdir(exist_ok=True)
+    database_url = os.getenv("DATABASE_URL")
+    if database_url is None:
+        msg = "DATABASE_URL is not set"
+        raise ValueError(msg)
+    if not database_url.startswith("postgresql+psycopg://"):
+        msg = "DATABASE_URL must use the postgresql+psycopg:// dialect"
+        raise ValueError(msg)
 
-    repo = ig_reel_downloader.repository.sqlite.SqliteRepository(db_path)
+    repo = ig_reel_downloader.repository.postgres.PostgreSQLRepository(database_url)
     downloaders: list[ig_reel_downloader.downloaders.Downloader] = [
         ig_reel_downloader.downloaders.InstagramReelDownloader(
             cookie_filepath=cookie_filepath

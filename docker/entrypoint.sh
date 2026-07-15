@@ -4,7 +4,7 @@ cleanup_loop() {
     # This might lead to race conditions but yk
     while true; do
         echo "Cleaning up old files"
-        /app/clean.sh
+        /app/docker/clean.sh
         sleep 1800
     done
 }

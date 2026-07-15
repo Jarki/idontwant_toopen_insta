@@ -4,7 +4,7 @@
 
 `ig-reel-downloader` is a small Python Telegram bot that downloads Instagram Reels and sends the video back to the Telegram chat.
 
-Core technologies: `python-telegram-bot`, `yt-dlp`, SQLite, Alembic, Docker Compose, `uv`, Poe, Ruff, mypy, and pytest.
+Core technologies: `python-telegram-bot`, `yt-dlp`, PostgreSQL, Alembic, Docker Compose, `uv`, Poe, Ruff, mypy, and pytest.
 
 For deeper system details, read `ARCH.md`. For detailed agent workflow guidance, see `docs/agent-workflow.md`.
 
@@ -51,11 +51,10 @@ uv run poe deploy        # triggers Pi dev deployment; agents must not run unles
 Preserve these unless the user explicitly approves a change:
 
 - The app is a single-process Telegram long-polling bot.
-- Blocking `yt-dlp` and SQLite work is offloaded from async handlers with `asyncio.to_thread()`.
-- SQLite is the local cache; there is no external database service.
-- Schema migrations run separately from bot startup through the Docker Compose `migrate` service.
+- Blocking `yt-dlp` and database work is offloaded from async handlers with `asyncio.to_thread()`.
+- PostgreSQL is the runtime database, accessed over the network via `DATABASE_URL` (must use `postgresql+psycopg://`). Schema migrations run separately from bot startup.
 - Cached rows are reusable only while fresh and while the referenced media file still exists.
-- Cleanup removes old media files from `output/`; it does not prune SQLite rows.
+- Cleanup removes old media files from `output/`; it does not prune database rows.
 - Optional cookies live at `assets/cookies.txt` and are used only if the file exists.
 - Large Telegram uploads may time out; timeout behavior should stay user-friendly.
 - URL parsing is intentionally narrow unless broadening support is part of the task.
@@ -87,6 +86,5 @@ Common types: `feat`, `fix`, `docs`, `test`, `refactor`, `build`, `chore`.
 - `README.md` — setup and runtime instructions.
 - `ARCH.md` — architecture and deployment details.
 - `docs/agent-workflow.md` — detailed agent workflow, repo map, testing, generated files, and orchestration guidance.
-- `docs/git-flow.md` — branch, quality-gate, release-tag, and deployment model.
-- `docs/database.md` — SQLite/Alembic database tasks through `uv run poe`.
+- `docs/database.md` — PostgreSQL/Alembic database tasks through `uv run poe`.
 - `pyproject.toml` — dependencies and Poe task definitions.

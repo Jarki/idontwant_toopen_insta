@@ -4,10 +4,6 @@ from . import models
 
 
 class Repository(Protocol):
-    def create_database(self) -> None:
-        """Apply Alembic migrations for explicit migration/test callers."""
-        raise NotImplementedError
-
     def get_media_by_provider_item(
         self,
         provider: str,
