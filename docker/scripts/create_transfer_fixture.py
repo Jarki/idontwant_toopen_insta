@@ -28,7 +28,7 @@ def main() -> None:
     sqlite_path.parent.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    config = Config(str(Path(__file__).resolve().parents[1] / "alembic.ini"))
+    config = Config(str(Path(__file__).resolve().parents[2] / "alembic.ini"))
     config.attributes["database_url"] = f"sqlite:///{sqlite_path}"
     command.upgrade(config, "head")
 

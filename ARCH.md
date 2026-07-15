@@ -66,13 +66,16 @@ TelegramMediaRenderer
 ├── tests/unit/                  # Unit tests for app seams and pure helpers
 ├── tests/integration/           # Integration tests, including repository/database tests
 ├── tests/e2e/                   # Future end-to-end tests
-├── Dockerfile.app                 # uv-based container build
-├── docker-compose.yaml            # Production-ish local deployment
-├── docker-compose.dev.override.yaml
-├── docker-compose.prod.override.yaml
-├── docker-compose.pg-test.override.yaml
-├── docker_entrypoint.sh            # Starts cleanup loop and bot process
-├── clean.sh                        # Output-file retention script
+├── docker/
+│   ├── Dockerfile.app             # uv-based container build
+│   ├── compose.yaml               # Production-ish local deployment
+│   ├── compose.dev.yaml
+│   ├── compose.prod.yaml
+│   ├── compose.pg-test.yaml
+│   ├── entrypoint.sh              # Starts cleanup loop and bot process
+│   ├── clean.sh                   # Output-file retention script
+│   ├── preflight.sh               # Deployment environment validation
+│   └── scripts/                   # Compose and transfer tooling
 ├── pyproject.toml               # Dependencies and Poe task definitions
 ├── ruff.toml                    # Formatting/linting rules
 ├── mypy.ini                     # Strict mypy configuration
@@ -211,7 +214,7 @@ The app layer depends on `MediaFetchService` and the repository protocol rather 
 
 ### Legacy SQLite transfer
 
-`scripts/sqlite_to_postgres.py` opens the legacy SQLite database read-only and
+`docker/scripts/sqlite_to_postgres.py` opens the legacy SQLite database read-only and
 copies the validated transfer set into PostgreSQL. No SQLite repository
 implementation is part of the runtime package.
 
@@ -258,7 +261,8 @@ The DB can contain rows whose files were removed by cleanup. This is expected: `
 
 ## Deployment architecture
 
-Docker deployment is defined by `Dockerfile.app`, `docker-compose.yaml`, `docker-compose.dev.override.yaml`, `docker-compose.prod.override.yaml`, `docker-compose.pg-test.override.yaml`, `docker_entrypoint.sh`, and `clean.sh`.
+Docker deployment is defined by `docker/Dockerfile.app`, the Compose files under
+`docker/`, `docker/entrypoint.sh`, and `docker/clean.sh`.
 
 ### Image build
 
@@ -269,11 +273,11 @@ The Docker image:
 3. Uses `uv sync --locked --no-install-project` to install locked third-party dependencies first.
 4. Copies the project into `/app`.
 5. Runs `uv sync --locked` to install the project.
-6. Uses `/bin/bash docker_entrypoint.sh` as the entrypoint.
+6. Uses `/bin/bash docker/entrypoint.sh` as the entrypoint.
 
 ### Compose services
 
-`docker-compose.yaml` defines four database-related services and the downloader:
+`docker/compose.yaml` defines four database-related services and the downloader:
 
 - `postgres`: a PostgreSQL container with persistent named volume and `pg_isready` healthcheck. Uses the official PostgreSQL image, not the app image.
 - `postgres-bootstrap`: a one-shot service that runs after PostgreSQL is healthy. It creates or validates the migration and application roles idempotently, grants privileges, and exits. Rerunnable against an existing volume.
@@ -285,8 +289,8 @@ The default startup order is: `postgres` healthy → `postgres-bootstrap` comple
 
 `downloader` has these mounts:
 
-- `./${OUTPUT_DIR:-output}:/app/${OUTPUT_DIR:-output}`
-- `./assets:/app/assets`
+- `../${OUTPUT_DIR:-output}:/app/${OUTPUT_DIR:-output}`
+- `../assets:/app/assets`
 
 Runtime configuration is injected explicitly from Compose interpolation; the
 container does not mount `.env`, so bootstrap and migration passwords are not
@@ -306,11 +310,11 @@ Three separate PostgreSQL roles enforce least privilege:
 
 ### Cleanup loop
 
-`docker_entrypoint.sh` starts a background cleanup loop before launching the bot:
+`docker/entrypoint.sh` starts a background cleanup loop before launching the bot:
 
 ```text
 every 1800 seconds:
-    /app/clean.sh
+    /app/docker/clean.sh
 ```
 
 `clean.sh` reads `OUTPUT_DIR` and `MAX_FILES` from the downloader environment and deletes the oldest files when the output directory exceeds the configured limit.

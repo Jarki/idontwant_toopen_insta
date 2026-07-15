@@ -34,7 +34,7 @@ exposing migration or bootstrap passwords to `downloader`.
 To run only the migration container:
 
 ```bash
-docker-compose run --rm migrate
+docker compose -f docker/compose.yaml run --rm migrate
 ```
 
 The `migrate` service uses the same image as the bot and runs:
@@ -91,10 +91,10 @@ When a schema change is needed:
 
 ## Legacy SQLite transfer
 
-To migrate data from an existing SQLite database to PostgreSQL, use the transfer script at `scripts/sqlite_to_postgres.py`:
+To migrate data from an existing SQLite database to PostgreSQL, use the transfer script at `docker/scripts/sqlite_to_postgres.py`:
 
 ```bash
-uv run python scripts/sqlite_to_postgres.py \
+uv run python docker/scripts/sqlite_to_postgres.py \
   --sqlite-path data/reels.db \
   --postgres-url "$DB_MIGRATION_URL" \
   --upgrade-schema \

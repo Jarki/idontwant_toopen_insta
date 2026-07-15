@@ -15,10 +15,10 @@ Important paths:
 - `ig_reel_downloader/constants.py` — shared constants.
 - `ig_reel_downloader/repository/` — repository protocol, Pydantic models, shared schema, and PostgreSQL runtime implementation.
 - `migrations/` — Alembic migration environment and revisions.
-- `scripts/sqlite_to_postgres.py` — read-only legacy SQLite transfer tooling.
+- `docker/scripts/sqlite_to_postgres.py` — read-only legacy SQLite transfer tooling.
 - `tests/` — pytest suite.
 - `.github/workflows/quality.yml` — GitHub Actions quality gate.
-- `Dockerfile.app`, `docker-compose.yaml`, `docker-compose.dev.override.yaml`, `docker-compose.prod.override.yaml`, `docker-compose.pg-test.override.yaml`, `docker_entrypoint.sh`, `clean.sh` — container deployment, one-shot migration service, and cleanup loop.
+- `docker/` — Dockerfile, Compose definitions, entrypoint, cleanup, preflight, and transfer tooling.
 - `.env.example` — documented runtime configuration.
 
 Runtime/local state paths:

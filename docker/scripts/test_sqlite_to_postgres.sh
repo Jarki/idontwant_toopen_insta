@@ -22,9 +22,9 @@ export COMPOSE_PROFILES=""
 compose=(
     docker compose
     -p "${project}"
-    -f docker-compose.yaml
-    -f docker-compose.prod.override.yaml
-    -f docker-compose.pg-test.override.yaml
+    -f docker/compose.yaml
+    -f docker/compose.prod.yaml
+    -f docker/compose.pg-test.yaml
 )
 
 active_services="$("${compose[@]}" config --services)"
@@ -52,28 +52,28 @@ DB_APP_PASSWORD="${DB_APP_PASSWORD}"
 DB_MIGRATION_URL=${DB_MIGRATION_URL}
 DATABASE_URL=${DATABASE_URL}
 EOF
-bash scripts/preflight.sh "${workdir}/preflight"
+bash docker/preflight.sh "${workdir}/preflight"
 mkdir -p "${workdir}/invalid-preflight"
 cp "${workdir}/preflight/.env" "${workdir}/invalid-preflight/.env"
 cat >>"${workdir}/invalid-preflight/.env" <<EOF
 DATABASE_URL=postgresql+psycopg://${DB_APP_USER}:wrong-password@postgres:5432/${POSTGRES_DB}
 EOF
-if bash scripts/preflight.sh "${workdir}/invalid-preflight" >/dev/null 2>&1; then
+if bash docker/preflight.sh "${workdir}/invalid-preflight" >/dev/null 2>&1; then
     echo "Preflight unexpectedly accepted a mismatched URL password" >&2
     exit 1
 fi
-uv run python scripts/create_transfer_fixture.py \
+uv run python docker/scripts/create_transfer_fixture.py \
     --sqlite-path "${PG_TEST_DATA_DIR}/reels.db" \
     --output-dir "${PG_TEST_OUTPUT_DIR}"
-uv run python scripts/create_transfer_fixture.py \
+uv run python docker/scripts/create_transfer_fixture.py \
     --sqlite-path "${PG_TEST_DATA_DIR}/invalid-asset.db" \
     --output-dir "${PG_TEST_OUTPUT_DIR}" \
     --invalid-asset-type
-uv run python scripts/create_transfer_fixture.py \
+uv run python docker/scripts/create_transfer_fixture.py \
     --sqlite-path "${PG_TEST_DATA_DIR}/invalid-metadata.db" \
     --output-dir "${PG_TEST_OUTPUT_DIR}" \
     --invalid-metadata-shape
-uv run python scripts/create_transfer_fixture.py \
+uv run python docker/scripts/create_transfer_fixture.py \
     --sqlite-path "${PG_TEST_DATA_DIR}/dirty-legacy.db" \
     --output-dir "${PG_TEST_OUTPUT_DIR}" \
     --dirty-legacy
@@ -81,7 +81,7 @@ source_checksum="$(sha256sum "${PG_TEST_DATA_DIR}/reels.db" | cut -d ' ' -f 1)"
 media_checksum="$(sha256sum "${PG_TEST_OUTPUT_DIR}/existing.mp4" | cut -d ' ' -f 1)"
 
 "${compose[@]}" build postgres-transfer
-"${compose[@]}" run --rm --no-deps --entrypoint /app/clean.sh downloader
+    "${compose[@]}" run --rm --no-deps --entrypoint /app/docker/clean.sh downloader
 "${compose[@]}" up -d --wait postgres
 
 transfer_output="$(

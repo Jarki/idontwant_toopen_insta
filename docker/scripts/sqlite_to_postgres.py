@@ -7,7 +7,7 @@ target using the neutral schema records.
 
 Usage::
 
-    uv run python scripts/sqlite_to_postgres.py \
+    uv run python docker/scripts/sqlite_to_postgres.py \
         --sqlite-path /app/data/reels.db \
         --postgres-url "$DATABASE_URL" \
         --upgrade-schema \

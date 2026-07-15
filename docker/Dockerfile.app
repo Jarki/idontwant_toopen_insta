@@ -17,4 +17,4 @@ COPY . /app/
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --locked
 
-ENTRYPOINT [ "/bin/bash", "docker_entrypoint.sh" ] 
+ENTRYPOINT [ "/bin/bash", "docker/entrypoint.sh" ]

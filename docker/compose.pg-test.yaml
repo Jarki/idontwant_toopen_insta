@@ -6,15 +6,15 @@ services:
 
   postgres-bootstrap:
     build:
-      context: .
-      dockerfile: Dockerfile.app
+      context: ..
+      dockerfile: docker/Dockerfile.app
     image: ig-reel-downloader-pg-test:local
     pull_policy: never
 
   postgres-transfer:
     build:
-      context: .
-      dockerfile: Dockerfile.app
+      context: ..
+      dockerfile: docker/Dockerfile.app
     image: ig-reel-downloader-pg-test:local
     pull_policy: never
     environment:
@@ -26,17 +26,17 @@ services:
 
   migrate:
     build:
-      context: .
-      dockerfile: Dockerfile.app
+      context: ..
+      dockerfile: docker/Dockerfile.app
     image: ig-reel-downloader-pg-test:local
     pull_policy: never
 
   downloader:
     build:
-      context: .
-      dockerfile: Dockerfile.app
+      context: ..
+      dockerfile: docker/Dockerfile.app
     image: ig-reel-downloader-pg-test:local
     pull_policy: never
     entrypoint: ["/app/.venv/bin/python"]
-    command: ["scripts/postgres_runtime_probe.py"]
+    command: ["docker/scripts/postgres_runtime_probe.py"]
     restart: "no"

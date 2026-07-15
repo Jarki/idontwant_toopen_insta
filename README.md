@@ -29,7 +29,7 @@ Create a file named `cookies.txt` and put it into the `assets` directory.
 ### 4. Run the bot using Docker Compose
 
 ```bash
-docker-compose up -d --build
+docker compose -f docker/compose.yaml up -d --build
 ```
 
 ## Usage
@@ -89,7 +89,7 @@ Migrations run separately from the bot process. Docker Compose applies them thro
 To run migrations manually through Compose:
 
 ```bash
-docker-compose run --rm migrate
+docker compose -f docker/compose.yaml run --rm migrate
 ```
 
 Manual local migration commands are also available through Poe:
@@ -116,7 +116,7 @@ DATABASE_URL=postgresql+psycopg://db_migration:pass@localhost:5432/db \
 To migrate data from an existing SQLite database, use the transfer script:
 
 ```bash
-uv run python scripts/sqlite_to_postgres.py \
+uv run python docker/scripts/sqlite_to_postgres.py \
   --sqlite-path data/reels.db \
   --postgres-url "$DB_MIGRATION_URL" \
   --upgrade-schema \

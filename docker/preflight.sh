@@ -1,7 +1,7 @@
 #!/bin/bash
 # Preflight check for PostgreSQL deployment.
 # Validates that required credentials, URLs, and paths exist.
-# Usage: scripts/preflight.sh [deploy-dir]
+# Usage: docker/preflight.sh [deploy-dir]
 #   deploy-dir defaults to "."
 
 set -euo pipefail

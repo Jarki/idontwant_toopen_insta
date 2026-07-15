@@ -49,7 +49,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: Dockerfile.app
+          file: docker/Dockerfile.app
           platforms: linux/amd64,linux/arm64
           push: true
           tags: |
@@ -72,7 +72,7 @@ jobs:
       - name: Preflight
         run: |
           set -euo pipefail
-          bash "${GITHUB_WORKSPACE}/scripts/preflight.sh" \
+          bash "${GITHUB_WORKSPACE}/docker/preflight.sh" \
             "${HOME}/deploy/ig-reel-downloader-dev"
 
       - name: Fetch Compose files
@@ -83,10 +83,11 @@ jobs:
           deploy_dir="${HOME}/deploy/ig-reel-downloader-dev"
           raw_base="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${COMPOSE_REF}"
 
-          curl -fsSL "${raw_base}/docker-compose.yaml" \
-            -o "${deploy_dir}/docker-compose.yaml"
-          curl -fsSL "${raw_base}/docker-compose.dev.override.yaml" \
-            -o "${deploy_dir}/docker-compose.dev.override.yaml"
+          mkdir -p "${deploy_dir}/docker"
+          curl -fsSL "${raw_base}/docker/compose.yaml" \
+            -o "${deploy_dir}/docker/compose.yaml"
+          curl -fsSL "${raw_base}/docker/compose.dev.yaml" \
+            -o "${deploy_dir}/docker/compose.dev.yaml"
 
       - name: Pull image
         env:
@@ -97,9 +98,10 @@ jobs:
           cd "${deploy_dir}"
 
           docker compose \
+            --env-file "${deploy_dir}/.env" \
             -p ig-reel-downloader-dev \
-            -f docker-compose.yaml \
-            -f docker-compose.dev.override.yaml \
+            -f docker/compose.yaml \
+            -f docker/compose.dev.yaml \
             pull
 
       - name: Start PostgreSQL
@@ -111,9 +113,10 @@ jobs:
           cd "${deploy_dir}"
 
           docker compose \
+            --env-file "${deploy_dir}/.env" \
             -p ig-reel-downloader-dev \
-            -f docker-compose.yaml \
-            -f docker-compose.dev.override.yaml \
+            -f docker/compose.yaml \
+            -f docker/compose.dev.yaml \
             up -d --wait postgres
 
       - name: Run PostgreSQL bootstrap
@@ -125,9 +128,10 @@ jobs:
           cd "${deploy_dir}"
 
           docker compose \
+            --env-file "${deploy_dir}/.env" \
             -p ig-reel-downloader-dev \
-            -f docker-compose.yaml \
-            -f docker-compose.dev.override.yaml \
+            -f docker/compose.yaml \
+            -f docker/compose.dev.yaml \
             run --rm postgres-bootstrap
 
       - name: Run migrations
@@ -139,9 +143,10 @@ jobs:
           cd "${deploy_dir}"
 
           docker compose \
+            --env-file "${deploy_dir}/.env" \
             -p ig-reel-downloader-dev \
-            -f docker-compose.yaml \
-            -f docker-compose.dev.override.yaml \
+            -f docker/compose.yaml \
+            -f docker/compose.dev.yaml \
             run --rm migrate
 
       - name: Start downloader
@@ -153,9 +158,10 @@ jobs:
           cd "${deploy_dir}"
 
           docker compose \
+            --env-file "${deploy_dir}/.env" \
             -p ig-reel-downloader-dev \
-            -f docker-compose.yaml \
-            -f docker-compose.dev.override.yaml \
+            -f docker/compose.yaml \
+            -f docker/compose.dev.yaml \
             up -d --remove-orphans downloader
 
       - name: Show status
@@ -167,7 +173,8 @@ jobs:
           cd "${deploy_dir}"
 
           docker compose \
+            --env-file "${deploy_dir}/.env" \
             -p ig-reel-downloader-dev \
-            -f docker-compose.yaml \
-            -f docker-compose.dev.override.yaml \
+            -f docker/compose.yaml \
+            -f docker/compose.dev.yaml \
             ps

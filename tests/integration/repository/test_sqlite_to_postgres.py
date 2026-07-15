@@ -20,14 +20,14 @@ from alembic import command
 from alembic.config import Config
 from sqlalchemy import create_engine, inspect, text
 
+from docker.scripts import sqlite_to_postgres
 from ig_reel_downloader.repository.schema import Base
-from scripts import sqlite_to_postgres
 
 # ---------------------------------------------------------------------------
 # Module-level helpers
 # ---------------------------------------------------------------------------
 
-SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "scripts"
+SCRIPTS_DIR = Path(__file__).resolve().parents[3] / "docker" / "scripts"
 TRANSFER_SCRIPT = SCRIPTS_DIR / "sqlite_to_postgres.py"
 LATEST_REVISION = "20260715_0004"
 

@@ -21,9 +21,9 @@ services:
 
   postgres-bootstrap:
     build:
-      context: .
-      dockerfile: Dockerfile.app
-    entrypoint: ["/app/.venv/bin/python", "scripts/postgres_bootstrap.py"]
+      context: ..
+      dockerfile: docker/Dockerfile.app
+    entrypoint: ["/app/.venv/bin/python", "docker/scripts/postgres_bootstrap.py"]
     depends_on:
       postgres:
         condition: service_healthy
@@ -42,9 +42,9 @@ services:
   postgres-transfer:
     profiles: ["transfer"]
     build:
-      context: .
-      dockerfile: Dockerfile.app
-    entrypoint: ["/app/.venv/bin/python", "scripts/sqlite_to_postgres.py"]
+      context: ..
+      dockerfile: docker/Dockerfile.app
+    entrypoint: ["/app/.venv/bin/python", "docker/scripts/sqlite_to_postgres.py"]
     command: ["--sqlite-path", "/app/data/reels.db", "--upgrade-schema", "--verify"]
     depends_on:
       postgres:
@@ -56,14 +56,14 @@ services:
       DB_APP_USER: ${DB_APP_USER}
       OUTPUT_DIR: /app/${OUTPUT_DIR:-output}
     volumes:
-      - ./data:/app/data:ro
-      - ./${OUTPUT_DIR:-output}:/app/${OUTPUT_DIR:-output}:ro
+      - ../data:/app/data:ro
+      - ../${OUTPUT_DIR:-output}:/app/${OUTPUT_DIR:-output}:ro
     restart: "no"
 
   migrate:
     build:
-      context: .
-      dockerfile: Dockerfile.app
+      context: ..
+      dockerfile: docker/Dockerfile.app
     entrypoint: ["/app/.venv/bin/alembic"]
     command: ["upgrade", "head"]
     depends_on:
@@ -76,8 +76,8 @@ services:
 
   downloader:
     build:
-      context: .
-      dockerfile: Dockerfile.app
+      context: ..
+      dockerfile: docker/Dockerfile.app
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -90,8 +90,8 @@ services:
       TELEGRAM_READ_TIMEOUT: "${TELEGRAM_READ_TIMEOUT:-30}"
       JUDGMENTAL_CHANCE: "${JUDGMENTAL_CHANCE:-0}"
     volumes:
-      - ./${OUTPUT_DIR:-output}:/app/${OUTPUT_DIR:-output}
-      - ./assets:/app/assets
+      - ../${OUTPUT_DIR:-output}:/app/${OUTPUT_DIR:-output}
+      - ../assets:/app/assets
     restart: unless-stopped
 
 volumes:
