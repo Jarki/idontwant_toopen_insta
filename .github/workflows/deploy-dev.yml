@@ -68,6 +68,12 @@ jobs:
             exit 1
           fi
 
+      - name: Preflight
+        run: |
+          set -euo pipefail
+          bash "${GITHUB_WORKSPACE}/scripts/preflight.sh" \
+            "${HOME}/deploy/ig-reel-downloader-dev"
+
       - name: Fetch Compose files
         env:
           COMPOSE_REF: ${{ inputs.compose_ref }}
@@ -95,6 +101,34 @@ jobs:
             -f docker-compose.dev.override.yaml \
             pull
 
+      - name: Start PostgreSQL
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          deploy_dir="${HOME}/deploy/ig-reel-downloader-dev"
+          cd "${deploy_dir}"
+
+          docker compose \
+            -p ig-reel-downloader-dev \
+            -f docker-compose.yaml \
+            -f docker-compose.dev.override.yaml \
+            up -d --wait postgres
+
+      - name: Run PostgreSQL bootstrap
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          deploy_dir="${HOME}/deploy/ig-reel-downloader-dev"
+          cd "${deploy_dir}"
+
+          docker compose \
+            -p ig-reel-downloader-dev \
+            -f docker-compose.yaml \
+            -f docker-compose.dev.override.yaml \
+            run --rm postgres-bootstrap
+
       - name: Run migrations
         env:
           IMAGE_TAG: ${{ inputs.image_tag }}
@@ -121,7 +155,7 @@ jobs:
             -p ig-reel-downloader-dev \
             -f docker-compose.yaml \
             -f docker-compose.dev.override.yaml \
-            up -d --no-deps --remove-orphans downloader
+            up -d --remove-orphans downloader
 
       - name: Show status
         env:

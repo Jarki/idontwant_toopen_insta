@@ -1,6 +1,6 @@
 # Architecture
 
-_Last reviewed: 2026-07-08_
+_Last reviewed: 2026-07-15_
 
 ## Overview
 
@@ -8,9 +8,9 @@ _Last reviewed: 2026-07-08_
 
 - `python-telegram-bot` handles Telegram long-polling and message delivery.
 - `yt-dlp` extracts metadata and downloads media files for Instagram, TikTok, and YouTube.
-- SQLite caches generic media metadata and local file paths for recently downloaded items.
-- Alembic manages SQLite schema creation and migrations.
-- Docker Compose runs migrations in a one-shot container before starting the bot with persistent `data/`, `output/`, `assets/`, and `.env` mounts.
+- PostgreSQL caches generic media metadata and local file paths for recently downloaded items.
+- Alembic manages database schema creation and migrations.
+- Docker Compose runs PostgreSQL and a bootstrap service for role provisioning, then applies migrations in a one-shot container before starting the bot with persistent `output/` and `assets/` mounts.
 
 At a high level, the core runtime flow is:
 
@@ -30,7 +30,7 @@ IgReelDownloaderApp
     │
     ▼
 MediaFetchService
-    ├── checks generic SQLite cache by provider/media/item identity
+    ├── checks generic PostgreSQL cache by provider/media/item identity
     ├── validates referenced asset files exist
     ├── calls the matched downloader on cache miss
     └── writes refreshed MediaItem/MediaAsset rows
@@ -61,8 +61,8 @@ TelegramMediaRenderer
 │   └── repository/
 │       ├── base.py              # Repository Protocol
 │       ├── models.py            # Pydantic domain models
-│       └── sqlite.py            # SQLAlchemy/Alembic SQLite Repository implementation
-├── migrations/                  # Alembic migration environment and revisions
+│       ├── schema.py            # Shared SQLAlchemy schema metadata
+│       └── postgres.py          # SQLAlchemy PostgreSQL Repository implementation (runtime)
 ├── tests/unit/                  # Unit tests for app seams and pure helpers
 ├── tests/integration/           # Integration tests, including repository/database tests
 ├── tests/e2e/                   # Future end-to-end tests
@@ -86,17 +86,17 @@ Startup responsibilities:
 2. Configure logging and reduce `httpx` log verbosity.
 3. Read environment variables:
    - `BOT_TOKEN` is required.
+   - `DATABASE_URL` is required (must use `postgresql+psycopg://` scheme).
    - `OUTPUT_DIR` defaults to `output`.
    - `TELEGRAM_MEDIA_WRITE_TIMEOUT` defaults to `120` seconds.
    - `TELEGRAM_READ_TIMEOUT` defaults to `30` seconds.
 4. Create the output directory.
-5. Create `data/`.
-6. Instantiate `SqliteRepository` for `data/reels.db`.
-7. Instantiate the Instagram Reel downloader, `DownloaderRegistry`, `MediaFetchService`, and `TelegramMediaRenderer`.
-8. Instantiate `IgReelDownloaderApp` with those collaborators.
-9. Run Telegram polling.
+5. Instantiate `PostgreSQLRepository` from `DATABASE_URL`.
+6. Instantiate the Instagram Reel downloader, `DownloaderRegistry`, `MediaFetchService`, and `TelegramMediaRenderer`.
+7. Instantiate `IgReelDownloaderApp` with those collaborators.
+8. Run Telegram polling.
 
-The bot process does not run Alembic migrations. In Docker Compose deployments, the separate `migrate` service applies migrations before `downloader` starts.
+The bot process does not run Alembic migrations. In Docker Compose deployments, the separate `migrate` service applies migrations before `downloader` starts. The `data/` directory is not created at runtime — the database is accessed over the network.
 
 ## Core message flow
 
@@ -110,7 +110,7 @@ For each text message:
 
 1. `DownloaderRegistry.extract_candidates()` asks registered downloaders to extract `UrlCandidate` URL spans, which are then resolved through each downloader's `resolve()` method.
 2. The registry resolves provider identities with `ProviderItemRef`, resolves overlapping spans, and deduplicates while preserving message order by provider/media/item identity.
-3. `IgReelDownloaderApp` offloads each `MediaFetchService.fetch(match)` call through `asyncio.to_thread(...)` because `yt-dlp` and SQLite operations are blocking/synchronous.
+3. `IgReelDownloaderApp` offloads each `MediaFetchService.fetch(match)` call through `asyncio.to_thread(...)` because `yt-dlp` and database operations are blocking/synchronous.
 4. `MediaFetchService`:
    - Looks for a fresh generic cache row with `repository.get_media_by_provider_item(provider, media_kind, provider_item_id)`.
    - Reuses the cached item only when all referenced asset files still exist.
@@ -190,32 +190,39 @@ class MediaItem(pydantic.BaseModel):
 
 `repository/base.py` defines a `Repository` Protocol with generic cache operations:
 
-- `create_database()` for explicit migration/test callers.
 - `get_media_by_provider_item(provider, media_kind, provider_item_id)`.
 - `insert_media(media)`.
 
-The app layer depends on `MediaFetchService` and the repository protocol rather than concrete SQLite APIs.
+The app layer depends on `MediaFetchService` and the repository protocol rather than concrete SQLAlchemy dialect code.
 
-### SQLite implementation
+### PostgreSQL runtime implementation
 
-`repository/sqlite.py` implements `SqliteRepository`:
+`repository/postgres.py` implements `PostgreSQLRepository`:
 
-- Uses SQLAlchemy 2.x for the concrete SQLite implementation.
-- Enables SQLite foreign keys for every connection.
+- Uses SQLAlchemy 2.x with `DATABASE_URL` (must use `postgresql+psycopg://` scheme).
 - Uses short-lived SQLAlchemy sessions for reads and writes.
 - Reads fresh cache rows from `media_items` by provider/media/item identity.
-- Writes `media_items` with SQLite `ON CONFLICT DO UPDATE` upsert semantics and replaces child `media_assets` atomically.
+- Writes `media_items` with PostgreSQL `ON CONFLICT DO UPDATE` upsert semantics and replaces child `media_assets` atomically.
 - Preserves the original `created_at` on refresh and uses `updated_at` for cache freshness.
-- Exposes `create_database()` for tests and explicit migration callers; normal Docker Compose deployments run Alembic through the separate `migrate` service instead of bot startup.
+- Alembic migrations are exclusively owned by Docker Compose; runtime does not run migrations.
 
-The generic cache tables are:
+### Legacy SQLite transfer
+
+`scripts/sqlite_to_postgres.py` opens the legacy SQLite database read-only and
+copies the validated transfer set into PostgreSQL. No SQLite repository
+implementation is part of the runtime package.
+
+### Generic cache tables
+
+The runtime cache tables are:
 
 - `media_items`: one row per provider/media/item identity, with metadata stored as JSON text and a unique constraint on `(provider, media_kind, provider_item_id)`.
 - `media_assets`: ordered local assets for each media item, with a foreign key to `media_items` and a unique `(media_item_id, asset_index)` constraint.
+- `judgmental_animations`: Telegram animation `file_id` and `file_unique_id` cache, used for judgmental GIF replies.
 
-The legacy `reels` table remains in the database for compatibility and is not dropped in this milestone. Existing databases that already contain `reels` are baselined and then copied into `media_items`/`media_assets` during migration without deleting `reels` rows. If a preexisting `reels` table is missing required columns or constraints, migration fails instead of stamping an incompatible schema.
+The legacy `reels` table is preserved for rollback compatibility and is not dropped in this milestone. It may be removed through a later PostgreSQL migration after the transition is proven stable.
 
-Alembic tracks applied migrations in `alembic_version`. Docker Compose migrations run in the one-shot `migrate` service before `downloader` starts. Manual database tasks are also available through Poe:
+Alembic tracks applied migrations in `alembic_version`. Docker Compose migrations run in the one-shot `migrate` service after `postgres-bootstrap` completes and before `downloader` starts. Manual database tasks are also available through Poe:
 
 - `uv run poe db-upgrade`
 - `uv run poe db-downgrade`
@@ -223,7 +230,11 @@ Alembic tracks applied migrations in `alembic_version`. Docker Compose migration
 - `uv run poe db-history`
 - `uv run poe db-revision "message"`
 
-Manual commands target `data/reels.db` by default. Set `DATABASE_URL` or `DB_PATH` to target another database for CLI migration work.
+Manual Poe commands use `DATABASE_URL` from the environment. Set it explicitly for manual work:
+
+```bash
+DATABASE_URL=postgresql+psycopg://user:pass@localhost:5432/db uv run poe db-upgrade
+```
 
 Cached media rows are considered time-fresh only while:
 
@@ -233,11 +244,12 @@ Cached media rows are considered time-fresh only while:
 
 ## Filesystem state
 
-Runtime state is split across three paths:
+Runtime filesystem state is limited to two paths:
 
-- `output/`: downloaded media files, named by Instagram ID and extension.
-- `data/reels.db`: SQLite cache metadata.
+- `output/` (or `OUTPUT_DIR`): downloaded media files, named by the provider item ID and extension.
 - `assets/cookies.txt`: optional Instagram cookies for restricted reels.
+
+The database is accessed over the network; no `data/` directory is required at runtime.
 
 The DB can contain rows whose files were removed by cleanup. This is expected: `MediaFetchService` verifies file existence before reusing a cached row and redownloads when any referenced file is missing.
 
@@ -258,19 +270,36 @@ The Docker image:
 
 ### Compose services
 
-`docker-compose.yaml` defines two services:
+`docker-compose.yaml` defines four database-related services and the downloader:
 
-- `migrate`: a one-shot service that uses the app image to run `/app/.venv/bin/alembic upgrade head` with `./data:/app/data` mounted.
+- `postgres`: a PostgreSQL container with persistent named volume and `pg_isready` healthcheck. Uses the official PostgreSQL image, not the app image.
+- `postgres-bootstrap`: a one-shot service that runs after PostgreSQL is healthy. It creates or validates the migration and application roles idempotently, grants privileges, and exits. Rerunnable against an existing volume.
+- `postgres-transfer`: a manual, profile-gated one-shot service that runs the SQLite-to-PostgreSQL script directly. Default `docker compose up` never starts it.
+- `migrate`: a one-shot service that uses the app image to run `/app/.venv/bin/alembic upgrade head`. It depends on `postgres-bootstrap` completing successfully.
 - `downloader`: the long-running bot service. It depends on `migrate` completing successfully before startup.
+
+The default startup order is: `postgres` healthy → `postgres-bootstrap` complete → `migrate` complete → `downloader`.
 
 `downloader` has these mounts:
 
 - `./${OUTPUT_DIR:-output}:/app/${OUTPUT_DIR:-output}`
 - `./assets:/app/assets`
-- `./.env:/app/.env`
-- `./data:/app/data`
 
-`downloader` restarts with `unless-stopped`; `migrate` does not restart.
+Runtime configuration is injected explicitly from Compose interpolation; the
+container does not mount `.env`, so bootstrap and migration passwords are not
+available to the downloader process.
+
+`downloader` restarts with `unless-stopped`; `postgres` restarts with policy; `postgres-bootstrap` and `migrate` do not restart.
+
+Port `5432` is not published to the host by default. Administrative access uses a network-attached Compose service or a temporary controlled host port.
+
+### Database roles
+
+Three separate PostgreSQL roles enforce least privilege:
+
+- **Bootstrap/owner**: created from `POSTGRES_USER`/`POSTGRES_PASSWORD`; used only for role grants, maintenance, and backups.
+- **Migration/transfer** (`DB_MIGRATION_URL`): owns the application schema and may run DDL plus data transfer.
+- **Application** (`DATABASE_URL`): restricted to DML on the three runtime tables and their required sequences; it cannot access Alembic metadata or legacy rollback rows and is never a superuser or schema owner.
 
 ### Cleanup loop
 
@@ -281,7 +310,7 @@ every 1800 seconds:
     /app/clean.sh
 ```
 
-`clean.sh` reads `.env`, requires `OUTPUT_DIR`, defaults `MAX_FILES` to `100`, and deletes the oldest files when the output directory exceeds the configured limit.
+`clean.sh` reads `OUTPUT_DIR` and `MAX_FILES` from the downloader environment and deletes the oldest files when the output directory exceeds the configured limit.
 
 ## Configuration
 
@@ -290,10 +319,18 @@ The documented environment variables are:
 | Variable | Required | Default | Purpose |
 | --- | --- | --- | --- |
 | `BOT_TOKEN` | yes | none | Telegram bot token. |
+| `DATABASE_URL` | yes | none | PostgreSQL application connection URL (`postgresql+psycopg://` scheme). |
+| `DB_MIGRATION_URL` | yes* | none | PostgreSQL migration/transfer connection URL. Required for bootstrap/migrate/transfer services. |
+| `POSTGRES_DB` | yes* | none | PostgreSQL database name. Required for bootstrap service. |
+| `POSTGRES_USER` | yes* | none | PostgreSQL bootstrap/owner role. Required for bootstrap service. |
+| `POSTGRES_PASSWORD` | yes* | none | PostgreSQL bootstrap/owner password. Required for bootstrap service. |
 | `OUTPUT_DIR` | no | `output` | Download directory for video files. |
 | `MAX_FILES` | no | `100` | Retention limit used by `clean.sh`. |
 | `TELEGRAM_MEDIA_WRITE_TIMEOUT` | no | `120` | Telegram media upload write timeout. |
 | `TELEGRAM_READ_TIMEOUT` | no | `30` | Telegram API read timeout. |
+| `JUDGMENTAL_CHANCE` | no | `0.0` | Probability (0.0-1.0) of a judgmental GIF reply instead of downloading. |
+
+\* Required by the Compose bootstrap and migration services, not by the downloader runtime.
 
 Optional cookies should be placed at `assets/cookies.txt`; the code passes them to `yt-dlp` only when the file exists.
 
@@ -309,17 +346,17 @@ Developer tasks are defined in `pyproject.toml` via Poe:
 - `uv run poe check` for the read-only CI quality gate
 - `uv run poe db-upgrade`, `db-current`, `db-history`, `db-downgrade`, and `db-revision` for Alembic migrations
 
-The current test suite includes unit tests for downloader registry, Instagram URL matching/downloading seams, media fetching, Telegram rendering, authentication-error detection, app orchestration, and repository integration tests for SQLite/Alembic behavior.
+The current test suite includes unit tests for downloader registry, Instagram URL matching/downloading seams, media fetching, Telegram rendering, authentication-error detection, app orchestration, and repository integration tests for PostgreSQL/Alembic behavior.
 
 ## Important architectural constraints and notes
 
 - The app is a single-process polling bot; there is no queue, scheduler, or web server.
 - Downloads are performed with blocking `yt-dlp` calls and are offloaded from the async Telegram handler with `asyncio.to_thread()`.
-- SQLite access goes through SQLAlchemy sessions; blocking repository work is still called from worker threads via the app's existing `asyncio.to_thread()` boundaries.
+- Database access goes through SQLAlchemy sessions; blocking repository work is still called from worker threads via the app's existing `asyncio.to_thread()` boundaries.
 - Schema migrations are separate from bot startup; Docker Compose runs them through the one-shot `migrate` service before `downloader` starts.
 - Multiple-video responses use a Telegram media group without per-item captions; single-video responses include the formatted caption.
 - Cache invalidation is time-based (`24h`) and file-existence-based.
-- Cleanup only removes media files; it does not prune stale SQLite rows.
+- Cleanup only removes media files; it does not prune stale database rows.
 - URL matching targets Instagram Reels, Instagram Posts, TikTok canonical/share links, YouTube Shorts, and YouTube Short/standard video links specifically.
 - Auth failure detection is based on a specific `yt-dlp` Instagram error message.
 

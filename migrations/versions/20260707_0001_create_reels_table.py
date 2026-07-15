@@ -36,8 +36,10 @@ def _validate_existing_reels_table(inspector: sa.Inspector) -> None:
         msg = f"Existing reels table is missing required columns: {missing}"
         raise RuntimeError(msg)
 
-    id_column = next(column for column in columns if column["name"] == "id")
-    if not id_column.get("primary_key"):
+    primary_key_columns = set(
+        inspector.get_pk_constraint("reels").get("constrained_columns") or []
+    )
+    if "id" not in primary_key_columns:
         unique_column_sets = [
             set(constraint["column_names"] or [])
             for constraint in inspector.get_unique_constraints("reels")

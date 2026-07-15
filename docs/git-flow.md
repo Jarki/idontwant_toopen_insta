@@ -76,7 +76,7 @@ Near-term expectation:
 
 - Commits merged to `main` represent the current development-ready state.
 - Release tags identify versions that may be deployed manually.
-- The Pi remains responsible for running the bot with local `.env`, `assets/`, `data/`, and `output/` state.
+- The Pi remains responsible for local `.env`, `assets/`, `output/`, and PostgreSQL volume state.
 
 Future deployment options include:
 

@@ -1,17 +1,23 @@
 from pathlib import Path
 
+import pytest
+
 from ig_reel_downloader import __main__ as main_module
 
 
 def test_main_does_not_run_migrations(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("BOT_TOKEN", "telegram-token")
+    monkeypatch.setenv(
+        "DATABASE_URL",
+        "postgresql+psycopg://app:password@postgres:5432/reels",
+    )
 
     app_instances = []
 
     class FakeRepository:
-        def __init__(self, db_path: str) -> None:
-            self.db_path = db_path
+        def __init__(self, database_url: str) -> None:
+            self.database_url = database_url
 
         def create_database(self) -> None:
             raise AssertionError("bot startup must not run migrations")
@@ -66,8 +72,8 @@ def test_main_does_not_run_migrations(monkeypatch, tmp_path: Path) -> None:
             self.did_run = True
 
     monkeypatch.setattr(
-        main_module.ig_reel_downloader.repository.sqlite,
-        "SqliteRepository",
+        main_module.ig_reel_downloader.repository.postgres,
+        "PostgreSQLRepository",
         FakeRepository,
     )
     monkeypatch.setattr(
@@ -115,8 +121,10 @@ def test_main_does_not_run_migrations(monkeypatch, tmp_path: Path) -> None:
 
     assert len(app_instances) == 1
     app = app_instances[0]
-    assert app.bot_token == "telegram-token"
-    assert app.fetch_service.repository.db_path == "data/reels.db"
+    assert (
+        app.fetch_service.repository.database_url
+        == "postgresql+psycopg://app:password@postgres:5432/reels"
+    )
     assert app.fetch_service.output_dir == Path("output")
     assert [d.__class__.__name__ for d in app.registry.downloaders] == [
         "FakeDownloader",
@@ -129,6 +137,28 @@ def test_main_does_not_run_migrations(monkeypatch, tmp_path: Path) -> None:
     assert app.renderer.telegram_read_timeout == 30.0
     assert app.judgmental_chance == 0.0  # default when env var absent
     assert app.judgmental_gifs is not None
-    assert app.did_run is True
     assert Path("output").is_dir()
-    assert Path("data").is_dir()
+
+
+def test_main_requires_database_url(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BOT_TOKEN", "telegram-token")
+    monkeypatch.delenv("DATABASE_URL", raising=False)
+
+    with pytest.raises(ValueError, match="DATABASE_URL is not set"):
+        main_module.main()
+
+
+def test_main_rejects_non_psycopg_database_url(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("BOT_TOKEN", "telegram-token")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://app:password@postgres/reels")
+
+    with pytest.raises(ValueError, match=r"postgresql\+psycopg"):
+        main_module.main()

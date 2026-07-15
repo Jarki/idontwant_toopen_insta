@@ -2,147 +2,40 @@ from __future__ import annotations
 
 import datetime
 import json
-from pathlib import Path
 from typing import Any, cast
 
-from alembic import command
-from alembic.config import Config
-from sqlalchemy import (
-    DateTime,
-    Float,
-    ForeignKey,
-    Integer,
-    String,
-    Text,
-    UniqueConstraint,
-    create_engine,
-    delete,
-    event,
-    select,
-)
-from sqlalchemy.dialects.sqlite import insert as sqlite_insert
-from sqlalchemy.orm import (
-    DeclarativeBase,
-    Mapped,
-    mapped_column,
-    relationship,
-    sessionmaker,
-)
+from sqlalchemy import create_engine, delete, make_url, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
+from sqlalchemy.orm import sessionmaker
 
 from .. import constants
 from . import base, models
+from .schema import JudgmentalAnimationRecord, MediaAssetRecord, MediaItemRecord
 
 
-class Base(DeclarativeBase):
-    pass
+class PostgreSQLRepository(base.Repository):
+    """Repository backed by PostgreSQL via synchronous SQLAlchemy sessions.
 
+    Schema creation is deliberately excluded; Alembic owns migrations.
+    """
 
-class MediaItemRecord(Base):
-    __tablename__ = "media_items"
-    __table_args__ = (
-        UniqueConstraint(
-            "provider",
-            "media_kind",
-            "provider_item_id",
-            name="uq_media_items_provider_kind_item",
-        ),
-    )
-
-    id: Mapped[str] = mapped_column(String, primary_key=True)
-    provider: Mapped[str] = mapped_column(String, nullable=False)
-    media_kind: Mapped[str] = mapped_column(String, nullable=False)
-    provider_item_id: Mapped[str] = mapped_column(String, nullable=False)
-    original_url: Mapped[str] = mapped_column(String, nullable=False)
-    title: Mapped[str] = mapped_column(String, nullable=False)
-    description: Mapped[str | None] = mapped_column(String, nullable=True)
-    metadata_json: Mapped[str] = mapped_column(Text, nullable=False)
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
-    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
-    assets: Mapped[list[MediaAssetRecord]] = relationship(
-        back_populates="media_item",
-        cascade="all, delete-orphan",
-        order_by="MediaAssetRecord.asset_index",
-    )
-
-
-class JudgmentalAnimationRecord(Base):
-    __tablename__ = "judgmental_animations"
-    __table_args__ = (
-        UniqueConstraint(
-            "file_id",
-            name="uq_judgmental_animations_file_id",
-        ),
-        UniqueConstraint(
-            "file_unique_id",
-            name="uq_judgmental_animations_file_unique_id",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    file_id: Mapped[str] = mapped_column(String, nullable=False)
-    file_unique_id: Mapped[str | None] = mapped_column(String, nullable=True)
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
-    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
-
-
-class MediaAssetRecord(Base):
-    __tablename__ = "media_assets"
-    __table_args__ = (
-        UniqueConstraint(
-            "media_item_id",
-            "asset_index",
-            name="uq_media_assets_item_index",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    media_item_id: Mapped[str] = mapped_column(
-        String,
-        ForeignKey("media_items.id", ondelete="CASCADE"),
-        nullable=False,
-    )
-    asset_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    asset_type: Mapped[str] = mapped_column(String, nullable=False)
-    filepath: Mapped[str] = mapped_column(String, nullable=False)
-    mime_type: Mapped[str | None] = mapped_column(String, nullable=True)
-    width: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    height: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
-    file_size_bytes: Mapped[int | None] = mapped_column(Integer, nullable=True)
-    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
-    media_item: Mapped[MediaItemRecord] = relationship(back_populates="assets")
-
-
-def _sqlite_url(db_path: str) -> str:
-    if db_path == ":memory:":
-        return "sqlite:///:memory:"
-    return f"sqlite:///{Path(db_path)}"
-
-
-class SqliteRepository(base.Repository):
-    def __init__(self, db_path: str = "data/reels.db") -> None:
-        self.db_path = db_path
-        self.engine = create_engine(_sqlite_url(db_path))
-
-        @event.listens_for(self.engine, "connect")
-        def _set_sqlite_pragma(
-            dbapi_connection: Any,
-            connection_record: Any,
-        ) -> None:
-            del connection_record
-            cursor = dbapi_connection.cursor()
-            cursor.execute("PRAGMA foreign_keys=ON")
-            cursor.close()
-
+    def __init__(self, database_url: str) -> None:
+        if not database_url.startswith("postgresql+psycopg://"):
+            msg = "database_url must use the postgresql+psycopg:// dialect"
+            raise ValueError(msg)
+        self.database_url = database_url
+        self.engine = create_engine(database_url, pool_pre_ping=True)
         self.session_factory = sessionmaker(bind=self.engine, expire_on_commit=False)
-
-    def create_database(self) -> None:
-        alembic_config = Config(
-            str(Path(__file__).resolve().parents[2] / "alembic.ini")
-        )
-        with self.engine.begin() as connection:
-            alembic_config.attributes["connection"] = connection
-            command.upgrade(alembic_config, "head")
+        expected_user = make_url(database_url).username
+        with self.engine.connect() as connection:
+            actual_user = connection.exec_driver_sql("SELECT current_user").scalar_one()
+        if actual_user != expected_user:
+            self.engine.dispose()
+            msg = (
+                f"DATABASE_URL connected as {actual_user!r}, "
+                f"expected application role {expected_user!r}"
+            )
+            raise RuntimeError(msg)
 
     def get_media_by_provider_item(
         self,
@@ -173,7 +66,7 @@ class SqliteRepository(base.Repository):
             created_at = (
                 existing.created_at if existing is not None else media.created_at
             )
-            statement = sqlite_insert(MediaItemRecord).values(
+            statement = pg_insert(MediaItemRecord).values(
                 id=media.id,
                 provider=media.provider,
                 media_kind=media.media_kind,
@@ -259,6 +152,11 @@ class SqliteRepository(base.Repository):
                 )
             )
             session.commit()
+
+
+# ------------------------------------------------------------------
+# Repository/model conversion helpers.
+# ------------------------------------------------------------------
 
 
 def _validate_unique_asset_indexes(media: models.MediaItem) -> None:
