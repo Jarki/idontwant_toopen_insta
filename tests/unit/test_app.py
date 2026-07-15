@@ -300,7 +300,10 @@ def test_message_handler_uses_registry_fetch_service_and_renderer(
     asyncio.run(app._message_handler(update, object()))
 
     assert registry.texts == [f"reels: {first_url} {second_url}"]
-    assert fetch_service.candidates == [first_candidate, second_candidate]
+    # Both candidates fetched (order is non-deterministic with threads).
+    assert len(fetch_service.candidates) == 2
+    assert first_candidate in fetch_service.candidates
+    assert second_candidate in fetch_service.candidates
     assert renderer.updates == [update]
     assert renderer.media_items == [[first_media]]
     assert chat.sent_messages == [
