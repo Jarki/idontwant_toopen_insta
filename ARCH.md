@@ -71,11 +71,10 @@ TelegramMediaRenderer
 │   ├── compose.yaml               # Production-ish local deployment
 │   ├── compose.dev.yaml
 │   ├── compose.prod.yaml
-│   ├── compose.pg-test.yaml
 │   ├── entrypoint.sh              # Starts cleanup loop and bot process
 │   ├── clean.sh                   # Output-file retention script
 │   ├── preflight.sh               # Deployment environment validation
-│   └── scripts/                   # Compose and transfer tooling
+│   └── scripts/                   # Compose and database tooling
 ├── pyproject.toml               # Dependencies and Poe task definitions
 ├── ruff.toml                    # Formatting/linting rules
 ├── mypy.ini                     # Strict mypy configuration
@@ -190,7 +189,7 @@ class MediaItem(pydantic.BaseModel):
     updated_at: datetime.datetime
 ```
 
-`IgReel` remains only as a legacy model for migration tests and compatibility with existing `reels` rows. Runtime cache reads and writes use `MediaItem`/`MediaAsset`.
+The `reels` table is a legacy table created by early Alembic migrations. It is preserved in the schema for compatibility; the runtime uses `media_items` for all cache operations.
 
 ### Repository abstraction
 
@@ -212,12 +211,6 @@ The app layer depends on `MediaFetchService` and the repository protocol rather 
 - Preserves the original `created_at` on refresh and uses `updated_at` for cache freshness.
 - Alembic migrations are exclusively owned by Docker Compose; runtime does not run migrations.
 
-### Legacy SQLite transfer
-
-`docker/scripts/sqlite_to_postgres.py` opens the legacy SQLite database read-only and
-copies the validated transfer set into PostgreSQL. No SQLite repository
-implementation is part of the runtime package.
-
 ### Generic cache tables
 
 The runtime cache tables are:
@@ -226,7 +219,7 @@ The runtime cache tables are:
 - `media_assets`: ordered local assets for each media item, with a foreign key to `media_items` and a unique `(media_item_id, asset_index)` constraint.
 - `judgmental_animations`: Telegram animation `file_id` and `file_unique_id` cache, used for judgmental GIF replies.
 
-The legacy `reels` table is preserved for rollback compatibility and is not dropped in this milestone. It may be removed through a later PostgreSQL migration after the transition is proven stable.
+The legacy `reels` table exists as a historical artifact from early migration revisions. It may be removed through a later PostgreSQL migration.
 
 Alembic tracks applied migrations in `alembic_version`. Docker Compose migrations run in the one-shot `migrate` service after `postgres-bootstrap` completes and before `downloader` starts. Manual database tasks are also available through Poe:
 
@@ -277,11 +270,10 @@ The Docker image:
 
 ### Compose services
 
-`docker/compose.yaml` defines four database-related services and the downloader:
+`docker/compose.yaml` defines three database-related services and the downloader:
 
 - `postgres`: a PostgreSQL container with persistent named volume and `pg_isready` healthcheck. Uses the official PostgreSQL image, not the app image.
 - `postgres-bootstrap`: a one-shot service that runs after PostgreSQL is healthy. It creates or validates the migration and application roles idempotently, grants privileges, and exits. Rerunnable against an existing volume.
-- `postgres-transfer`: a manual, profile-gated one-shot service that runs the SQLite-to-PostgreSQL script directly. Default `docker compose up` never starts it.
 - `migrate`: a one-shot service that uses the app image to run `/app/.venv/bin/alembic upgrade head`. It depends on `postgres-bootstrap` completing successfully.
 - `downloader`: the long-running bot service. It depends on `migrate` completing successfully before startup.
 
@@ -305,8 +297,8 @@ Port `5432` is not published to the host by default. Administrative access uses 
 Three separate PostgreSQL roles enforce least privilege:
 
 - **Bootstrap/owner**: created from `POSTGRES_USER`/`POSTGRES_PASSWORD`; used only for role grants, maintenance, and backups.
-- **Migration/transfer** (`DB_MIGRATION_URL`): owns the application schema and may run DDL plus data transfer.
-- **Application** (`DATABASE_URL`): restricted to DML on the three runtime tables and their required sequences; it cannot access Alembic metadata or legacy rollback rows and is never a superuser or schema owner.
+- **Migration** (`DB_MIGRATION_URL`): owns the application schema and runs DDL for Alembic migrations.
+- **Application** (`DATABASE_URL`): restricted to DML on the three runtime tables and their required sequences; it cannot access Alembic metadata or legacy rows and is never a superuser or schema owner.
 
 ### Cleanup loop
 
@@ -327,7 +319,7 @@ The documented environment variables are:
 | --- | --- | --- | --- |
 | `BOT_TOKEN` | yes | none | Telegram bot token. |
 | `DATABASE_URL` | yes | none | PostgreSQL application connection URL (`postgresql+psycopg://` scheme). |
-| `DB_MIGRATION_URL` | yes* | none | PostgreSQL migration/transfer connection URL. Required for bootstrap/migrate/transfer services. |
+| `DB_MIGRATION_URL` | yes* | none | PostgreSQL migration connection URL. Required for bootstrap/migrate services. |
 | `POSTGRES_DB` | yes* | none | PostgreSQL database name. Required for bootstrap service. |
 | `POSTGRES_USER` | yes* | none | PostgreSQL bootstrap/owner role. Required for bootstrap service. |
 | `POSTGRES_PASSWORD` | yes* | none | PostgreSQL bootstrap/owner password. Required for bootstrap service. |

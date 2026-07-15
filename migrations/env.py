@@ -2,10 +2,9 @@ from __future__ import annotations
 
 import os
 from logging.config import fileConfig
-from pathlib import Path
 
 from alembic import context
-from sqlalchemy import engine_from_config, make_url, pool
+from sqlalchemy import engine_from_config, pool
 
 from ig_reel_downloader.repository.schema import Base
 
@@ -28,13 +27,6 @@ def _database_url() -> str:
 
     msg = "DATABASE_URL is required for Alembic migrations"
     raise RuntimeError(msg)
-
-
-def _ensure_sqlite_parent(url: str) -> None:
-    parsed_url = make_url(url)
-    if parsed_url.drivername != "sqlite" or parsed_url.database in (None, ":memory:"):
-        return
-    Path(parsed_url.database).parent.mkdir(parents=True, exist_ok=True)
 
 
 def _restrict_app_role(connection: object) -> None:
@@ -77,7 +69,6 @@ def run_migrations_online() -> None:
         return
 
     database_url = _database_url()
-    _ensure_sqlite_parent(database_url)
     configuration = config.get_section(config.config_ini_section, {})
     configuration["sqlalchemy.url"] = database_url
     connectable = engine_from_config(
