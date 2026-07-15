@@ -377,6 +377,20 @@ class TestSourcePreflight:
         assert "00000000_0000" in output
         assert LATEST_REVISION in output
 
+    def test_previous_compatible_alembic_revision_is_accepted(
+        self, tmp_path: Path
+    ) -> None:
+        """A source one migration behind the target remains transferable."""
+        db = tmp_path / "test.db"
+        create_sqlite_db(db, alembic_head="20260710_0003")
+        engine = create_engine(f"sqlite:///{db}")
+        sqlite_to_postgres._verify_alembic_head(
+            engine,
+            "source",
+            allowed_versions=sqlite_to_postgres.SUPPORTED_SOURCE_ALEMBIC_VERSIONS,
+        )
+        engine.dispose()
+
     def test_missing_required_table_exits(self, tmp_path: Path) -> None:
         """Missing a required application table should exit."""
         db = tmp_path / "test.db"

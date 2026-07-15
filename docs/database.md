@@ -101,6 +101,11 @@ uv run python docker/scripts/sqlite_to_postgres.py \
   --verify
 ```
 
+The transfer does not copy the source `alembic_version` table into PostgreSQL.
+The target migration history remains owned by the target database. Sources at
+`20260710_0003` and `20260715_0004` are accepted because the former differs
+only by the compatible `media_assets.file_size_bytes` widening migration.
+
 Flags:
 
 | Flag | Purpose |

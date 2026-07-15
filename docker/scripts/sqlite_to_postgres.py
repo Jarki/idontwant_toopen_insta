@@ -31,6 +31,7 @@ from alembic.config import Config
 from sqlalchemy import NullPool, create_engine, inspect, text
 
 EXPECTED_ALEMBIC_HEAD = "20260715_0004"
+SUPPORTED_SOURCE_ALEMBIC_VERSIONS = frozenset({"20260710_0003", EXPECTED_ALEMBIC_HEAD})
 
 REQUIRED_SOURCE_TABLES = frozenset(
     {
@@ -197,15 +198,26 @@ def _alembic_version(engine: Any) -> str | None:
     return str(row[0]) if row else None
 
 
-def _verify_alembic_head(engine: Any, label: str = "source") -> None:
-    """Exit if the database Alembic version is not the expected head."""
+def _verify_alembic_head(
+    engine: Any,
+    label: str = "source",
+    allowed_versions: frozenset[str] | None = None,
+) -> None:
+    """Verify a database revision, without transferring Alembic metadata."""
     version = _alembic_version(engine)
-    if version != EXPECTED_ALEMBIC_HEAD:
+    accepted = allowed_versions or frozenset({EXPECTED_ALEMBIC_HEAD})
+    if version not in accepted:
         _die(
             f"{label.title()} Alembic version is {version!r}, "
-            f"expected {EXPECTED_ALEMBIC_HEAD!r}",
+            f"expected one of {sorted(accepted)!r}",
         )
-    _echo(f"  Alembic head ({label}): {EXPECTED_ALEMBIC_HEAD}")
+    if version == EXPECTED_ALEMBIC_HEAD:
+        _echo(f"  Alembic head ({label}): {version}")
+    else:
+        _echo(
+            f"  Alembic version ({label}): {version} "
+            f"(accepted; target head is {EXPECTED_ALEMBIC_HEAD})",
+        )
 
 
 # ── source preflight ───────────────────────────────────────────────────────
@@ -810,7 +822,11 @@ def main(argv: list[str] | None = None) -> None:
     _echo(f"  Source checksum: {source_checksum}")
 
     # ── 3. Source preflight ──
-    _verify_alembic_head(sqlite, "source")
+    _verify_alembic_head(
+        sqlite,
+        "source",
+        allowed_versions=SUPPORTED_SOURCE_ALEMBIC_VERSIONS,
+    )
     source_counts = _preflight_source(sqlite)
     _echo(
         f"  Rows: media_items={source_counts.get('media_items', 0)}, "
@@ -860,7 +876,6 @@ def main(argv: list[str] | None = None) -> None:
     if args.skip_legacy_reels:
         _echo("  Legacy reels: skipped (--skip-legacy-reels)")
         clean_reels = []
-
     # ── 6. Setup PostgreSQL and optional upgrade ──
     pg = create_engine(postgres_url, pool_pre_ping=True)
     if args.upgrade_schema:
@@ -873,6 +888,9 @@ def main(argv: list[str] | None = None) -> None:
     # ── 8. Transfer and validate in one transaction ──
     _echo("")
     _echo("Transferring data...")
+    # Alembic metadata is intentionally excluded: the target owns its
+    # migration history, while the source revision is only a compatibility
+    # check during preflight.
     source_data: dict[str, list[dict[str, Any]]] = {
         "media_items": media_items,
         "media_assets": media_assets,
