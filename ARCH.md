@@ -66,10 +66,13 @@ TelegramMediaRenderer
 ├── tests/unit/                  # Unit tests for app seams and pure helpers
 ├── tests/integration/           # Integration tests, including repository/database tests
 ├── tests/e2e/                   # Future end-to-end tests
-├── Dockerfile                   # uv-based container build
-├── docker-compose.yaml          # Production-ish local deployment
-├── docker_entrypoint.sh         # Starts cleanup loop and bot process
-├── clean.sh                     # Output-file retention script
+├── Dockerfile.app                 # uv-based container build
+├── docker-compose.yaml            # Production-ish local deployment
+├── docker-compose.dev.override.yaml
+├── docker-compose.prod.override.yaml
+├── docker-compose.pg-test.override.yaml
+├── docker_entrypoint.sh            # Starts cleanup loop and bot process
+├── clean.sh                        # Output-file retention script
 ├── pyproject.toml               # Dependencies and Poe task definitions
 ├── ruff.toml                    # Formatting/linting rules
 ├── mypy.ini                     # Strict mypy configuration
@@ -255,7 +258,7 @@ The DB can contain rows whose files were removed by cleanup. This is expected: `
 
 ## Deployment architecture
 
-Docker deployment is defined by `Dockerfile`, `docker-compose.yaml`, `docker_entrypoint.sh`, and `clean.sh`.
+Docker deployment is defined by `Dockerfile.app`, `docker-compose.yaml`, `docker-compose.dev.override.yaml`, `docker-compose.prod.override.yaml`, `docker-compose.pg-test.override.yaml`, `docker_entrypoint.sh`, and `clean.sh`.
 
 ### Image build
 

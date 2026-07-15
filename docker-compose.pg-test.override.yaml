@@ -5,12 +5,16 @@ services:
       - "127.0.0.1:${PG_TEST_PORT:-55432}:5432"
 
   postgres-bootstrap:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.app
     image: ig-reel-downloader-pg-test:local
     pull_policy: never
 
   postgres-transfer:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.app
     image: ig-reel-downloader-pg-test:local
     pull_policy: never
     environment:
@@ -21,12 +25,16 @@ services:
       - ${PG_TEST_OUTPUT_DIR:?set PG_TEST_OUTPUT_DIR}:/app/output:ro
 
   migrate:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.app
     image: ig-reel-downloader-pg-test:local
     pull_policy: never
 
   downloader:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.app
     image: ig-reel-downloader-pg-test:local
     pull_policy: never
     entrypoint: ["/app/.venv/bin/python"]

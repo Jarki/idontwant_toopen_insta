@@ -20,7 +20,9 @@ services:
       - "5432"
 
   postgres-bootstrap:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.app
     entrypoint: ["/app/.venv/bin/python", "scripts/postgres_bootstrap.py"]
     depends_on:
       postgres:
@@ -39,7 +41,9 @@ services:
 
   postgres-transfer:
     profiles: ["transfer"]
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.app
     entrypoint: ["/app/.venv/bin/python", "scripts/sqlite_to_postgres.py"]
     command: ["--sqlite-path", "/app/data/reels.db", "--upgrade-schema", "--verify"]
     depends_on:
@@ -57,7 +61,9 @@ services:
     restart: "no"
 
   migrate:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.app
     entrypoint: ["/app/.venv/bin/alembic"]
     command: ["upgrade", "head"]
     depends_on:
@@ -69,7 +75,9 @@ services:
     restart: "no"
 
   downloader:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.app
     depends_on:
       migrate:
         condition: service_completed_successfully

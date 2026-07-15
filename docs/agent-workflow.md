@@ -18,7 +18,7 @@ Important paths:
 - `scripts/sqlite_to_postgres.py` — read-only legacy SQLite transfer tooling.
 - `tests/` — pytest suite.
 - `.github/workflows/quality.yml` — GitHub Actions quality gate.
-- `Dockerfile`, `docker-compose.yaml`, `docker_entrypoint.sh`, `clean.sh` — container deployment, one-shot migration service, and cleanup loop.
+- `Dockerfile.app`, `docker-compose.yaml`, `docker-compose.dev.override.yaml`, `docker-compose.prod.override.yaml`, `docker-compose.pg-test.override.yaml`, `docker_entrypoint.sh`, `clean.sh` — container deployment, one-shot migration service, and cleanup loop.
 - `.env.example` — documented runtime configuration.
 
 Runtime/local state paths:
