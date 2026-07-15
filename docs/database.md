@@ -16,7 +16,7 @@ DATABASE_URL=postgresql+psycopg://app:password@postgres:5432/ig_reel_downloader
 
 Connection URLs must use the `postgresql+psycopg` dialect. Plain `postgres://` URLs are rejected. Each URL must contain its corresponding configured role and password; percent-encode reserved characters in credentials and database names.
 
-A separate `DB_MIGRATION_URL` variable is used by the bootstrap, migrate, and transfer services with a migration role that owns the schema. The application role (in `DATABASE_URL`) is restricted to the three runtime tables and their sequences; it cannot access Alembic metadata or legacy rollback rows.
+A separate `DB_MIGRATION_URL` variable is used by the bootstrap and migrate services with a migration role that owns the schema. The application role (in `DATABASE_URL`) is restricted to the three runtime tables and their sequences; it cannot access Alembic metadata or legacy rows.
 
 ## Compose service ordering
 
@@ -26,10 +26,6 @@ Docker Compose starts database services in this order:
 2. `postgres-bootstrap` — one-shot service that creates or validates the migration and application roles idempotently, grants privileges, and exits. Rerunnable against an existing volume.
 3. `migrate` — one-shot Alembic migration service that applies pending schema changes.
 4. `downloader` — the long-running bot. It starts only after migration completes successfully.
-
-`postgres-transfer` is protected by the `transfer` profile and is never part of
-default startup. Explicitly targeting it during cutover activates it without
-exposing migration or bootstrap passwords to `downloader`.
 
 To run only the migration container:
 
@@ -89,95 +85,9 @@ When a schema change is needed:
    uv run poe verify
    ```
 
-## Legacy SQLite transfer
-
-To migrate data from an existing SQLite database to PostgreSQL, use the transfer script at `docker/scripts/sqlite_to_postgres.py`:
-
-```bash
-uv run python docker/scripts/sqlite_to_postgres.py \
-  --sqlite-path data/reels.db \
-  --postgres-url "$DB_MIGRATION_URL" \
-  --upgrade-schema \
-  --verify
-```
-
-The transfer does not copy the source `alembic_version` table into PostgreSQL.
-The target migration history remains owned by the target database. Sources at
-`20260710_0003` and `20260715_0004` are accepted because the former differs
-only by the compatible `media_assets.file_size_bytes` widening migration.
-
-Flags:
-
-| Flag | Purpose |
-| --- | --- |
-| `--sqlite-path` | Path to the SQLite source database (required). |
-| `--postgres-url` | Target PostgreSQL URL; optional if `DB_MIGRATION_URL` or `DATABASE_URL` is set. Non-`postgresql+psycopg` URLs are rejected. |
-| `--upgrade-schema` | Apply Alembic migrations to the target before transfer. |
-| `--verify` | Add disposable post-commit sequence probes; core row, parity, and constraint checks always run before commit. |
-| `--skip-legacy-reels` | Skip legacy `reels` rows that fail validation without aborting the transfer. |
-| `--reset-target` | Replace existing application data in the target database. |
-
-The transfer never modifies the SQLite source and never copies or deletes media files. It reports missing files without acting on them.
-
-### Manual cutover procedure
-
-Complete the transfer before deploying or starting the PostgreSQL runtime:
-
-1. Stop `downloader` while it is still SQLite-backed. No SQLite writes may occur
-   after this point.
-
-   ```bash
-   docker compose stop downloader
-   ```
-
-2. Preserve and checksum the source:
-
-   ```bash
-   cp data/reels.db "data/reels.db.cutover-$(date +%Y%m%d-%H%M%S)"
-   sha256sum data/reels.db
-   ```
-
-3. Start the database, provision roles, and invoke the transfer script directly
-   through its dedicated one-shot service:
-
-   ```bash
-   docker compose up -d --wait postgres
-   docker compose run --rm postgres-bootstrap
-   docker compose run --rm postgres-transfer \
-     --sqlite-path /app/data/reels.db \
-     --upgrade-schema \
-     --verify
-   ```
-
-4. Confirm the reported row counts, checksums, foreign keys, uniqueness,
-   sequence probes, and missing-file list. The transfer must finish with
-   `Transfer complete.`.
-
-5. Start the PostgreSQL runtime through the migration gate:
-
-   ```bash
-   docker compose run --rm migrate
-   docker compose up -d downloader
-   ```
-
-If validation fails, keep the PostgreSQL runtime stopped. Correct the source or
-make the explicit `--skip-legacy-reels`/`--reset-target` policy decision, then
-rerun. The transfer opens SQLite read-only and never mutates media files.
-
-## Existing database behavior
-
-The initial Alembic migration is designed to preserve existing data during transition:
-
-- If an unversioned database already has the expected `reels` table, Alembic baselines it without deleting rows.
-- If the existing `reels` table is missing required columns, migration fails instead of stamping an incompatible schema.
-- The initial downgrade preserves `reels` data.
-- Historical Alembic revisions remain available and apply to PostgreSQL.
-
 ## Backup and rollback
 
-Before any PostgreSQL write during cutover, preserve the SQLite source as
-described above. Once PostgreSQL writes begin, the SQLite backup is no longer a
-data-safe rollback target. Use a verified PostgreSQL archive:
+Create and verify PostgreSQL backups before relying on them for rollback:
 
 1. Create a custom-format archive on the host:
 
@@ -220,13 +130,9 @@ data-safe rollback target. Use a verified PostgreSQL archive:
    docker compose up -d downloader
    ```
 
-A tested reverse transfer is also valid. Restoring only the original SQLite
-backup after PostgreSQL has accepted writes is not.
-
 ## Operational notes
 
 - The bot process does not apply migrations at startup.
 - Docker Compose applies migrations with the one-shot `migrate` service after the `postgres-bootstrap` service completes and before starting `downloader`.
 - Cleanup removes old media files from `output/`; it does not prune database rows.
 - Cached rows are reused only while fresh and while the referenced media file still exists.
-- The legacy `reels` table is preserved for rollback compatibility; it may be removed through a later PostgreSQL migration.

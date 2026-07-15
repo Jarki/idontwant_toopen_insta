@@ -43,7 +43,7 @@ check_var "DB_MIGRATION_USER"    "Database migration user"
 check_var "DB_MIGRATION_PASSWORD" "Database migration password"
 check_var "DB_APP_USER"          "Database application user"
 check_var "DB_APP_PASSWORD"      "Database application password"
-check_var "DB_MIGRATION_URL"     "Migration/transfer database URL" "postgresql+psycopg://*"
+check_var "DB_MIGRATION_URL"     "Migration database URL" "postgresql+psycopg://*"
 check_var "DATABASE_URL"         "Application database URL" "postgresql+psycopg://*"
 
 # --- Exact URL endpoint, role, and password validation ---

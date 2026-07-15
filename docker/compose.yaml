@@ -39,26 +39,6 @@ services:
       DB_APP_PASSWORD: ${DB_APP_PASSWORD}
     restart: "no"
 
-  postgres-transfer:
-    profiles: ["transfer"]
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile.app
-    entrypoint: ["/app/.venv/bin/python", "docker/scripts/sqlite_to_postgres.py"]
-    command: ["--sqlite-path", "/app/data/reels.db", "--upgrade-schema", "--verify"]
-    depends_on:
-      postgres:
-        condition: service_healthy
-      postgres-bootstrap:
-        condition: service_completed_successfully
-    environment:
-      DB_MIGRATION_URL: ${DB_MIGRATION_URL}
-      DB_APP_USER: ${DB_APP_USER}
-      OUTPUT_DIR: /app/${OUTPUT_DIR:-output}
-    volumes:
-      - ../data:/app/data:ro
-      - ../${OUTPUT_DIR:-output}:/app/${OUTPUT_DIR:-output}:ro
-    restart: "no"
 
   migrate:
     build:

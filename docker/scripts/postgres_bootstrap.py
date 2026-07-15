@@ -9,7 +9,7 @@ privileges and default privileges.
 Expected environment variables:
   POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB,
   POSTGRES_USER, POSTGRES_PASSWORD          — bootstrap/owner credentials
-  DB_MIGRATION_USER, DB_MIGRATION_PASSWORD   — migration/transfer role
+  DB_MIGRATION_USER, DB_MIGRATION_PASSWORD   — migration role (DDL-capable, schema owner)
   DB_APP_USER, DB_APP_PASSWORD               — application (DML-only) role
 """
 
@@ -119,7 +119,7 @@ def main() -> None:
             f"GRANT USAGE ON SEQUENCES TO {_q(app_user)}"
         )
 
-        # Alembic metadata and legacy rollback data are migration-only.
+        # Alembic metadata and legacy reels table are migration-only.
         for table in MIGRATION_ONLY_TABLES:
             if _relation_exists(cur, table):
                 cur.execute(

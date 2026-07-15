@@ -75,11 +75,6 @@ Docker Compose starts database-related services in this order:
 3. `migrate` — one-shot Alembic migration service that applies pending schema changes against PostgreSQL.
 4. `downloader` — the long-running bot. It starts only after migration completes successfully.
 
-`postgres-transfer` is excluded from default startup by the `transfer` profile
-and runs only when explicitly targeted during manual cutover. The downloader
-receives only its runtime settings; `.env` is not mounted into the container, so
-bootstrap and migration passwords are not exposed to the bot process.
-
 Port `5432` is not published to the host by default. Administrative access uses a network-attached Compose service or a temporary controlled host port.
 
 ### Schema migrations
@@ -111,74 +106,9 @@ DATABASE_URL=postgresql+psycopg://db_migration:pass@localhost:5432/db \
   uv run poe db-upgrade
 ```
 
-### Legacy SQLite transfer
-
-To migrate data from an existing SQLite database, use the transfer script:
-
-```bash
-uv run python docker/scripts/sqlite_to_postgres.py \
-  --sqlite-path data/reels.db \
-  --postgres-url "$DB_MIGRATION_URL" \
-  --upgrade-schema \
-  --verify
-```
-
-| Flag | Purpose |
-| --- | --- |
-| `--sqlite-path` | Path to the SQLite source database (required). |
-| `--postgres-url` | Target PostgreSQL URL; optional if `DB_MIGRATION_URL` or `DATABASE_URL` is set. Non-`postgresql+psycopg` URLs are rejected. |
-| `--upgrade-schema` | Apply Alembic migrations to the target before transfer. |
-| `--verify` | Add disposable post-commit sequence probes; core row, parity, and constraint checks always run before commit. |
-| `--skip-legacy-reels` | Skip legacy `reels` rows that fail validation without aborting the transfer. |
-| `--reset-target` | Replace existing application data in the target database. |
-
-The transfer never modifies the SQLite source and never copies or deletes media files. It reports missing files without acting on them.
-
-#### Manual cutover from SQLite
-
-Do not deploy the PostgreSQL runtime until this transfer has completed:
-
-1. Stop the SQLite-backed bot so no writes can occur during export:
-
-   ```bash
-   docker compose stop downloader
-   ```
-
-2. Preserve and checksum the SQLite source:
-
-   ```bash
-   cp data/reels.db "data/reels.db.cutover-$(date +%Y%m%d-%H%M%S)"
-   sha256sum data/reels.db
-   ```
-
-3. Start PostgreSQL, provision roles, and transfer through the script entrypoint:
-
-   ```bash
-   docker compose up -d --wait postgres
-   docker compose run --rm postgres-bootstrap
-   docker compose run --rm postgres-transfer \
-     --sqlite-path /app/data/reels.db \
-     --upgrade-schema \
-     --verify
-   ```
-
-4. Review the transfer's row-count, parity, constraint, sequence, and missing-file
-   results. Then start the PostgreSQL runtime:
-
-   ```bash
-   docker compose run --rm migrate
-   docker compose up -d downloader
-   ```
-
-If transfer validation fails, leave the PostgreSQL runtime stopped, correct the
-source or policy decision, and rerun. The source SQLite database and media files
-remain unchanged.
-
 ### Backup and rollback
 
-Before any PostgreSQL write during cutover, preserve the SQLite database as
-shown above. After PostgreSQL becomes authoritative, create and verify
-PostgreSQL backups:
+Create PostgreSQL backups and verify them before relying on them for rollback:
 
 1. Create a custom-format backup on the host:
 
@@ -220,9 +150,6 @@ PostgreSQL backups:
    docker compose run --rm migrate
    docker compose up -d downloader
    ```
-
-Rollback to the original SQLite backup alone is **not** data-safe after
-PostgreSQL writes begin. A tested reverse transfer is also a valid rollback path.
 
 ### Filesystem state
 

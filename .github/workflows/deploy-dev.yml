@@ -62,7 +62,7 @@ jobs:
         run: |
           set -euo pipefail
           deploy_dir="${HOME}/deploy/ig-reel-downloader-dev"
-          mkdir -p "${deploy_dir}/data" "${deploy_dir}/output" "${deploy_dir}/assets"
+          mkdir -p "${deploy_dir}/output" "${deploy_dir}/assets"
 
           if [ ! -f "${deploy_dir}/.env" ]; then
             echo "::error file=${deploy_dir}/.env::Create runner-local .env before deploying."

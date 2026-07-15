@@ -17,41 +17,21 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    bind = op.get_bind()
-    if bind.dialect.name == "sqlite":
-        with op.batch_alter_table("media_assets") as batch_op:
-            batch_op.alter_column(
-                "file_size_bytes",
-                type_=sa.BigInteger(),
-                existing_type=sa.Integer(),
-                nullable=True,
-            )
-    else:
-        op.alter_column(
-            "media_assets",
-            "file_size_bytes",
-            type_=sa.BigInteger(),
-            existing_type=sa.Integer(),
-            nullable=True,
-        )
+    op.alter_column(
+        "media_assets",
+        "file_size_bytes",
+        type_=sa.BigInteger(),
+        existing_type=sa.Integer(),
+        nullable=True,
+    )
 
 
 def downgrade() -> None:
-    bind = op.get_bind()
-    if bind.dialect.name == "sqlite":
-        with op.batch_alter_table("media_assets") as batch_op:
-            batch_op.alter_column(
-                "file_size_bytes",
-                type_=sa.Integer(),
-                existing_type=sa.BigInteger(),
-                nullable=True,
-            )
-    else:
-        op.alter_column(
-            "media_assets",
-            "file_size_bytes",
-            type_=sa.Integer(),
-            existing_type=sa.BigInteger(),
-            nullable=True,
-            postgresql_using="file_size_bytes::integer",
-        )
+    op.alter_column(
+        "media_assets",
+        "file_size_bytes",
+        type_=sa.Integer(),
+        existing_type=sa.BigInteger(),
+        nullable=True,
+        postgresql_using="file_size_bytes::integer",
+    )
