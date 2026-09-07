@@ -37,6 +37,8 @@ class FakeRepository:
     def __init__(self, cached: MediaItem | None = None) -> None:
         self.cached = cached
         self.inserted: list[MediaItem] = []
+        self.failed_requests: list[tuple[int, str, str, str | None]] = []
+        self.succeeded_requests: list[tuple[int, str]] = []
         self.lookup: tuple[str, str, str] | None = None
 
     def create_database(self) -> None:
@@ -54,6 +56,32 @@ class FakeRepository:
     def insert_media(self, media: MediaItem) -> None:
         self.inserted.append(media)
 
+    def insert_media_for_request(
+        self,
+        media_request_id: int,
+        media: MediaItem,
+    ) -> None:
+        self.inserted.append(media)
+        self.succeeded_requests.append((media_request_id, media.id))
+
+    def mark_media_request_failed(
+        self,
+        media_request_id: int,
+        failure_reason: str,
+        failure_url: str,
+        provider_item_id: str | None,
+    ) -> None:
+        self.failed_requests.append(
+            (media_request_id, failure_reason, failure_url, provider_item_id)
+        )
+
+    def mark_media_request_succeeded(
+        self,
+        media_request_id: int,
+        media_item_id: str,
+    ) -> None:
+        self.succeeded_requests.append((media_request_id, media_item_id))
+
 
 class FakeDownloader:
     provider = "instagram"
@@ -66,11 +94,15 @@ class FakeDownloader:
         skipped: bool = False,
         unresolved: bool = False,
         resolution_error: ResolutionError | None = None,
+        resolve_exception: Exception | None = None,
+        download_exception: Exception | None = None,
     ) -> None:
         self.result = result
         self.skipped = skipped
         self.unresolved = unresolved
         self.resolution_error = resolution_error
+        self.resolve_exception = resolve_exception
+        self.download_exception = download_exception
         self.contexts: list[DownloadContext] = []
         self.download_requests: list[ResolvedMediaRequest] = []
 
@@ -80,6 +112,8 @@ class FakeDownloader:
     def resolve(self, candidate: UrlCandidate) -> ResolveResult:
         if self.resolution_error is not None:
             raise self.resolution_error
+        if self.resolve_exception is not None:
+            raise self.resolve_exception
         if self.skipped:
             return ResolveResult(request=None, skipped=True)
         if self.unresolved:
@@ -101,6 +135,8 @@ class FakeDownloader:
     ) -> MediaDownloadResult:
         self.download_requests.append(request)
         self.contexts.append(context)
+        if self.download_exception is not None:
+            raise self.download_exception
         return self.result
 
 
@@ -135,12 +171,14 @@ def test_fetch_resolves_before_cache_lookup(tmp_path: Path) -> None:
         make_candidate(
             downloader,
             normalized_url="https://www.instagram.com/reel/ABC123",
-        )
+        ),
+        media_request_id=99,
     )
 
     assert result.media == cached
     assert repository.lookup == ("instagram", "reel", "ABC123")
     assert downloader.download_requests == []
+    assert repository.succeeded_requests == [(99, cached.id)]
 
 
 def test_fetch_returns_skipped_without_cache_lookup_or_download(tmp_path: Path) -> None:
@@ -148,12 +186,14 @@ def test_fetch_returns_skipped_without_cache_lookup_or_download(tmp_path: Path) 
     repository = FakeRepository(cached=None)
     service = MediaFetchService(repository, output_dir=tmp_path)
 
-    result = service.fetch(make_candidate(downloader))
+    result = service.fetch(make_candidate(downloader), media_request_id=99)
 
     assert result.skipped is True
     assert result.media is None
     assert repository.lookup is None
     assert downloader.download_requests == []
+    assert repository.failed_requests == []
+    assert repository.succeeded_requests == []
 
 
 def test_fetch_reuses_cached_media_when_all_files_exist(tmp_path: Path) -> None:
@@ -166,12 +206,13 @@ def test_fetch_reuses_cached_media_when_all_files_exist(tmp_path: Path) -> None:
     repository = FakeRepository(cached=cached)
     service = MediaFetchService(repository, output_dir=tmp_path)
 
-    result = service.fetch(make_candidate(downloader))
+    result = service.fetch(make_candidate(downloader), media_request_id=99)
 
     assert result.media == cached
     assert result.failure_reason is None
     assert downloader.contexts == []
     assert repository.inserted == []
+    assert repository.succeeded_requests == [(99, cached.id)]
 
 
 def test_fetch_redownloads_when_cached_asset_file_is_missing(tmp_path: Path) -> None:
@@ -181,11 +222,12 @@ def test_fetch_redownloads_when_cached_asset_file_is_missing(tmp_path: Path) -> 
     repository = FakeRepository(cached=cached)
     service = MediaFetchService(repository, output_dir=tmp_path)
 
-    result = service.fetch(make_candidate(downloader))
+    result = service.fetch(make_candidate(downloader), media_request_id=99)
 
     assert result.media == downloaded
     assert repository.inserted == [downloaded]
     assert downloader.contexts == [DownloadContext(output_dir=tmp_path)]
+    assert repository.succeeded_requests == [(99, downloaded.id)]
 
 
 def test_fetch_redownloads_zero_asset_cached_item(tmp_path: Path) -> None:
@@ -194,7 +236,7 @@ def test_fetch_redownloads_zero_asset_cached_item(tmp_path: Path) -> None:
     repository = FakeRepository(cached=make_media("unused", assets=[]))
     service = MediaFetchService(repository, output_dir=tmp_path)
 
-    result = service.fetch(make_candidate(downloader))
+    result = service.fetch(make_candidate(downloader), media_request_id=99)
 
     assert result.media == downloaded
     assert repository.inserted == [downloaded]
@@ -205,12 +247,33 @@ def test_fetch_returns_download_failure_without_insert(tmp_path: Path) -> None:
     repository = FakeRepository(cached=None)
     service = MediaFetchService(repository, output_dir=tmp_path)
 
-    result = service.fetch(make_candidate(downloader))
+    result = service.fetch(make_candidate(downloader), media_request_id=99)
 
     assert result.media is None
     assert result.url == "https://www.instagram.com/reel/ABC123"
     assert result.failure_reason == "auth"
     assert repository.inserted == []
+    assert repository.failed_requests == [
+        (
+            99,
+            "auth",
+            "https://www.instagram.com/reel/ABC123",
+            "ABC123",
+        )
+    ]
+
+
+def test_fetch_records_blocked_download_failure(tmp_path: Path) -> None:
+    downloader = FakeDownloader(
+        MediaDownloadResult(media=None, failure_reason="blocked")
+    )
+    repository = FakeRepository(cached=None)
+    service = MediaFetchService(repository, output_dir=tmp_path)
+
+    result = service.fetch(make_candidate(downloader), media_request_id=99)
+
+    assert result.failure_reason == "blocked"
+    assert repository.failed_requests[0][1] == "blocked"
 
 
 def test_fetch_returns_resolution_failure_without_cache_lookup_or_download(
@@ -220,12 +283,13 @@ def test_fetch_returns_resolution_failure_without_cache_lookup_or_download(
     repository = FakeRepository(cached=None)
     service = MediaFetchService(repository, output_dir=tmp_path)
 
-    result = service.fetch(make_candidate(downloader))
+    result = service.fetch(make_candidate(downloader), media_request_id=99)
 
     assert result.media is None
     assert result.failure_reason == "unsupported"
     assert repository.lookup is None
     assert downloader.download_requests == []
+    assert repository.failed_requests[0][1] == "unsupported"
 
 
 def test_fetch_handles_resolution_error_without_cache_lookup_or_download(
@@ -238,13 +302,59 @@ def test_fetch_handles_resolution_error_without_cache_lookup_or_download(
     repository = FakeRepository(cached=None)
     service = MediaFetchService(repository, output_dir=tmp_path)
 
-    result = service.fetch(make_candidate(downloader))
+    result = service.fetch(make_candidate(downloader), media_request_id=99)
 
     assert result.media is None
     assert result.url == "https://example.com/bad"
     assert result.failure_reason == "auth"
     assert repository.lookup is None
     assert downloader.download_requests == []
+    assert repository.failed_requests[0][1:3] == (
+        "auth",
+        "https://example.com/bad",
+    )
+
+
+def test_fetch_records_unexpected_resolution_exception_as_unknown(
+    tmp_path: Path,
+) -> None:
+    downloader = FakeDownloader(
+        MediaDownloadResult(media=None),
+        resolve_exception=RuntimeError("unexpected resolver failure"),
+    )
+    repository = FakeRepository(cached=None)
+    service = MediaFetchService(repository, output_dir=tmp_path)
+
+    result = service.fetch(make_candidate(downloader), media_request_id=99)
+
+    assert result.media is None
+    assert result.failure_reason == "unknown"
+    assert repository.lookup is None
+    assert repository.failed_requests[0][0:2] == (99, "unknown")
+
+
+def test_fetch_records_unexpected_download_exception_as_unknown(
+    tmp_path: Path,
+) -> None:
+    downloader = FakeDownloader(
+        MediaDownloadResult(media=None),
+        download_exception=RuntimeError("unexpected downloader failure"),
+    )
+    repository = FakeRepository(cached=None)
+    service = MediaFetchService(repository, output_dir=tmp_path)
+
+    result = service.fetch(make_candidate(downloader), media_request_id=99)
+
+    assert result.media is None
+    assert result.failure_reason == "unknown"
+    assert repository.failed_requests == [
+        (
+            99,
+            "unknown",
+            "https://www.instagram.com/reel/ABC123",
+            "ABC123",
+        )
+    ]
 
 
 def test_fetch_rejects_identity_mismatch_as_unknown_failure(tmp_path: Path) -> None:
@@ -255,8 +365,10 @@ def test_fetch_rejects_identity_mismatch_as_unknown_failure(tmp_path: Path) -> N
     repository = FakeRepository(cached=None)
     service = MediaFetchService(repository, output_dir=tmp_path)
 
-    result = service.fetch(make_candidate(downloader))
+    result = service.fetch(make_candidate(downloader), media_request_id=99)
 
     assert result.media is None
     assert result.failure_reason == "unknown"
     assert repository.inserted == []
+    assert repository.failed_requests[0][1] == "unknown"
+    assert repository.failed_requests[0][3] == "ABC123"

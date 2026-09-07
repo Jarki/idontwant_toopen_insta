@@ -11,9 +11,11 @@ import datetime
 
 from sqlalchemy import (
     BigInteger,
+    CheckConstraint,
     DateTime,
     Float,
     ForeignKey,
+    Index,
     Integer,
     String,
     Text,
@@ -58,6 +60,63 @@ class MediaItemRecord(Base):
         back_populates="media_item",
         cascade="all, delete-orphan",
         order_by="MediaAssetRecord.asset_index",
+    )
+
+
+class TelegramUserRecord(Base):
+    __tablename__ = "telegram_users"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    username: Mapped[str | None] = mapped_column(String, nullable=True)
+    first_name: Mapped[str] = mapped_column(String, nullable=False)
+    last_name: Mapped[str | None] = mapped_column(String, nullable=True)
+    language_code: Mapped[str | None] = mapped_column(String, nullable=True)
+    is_bot: Mapped[bool] = mapped_column(nullable=False)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
+
+
+class MediaRequestRecord(Base):
+    __tablename__ = "media_requests"
+    __table_args__ = (
+        Index(
+            "ix_media_requests_user_created_at",
+            "telegram_user_id",
+            "created_at",
+        ),
+        CheckConstraint(
+            "(media_item_id IS NULL AND failure_reason IS NULL "
+            "AND failure_url IS NULL AND completed_at IS NULL) OR "
+            "(media_item_id IS NOT NULL AND failure_reason IS NULL "
+            "AND failure_url IS NULL AND completed_at IS NOT NULL) OR "
+            "(media_item_id IS NULL AND failure_reason IS NOT NULL "
+            "AND failure_url IS NOT NULL AND completed_at IS NOT NULL)",
+            name="ck_media_requests_valid_outcome",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    telegram_user_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("telegram_users.id"),
+        nullable=True,
+    )
+    url: Mapped[str] = mapped_column(String, nullable=False)
+    normalized_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    provider: Mapped[str] = mapped_column(String, nullable=False)
+    media_kind: Mapped[str] = mapped_column(String, nullable=False)
+    provider_item_id: Mapped[str | None] = mapped_column(String, nullable=True)
+    media_item_id: Mapped[str | None] = mapped_column(
+        String,
+        ForeignKey("media_items.id"),
+        nullable=True,
+    )
+    failure_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    failure_url: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
+    completed_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
     )
 
 

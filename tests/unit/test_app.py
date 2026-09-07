@@ -17,7 +17,12 @@ from ig_reel_downloader.downloaders import (
     UrlCandidate,
 )
 from ig_reel_downloader.media_fetch import MediaFetchResult
-from ig_reel_downloader.repository.models import MediaAsset, MediaItem
+from ig_reel_downloader.repository.models import (
+    MediaAsset,
+    MediaItem,
+    MediaRequest,
+    TelegramUser,
+)
 from ig_reel_downloader.telegram_renderer import MediaRenderResult
 
 
@@ -48,6 +53,11 @@ class FakeApplicationBuilder:
 
 class FakeSender:
     id = 123
+    username = "alice"
+    first_name = "Alice"
+    last_name = "Example"
+    language_code = "en"
+    is_bot = False
 
 
 @dataclass
@@ -113,6 +123,7 @@ class FakeUpdate:
         text: str | None,
         chat: FakeChat | None = None,
         reply_to_message: FakeMessage | None = None,
+        userless: bool = False,
     ) -> None:
         self.message = (
             FakeMessage(text, reply_to_message=reply_to_message)
@@ -120,7 +131,8 @@ class FakeUpdate:
             else None
         )
         self.effective_chat = chat
-        self.effective_sender = FakeSender()
+        self.effective_user = None if userless else FakeSender()
+        self.effective_sender = self.effective_user
 
 
 class FakeRegistry:
@@ -144,6 +156,15 @@ class FakeRepository:
         self.judgmental_file_ids: list[str] = []
         self.added_judgmental_file_ids: list[tuple[str, str | None]] = []
         self.deleted_judgmental_file_ids: list[str] = []
+        self.upserted_users: list[TelegramUser] = []
+        self.inserted_requests: list[MediaRequest] = []
+
+    def upsert_telegram_user(self, user: TelegramUser) -> None:
+        self.upserted_users.append(user)
+
+    def insert_media_requests(self, requests: list[MediaRequest]) -> list[int]:
+        self.inserted_requests.extend(requests)
+        return list(range(100, 100 + len(requests)))
 
     def add_judgmental_animation_file_id(
         self,
@@ -177,10 +198,16 @@ class FakeFetchService:
         self.events = events
         self.repository = repository or FakeRepository()
         self.candidates: list[UrlCandidate] = []
+        self.media_request_ids: list[int] = []
 
-    def fetch(self, candidate: UrlCandidate) -> MediaFetchResult:
+    def fetch(
+        self,
+        candidate: UrlCandidate,
+        media_request_id: int,
+    ) -> MediaFetchResult:
         self.events.append(f"fetch:{candidate.url}")
         self.candidates.append(candidate)
+        self.media_request_ids.append(media_request_id)
         return self.results[candidate.url]
 
 
@@ -306,12 +333,49 @@ def test_message_handler_uses_registry_fetch_service_and_renderer(
     assert second_candidate in fetch_service.candidates
     assert renderer.updates == [update]
     assert renderer.media_items == [[first_media]]
+    assert len(fetch_service.repository.upserted_users) == 1
+    user = fetch_service.repository.upserted_users[0]
+    requests = fetch_service.repository.inserted_requests
+    assert user.id == 123
+    assert user.username == "alice"
+    assert user.first_name == "Alice"
+    assert user.last_name == "Example"
+    assert user.language_code == "en"
+    assert user.is_bot is False
+    assert [request.url for request in requests] == [first_url, second_url]
+    assert [request.provider_item_id for request in requests] == ["ABC123", "DEF456"]
+    assert set(fetch_service.media_request_ids) == {100, 101}
     assert chat.sent_messages == [
         "Could not download (auth expired): https://www.instagram.com/reel/DEF456"
     ]
     assert events[0] == "registry"
     assert set(events[1:-1]) == {f"fetch:{first_url}", f"fetch:{second_url}"}
     assert events[-1] == "renderer"
+
+
+def test_message_handler_records_and_processes_userless_request(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = "https://www.instagram.com/reel/ABC123"
+    candidate = make_candidate(url, "ABC123")
+    media = make_media(url, "ABC123")
+    events: list[str] = []
+    registry = FakeRegistry([candidate], events)
+    fetch_service = FakeFetchService(
+        {url: MediaFetchResult(media=media, url=url)},
+        events,
+    )
+    renderer = FakeRenderer(events)
+    app = build_app(monkeypatch, registry, fetch_service, renderer)
+    update = FakeUpdate(url, FakeChat(), userless=True)
+
+    asyncio.run(app._message_handler(update, object()))
+
+    assert fetch_service.repository.upserted_users == []
+    assert len(fetch_service.repository.inserted_requests) == 1
+    assert fetch_service.repository.inserted_requests[0].telegram_user_id is None
+    assert fetch_service.media_request_ids == [100]
+    assert renderer.media_items == [[media]]
 
 
 def test_message_handler_sends_auth_failure_error(
@@ -463,6 +527,8 @@ def test_message_handler_prefers_stored_judgmental_file_id(
     assert [animation.animation for animation in chat.sent_animations] == [
         "stored-file-id"
     ]
+    assert len(repository.upserted_users) == 1
+    assert [request.url for request in repository.inserted_requests] == [url]
     assert events == ["registry"]
     assert app._judgmental_file_ids == {}
 

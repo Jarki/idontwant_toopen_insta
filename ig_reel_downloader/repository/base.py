@@ -17,6 +17,43 @@ class Repository(Protocol):
         """Insert or refresh a generic media item and replace its assets atomically."""
         raise NotImplementedError
 
+    def insert_media_for_request(
+        self,
+        media_request_id: int,
+        media: models.MediaItem,
+    ) -> None:
+        """Persist media and link its request in one transaction."""
+        raise NotImplementedError
+
+    def upsert_telegram_user(self, user: models.TelegramUser) -> None:
+        """Create a Telegram user or refresh their mutable profile fields."""
+        raise NotImplementedError
+
+    def insert_media_requests(
+        self,
+        requests: list[models.MediaRequest],
+    ) -> list[int]:
+        """Append detected link requests and return their generated IDs."""
+        raise NotImplementedError
+
+    def mark_media_request_succeeded(
+        self,
+        media_request_id: int,
+        media_item_id: str,
+    ) -> None:
+        """Link a request to the media item that satisfied it."""
+        raise NotImplementedError
+
+    def mark_media_request_failed(
+        self,
+        media_request_id: int,
+        failure_reason: models.DownloadFailureReason,
+        failure_url: str,
+        provider_item_id: str | None,
+    ) -> None:
+        """Record the failure outcome for a request."""
+        raise NotImplementedError
+
     def add_judgmental_animation_file_id(
         self,
         file_id: str,

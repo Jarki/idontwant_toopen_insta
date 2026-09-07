@@ -2,11 +2,9 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal, Protocol
+from typing import Any, Protocol
 
-from ig_reel_downloader.repository.models import MediaItem
-
-DownloadFailureReason = Literal["auth", "blocked", "unsupported", "unknown"]
+from ig_reel_downloader.repository.models import DownloadFailureReason, MediaItem
 
 
 class ResolutionError(Exception):

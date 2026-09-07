@@ -30,23 +30,53 @@ class MediaFetchService:
         self.repository = repository
         self.output_dir = output_dir
 
-    def fetch(self, candidate: UrlCandidate) -> MediaFetchResult:
+    def fetch(
+        self,
+        candidate: UrlCandidate,
+        media_request_id: int,
+    ) -> MediaFetchResult:
         result_url = candidate.normalized_url or candidate.url
         try:
             resolve_result = candidate.downloader.resolve(candidate)
         except ResolutionError as error:
+            self._record_failure(
+                media_request_id,
+                candidate,
+                error.url,
+                error.failure_reason,
+            )
             return MediaFetchResult(
                 media=None,
                 url=error.url,
                 failure_reason=error.failure_reason,
             )
-        if resolve_result.skipped:
-            return MediaFetchResult(media=None, url=result_url, skipped=True)
-        if resolve_result.request is None:
+        except Exception:
+            logger.exception("Unexpected error while resolving %s", result_url)
+            self._record_failure(
+                media_request_id,
+                candidate,
+                result_url,
+                "unknown",
+            )
             return MediaFetchResult(
                 media=None,
                 url=result_url,
-                failure_reason=resolve_result.failure_reason or "unknown",
+                failure_reason="unknown",
+            )
+        if resolve_result.skipped:
+            return MediaFetchResult(media=None, url=result_url, skipped=True)
+        if resolve_result.request is None:
+            failure_reason = resolve_result.failure_reason or "unknown"
+            self._record_failure(
+                media_request_id,
+                candidate,
+                result_url,
+                failure_reason,
+            )
+            return MediaFetchResult(
+                media=None,
+                url=result_url,
+                failure_reason=failure_reason,
             )
 
         request = resolve_result.request
@@ -63,6 +93,10 @@ class MediaFetchService:
                 cached.media_kind,
                 cached.provider_item_id,
             )
+            self.repository.mark_media_request_succeeded(
+                media_request_id,
+                cached.id,
+            )
             return MediaFetchResult(
                 media=cached, url=request.normalized_url or request.url
             )
@@ -73,36 +107,74 @@ class MediaFetchService:
             ref.media_kind,
             ref.provider_item_id,
         )
-        download_result = request.downloader.download(
-            request,
-            DownloadContext(output_dir=self.output_dir),
-        )
+        try:
+            download_result = request.downloader.download(
+                request,
+                DownloadContext(output_dir=self.output_dir),
+            )
+        except Exception:
+            failure_url = request.normalized_url or request.url
+            logger.exception(
+                "Unexpected error while downloading %s:%s %s",
+                ref.provider,
+                ref.media_kind,
+                ref.provider_item_id,
+            )
+            self._record_failure(
+                media_request_id,
+                candidate,
+                failure_url,
+                "unknown",
+                ref,
+            )
+            return MediaFetchResult(
+                media=None,
+                url=failure_url,
+                failure_reason="unknown",
+            )
         if download_result.media is None:
+            failure_reason = download_result.failure_reason or "unknown"
+            failure_url = request.normalized_url or request.url
             logger.warning(
                 "Download failed for %s:%s %s: %s",
                 ref.provider,
                 ref.media_kind,
                 ref.provider_item_id,
-                download_result.failure_reason or "unknown",
+                failure_reason,
+            )
+            self._record_failure(
+                media_request_id,
+                candidate,
+                failure_url,
+                failure_reason,
+                ref,
             )
             return MediaFetchResult(
                 media=None,
-                url=request.normalized_url or request.url,
-                failure_reason=download_result.failure_reason or "unknown",
+                url=failure_url,
+                failure_reason=failure_reason,
             )
 
         if not _identity_matches(download_result.media, ref):
+            failure_url = request.normalized_url or request.url
             logger.error(
                 "Downloader returned identity mismatch for %s: expected %s got %s:%s:%s",
-                request.normalized_url or request.url,
+                failure_url,
                 ref.media_id,
                 download_result.media.provider,
                 download_result.media.media_kind,
                 download_result.media.provider_item_id,
             )
+            self._record_failure(
+                media_request_id,
+                candidate,
+                failure_url,
+                "unknown",
+                ref,
+            )
             return MediaFetchResult(
                 media=None,
-                url=request.normalized_url or request.url,
+                url=failure_url,
                 failure_reason="unknown",
             )
 
@@ -114,10 +186,29 @@ class MediaFetchService:
             download_result.media.provider_item_id,
             f" ({duration_str})" if duration_str else "",
         )
-        self.repository.insert_media(download_result.media)
+        self.repository.insert_media_for_request(
+            media_request_id,
+            download_result.media,
+        )
         return MediaFetchResult(
             media=download_result.media,
             url=request.normalized_url or request.url,
+        )
+
+    def _record_failure(
+        self,
+        media_request_id: int,
+        candidate: UrlCandidate,
+        url: str,
+        failure_reason: DownloadFailureReason,
+        ref: ProviderItemRef | None = None,
+    ) -> None:
+        identity = ref or candidate.local_ref
+        self.repository.mark_media_request_failed(
+            media_request_id,
+            failure_reason,
+            url,
+            identity.provider_item_id if identity is not None else None,
         )
 
 

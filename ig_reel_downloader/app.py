@@ -1,5 +1,6 @@
 import asyncio
 import collections
+import datetime
 import logging
 from contextlib import suppress
 
@@ -88,12 +89,65 @@ class IgReelDownloaderApp:
     async def _get_media_items(
         self,
         candidates: list[UrlCandidate],
+        media_request_ids: list[int],
     ) -> list[MediaFetchResult]:
         tasks = [
-            asyncio.to_thread(self.fetch_service.fetch, candidate)
-            for candidate in candidates
+            asyncio.to_thread(self.fetch_service.fetch, candidate, request_id)
+            for candidate, request_id in zip(
+                candidates,
+                media_request_ids,
+                strict=True,
+            )
         ]
         return list(await asyncio.gather(*tasks))
+
+    async def _record_media_requests(
+        self,
+        update: Update,
+        candidates: list[UrlCandidate],
+    ) -> list[int]:
+        telegram_user = update.effective_user
+        now = datetime.datetime.now()
+        telegram_user_id: int | None = None
+        if telegram_user is not None:
+            user = models.TelegramUser(
+                id=telegram_user.id,
+                username=telegram_user.username,
+                first_name=telegram_user.first_name,
+                last_name=telegram_user.last_name,
+                language_code=telegram_user.language_code,
+                is_bot=telegram_user.is_bot,
+                created_at=now,
+                updated_at=now,
+            )
+            telegram_user_id = user.id
+            await asyncio.to_thread(
+                self.fetch_service.repository.upsert_telegram_user,
+                user,
+            )
+
+        requests = [
+            models.MediaRequest(
+                telegram_user_id=telegram_user_id,
+                url=candidate.url,
+                normalized_url=candidate.normalized_url,
+                provider=candidate.provider,
+                media_kind=candidate.link_type,
+                provider_item_id=(
+                    candidate.local_ref.provider_item_id
+                    if candidate.local_ref is not None
+                    else None
+                ),
+                created_at=now,
+            )
+            for candidate in candidates
+        ]
+        # MediaFetchService receives these request IDs below and records the
+        # eventual success or failure.
+        return await asyncio.to_thread(
+            self.fetch_service.repository.insert_media_requests,
+            requests,
+        )
 
     async def _add_judgmental_handler(
         self,
@@ -216,6 +270,8 @@ class IgReelDownloaderApp:
         if not candidates:
             return
 
+        media_request_ids = await self._record_media_requests(update, candidates)
+
         # Judgmental GIF chance — replace the download response with a GIF.
         judgmental_file_ids = await self._list_judgmental_file_ids()
         judgmental_options = judgmental_file_ids or self.judgmental_gifs
@@ -236,7 +292,7 @@ class IgReelDownloaderApp:
             [f"{c.provider}:{c.link_type}" for c in candidates],
         )
 
-        fetch_results = await self._get_media_items(candidates)
+        fetch_results = await self._get_media_items(candidates, media_request_ids)
         errors: list[str] = []
         media_items: list[models.MediaItem] = []
         for result in fetch_results:

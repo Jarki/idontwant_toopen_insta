@@ -16,7 +16,7 @@ DATABASE_URL=postgresql+psycopg://app:password@postgres:5432/ig_reel_downloader
 
 Connection URLs must use the `postgresql+psycopg` dialect. Plain `postgres://` URLs are rejected. Each URL must contain its corresponding configured role and password; percent-encode reserved characters in credentials and database names.
 
-A separate `DB_MIGRATION_URL` variable is used by the bootstrap and migrate services with a migration role that owns the schema. The application role (in `DATABASE_URL`) is restricted to the three runtime tables and their sequences; it cannot access Alembic metadata or legacy rows.
+A separate `DB_MIGRATION_URL` variable is used by the bootstrap and migrate services with a migration role that owns the schema. The application role (in `DATABASE_URL`) receives DML access to runtime tables and usage access to their generated sequences through schema-wide existing/default privileges; explicit revocations prevent access to Alembic metadata and legacy rows.
 
 ## Compose service ordering
 
