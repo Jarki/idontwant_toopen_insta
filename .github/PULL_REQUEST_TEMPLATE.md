@@ -1,10 +1,5 @@
-## Summary
-
-<!-- What does this PR do and why? Keep it concise. -->
-
-## PR title
-
 <!--
+Set the PR title in GitHub's title field; do not repeat it in the PR description.
 PR titles must follow Conventional Commits: <type>: <description>
 Types: feat, fix, docs, test, refactor, build, chore, perf, ci, revert
 Examples:
@@ -12,6 +7,10 @@ Examples:
   fix: handle missing filepath in migration
   refactor: extract media fetch service
 -->
+
+## Summary
+
+<!-- What does this PR do and why? Keep it concise. -->
 
 ## What changed
 
