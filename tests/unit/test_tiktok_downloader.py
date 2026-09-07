@@ -34,7 +34,12 @@ def test_tiktok_extracts_canonical_video_url() -> None:
 
 @pytest.mark.parametrize(
     "url",
-    ["https://vm.tiktok.com/ZMabc123/", "https://vt.tiktok.com/ZMabc123/"],
+    [
+        "https://vm.tiktok.com/ZMabc123/",
+        "https://vt.tiktok.com/ZMabc123/",
+        "https://vm.tiktok.com/ZMabc123",
+        "https://vt.tiktok.com/ZMabc123",
+    ],
 )
 def test_tiktok_extracts_share_url_without_local_ref(url: str) -> None:
     downloader = TikTokDownloader()
@@ -44,7 +49,7 @@ def test_tiktok_extracts_share_url_without_local_ref(url: str) -> None:
     assert len(candidates) == 1
     assert candidates[0].provider == "tiktok"
     assert candidates[0].link_type == "share"
-    assert candidates[0].normalized_url == url
+    assert candidates[0].normalized_url == url.removesuffix("/") + "/"
     assert candidates[0].local_ref is None
 
 

@@ -37,8 +37,8 @@ CANONICAL_VIDEO_URL_PATTERN = re.compile(
     r"/video/(?P<id>\d+)(?:/)?(?:\?[^\s#]*)?(?:#[^\s]*)?)(?=\s|$)"
 )
 SHARE_URL_PATTERN = re.compile(
-    r"(?P<url>https://(?P<host>v[mt]\.tiktok\.com)/(?P<id>[a-zA-Z0-9_-]+)/"
-    r"(?:\?[^\s#]*)?(?:#[^\s]*)?)(?=\s|$)"
+    r"(?P<url>https://(?P<host>v[mt]\.tiktok\.com)/(?P<id>[a-zA-Z0-9_-]+)"
+    r"(?:/)?(?:\?[^\s#]*)?(?:#[^\s]*)?)(?=\s|$)"
 )
 
 
