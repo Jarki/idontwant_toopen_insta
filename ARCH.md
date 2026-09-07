@@ -8,7 +8,7 @@ _Last reviewed: 2026-07-15_
 
 - `python-telegram-bot` handles Telegram long-polling and message delivery.
 - `yt-dlp` extracts metadata and downloads media files for Instagram, TikTok, and YouTube.
-- PostgreSQL caches generic media metadata and local file paths for recently downloaded items.
+- PostgreSQL stores Telegram users and detected link requests, caches generic media metadata and local file paths, and records failed download attempts.
 - Alembic manages database schema creation and migrations.
 - Docker Compose runs PostgreSQL and a bootstrap service for role provisioning, then applies migrations in a one-shot container before starting the bot with persistent `output/` and `assets/` mounts.
 
@@ -26,6 +26,7 @@ DownloaderRegistry
     │
     ▼
 IgReelDownloaderApp
+    ├── upserts the Telegram user and appends detected link requests
     └── offloads each MediaFetchService.fetch(match) with asyncio.to_thread()
     │
     ▼
@@ -115,18 +116,20 @@ For each text message:
 
 1. `DownloaderRegistry.extract_candidates()` asks registered downloaders to extract `UrlCandidate` URL spans, which are then resolved through each downloader's `resolve()` method.
 2. The registry resolves provider identities with `ProviderItemRef`, resolves overlapping spans, and deduplicates while preserving message order by provider/media/item identity.
-3. `IgReelDownloaderApp` offloads each `MediaFetchService.fetch(match)` call through `asyncio.to_thread(...)` because `yt-dlp` and database operations are blocking/synchronous.
-4. `MediaFetchService`:
+3. `IgReelDownloaderApp` offloads the user upsert, when a Telegram user is available, and the append of every detected link request through `asyncio.to_thread(...)`.
+4. `IgReelDownloaderApp` offloads each `MediaFetchService.fetch(match)` call through `asyncio.to_thread(...)` because `yt-dlp` and database operations are blocking/synchronous.
+5. `MediaFetchService`:
    - Looks for a fresh generic cache row with `repository.get_media_by_provider_item(provider, media_kind, provider_item_id)`.
    - Reuses the cached item only when all referenced asset files still exist.
    - Calls the matched downloader on cache miss, stale cache, or missing local files.
    - Verifies the downloader returned the expected provider/media/item identity.
-   - Persists successful downloads with `repository.insert_media(media)`.
-5. Successful media items are passed to `TelegramMediaRenderer`:
+   - Persists a new successful download and links its originating request atomically with `repository.insert_media_for_request(media_request_id, media)`; cache hits link through `mark_media_request_succeeded(...)`.
+   - Marks resolution failures, downloader-reported failures, and identity mismatches directly on the originating `media_requests` row; intentional skips have no outcome.
+6. Successful media items are passed to `TelegramMediaRenderer`:
    - One supported video: `chat.send_video(...)` with a caption containing title, likes, and description.
    - Multiple supported videos: `chat.send_media_group(...)` with `InputMediaVideo` items.
-6. Failed downloads or unsupported rendered items are summarized as chat messages.
-7. Telegram upload `TimedOut` errors are logged and reported to the user with a friendly timeout message.
+7. Failed downloads or unsupported rendered items are summarized as chat messages.
+8. Telegram upload `TimedOut` errors are logged and reported to the user with a friendly timeout message.
 
 ### Quiet-skip behavior
 
@@ -195,6 +198,8 @@ class MediaItem(pydantic.BaseModel):
     updated_at: datetime.datetime
 ```
 
+`TelegramUser` stores the current Telegram profile fields keyed by numeric user ID. `MediaRequest` represents one detected link and includes the optional requesting user ID, submitted and normalized URLs, provider/media identity when available, and detection timestamp. Requests without an effective Telegram user remain recordable with a null user ID.
+
 The `reels` table is a legacy table created by early Alembic migrations. It is preserved in the schema for compatibility; the runtime uses `media_items` for all cache operations.
 
 ### Repository abstraction
@@ -203,6 +208,11 @@ The `reels` table is a legacy table created by early Alembic migrations. It is p
 
 - `get_media_by_provider_item(provider, media_kind, provider_item_id)`.
 - `insert_media(media)`.
+- `insert_media_for_request(media_request_id, media)`.
+- `upsert_telegram_user(user)`.
+- `insert_media_requests(requests)`.
+- `mark_media_request_succeeded(media_request_id, media_item_id)`.
+- `mark_media_request_failed(media_request_id, failure_reason, failure_url, provider_item_id)`.
 
 The app layer depends on `MediaFetchService` and the repository protocol rather than concrete SQLAlchemy dialect code.
 
@@ -213,14 +223,16 @@ The app layer depends on `MediaFetchService` and the repository protocol rather 
 - Uses SQLAlchemy 2.x with `DATABASE_URL` (must use `postgresql+psycopg://` scheme).
 - Uses short-lived SQLAlchemy sessions for reads and writes.
 - Reads fresh cache rows from `media_items` by provider/media/item identity.
-- Writes `media_items` with PostgreSQL `ON CONFLICT DO UPDATE` upsert semantics and replaces child `media_assets` atomically.
+- Writes `media_items` with PostgreSQL `ON CONFLICT DO UPDATE` upsert semantics and replaces child `media_assets` atomically; newly downloaded media and its request linkage share one transaction.
 - Preserves the original `created_at` on refresh and uses `updated_at` for cache freshness.
 - Alembic migrations are exclusively owned by Docker Compose; runtime does not run migrations.
 
-### Generic cache tables
+### Runtime tables
 
-The runtime cache tables are:
+The runtime tables are:
 
+- `telegram_users`: one row per Telegram user ID; mutable username/profile fields are refreshed on each detected request while `created_at` is preserved.
+- `media_requests`: detected links, optionally associated with a Telegram user, including raw and normalized URLs plus provider/media identity when known. Outcome columns link successful requests to `media_items` or store a failure reason and URL directly; a check constraint permits only pending, successful, or failed outcome shapes.
 - `media_items`: one row per provider/media/item identity, with metadata stored as JSON text and a unique constraint on `(provider, media_kind, provider_item_id)`.
 - `media_assets`: ordered local assets for each media item, with a foreign key to `media_items` and a unique `(media_item_id, asset_index)` constraint.
 - `judgmental_animations`: Telegram animation `file_id` and `file_unique_id` cache, used for judgmental GIF replies.
@@ -304,7 +316,7 @@ Three separate PostgreSQL roles enforce least privilege:
 
 - **Bootstrap/owner**: created from `POSTGRES_USER`/`POSTGRES_PASSWORD`; used only for role grants, maintenance, and backups.
 - **Migration** (`DB_MIGRATION_URL`): owns the application schema and runs DDL for Alembic migrations.
-- **Application** (`DATABASE_URL`): restricted to DML on the three runtime tables and their required sequences; it cannot access Alembic metadata or legacy rows and is never a superuser or schema owner.
+- **Application** (`DATABASE_URL`): restricted to DML on runtime tables and usage of their required sequences; it cannot access Alembic metadata or legacy rows and is never a superuser or schema owner.
 
 ### Cleanup loop
 

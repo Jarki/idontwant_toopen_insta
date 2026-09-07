@@ -311,6 +311,283 @@ def test_get_media_by_provider_item_raises_on_invalid_metadata_json(
 
 
 # ---------------------------------------------------------------------------
+# Telegram users and media requests
+# ---------------------------------------------------------------------------
+
+
+def test_user_upsert_request_insert_and_success_linkage(
+    repo: PostgreSQLRepository,
+) -> None:
+    created_at = datetime.datetime.now() - datetime.timedelta(hours=1)
+    first_user = models.TelegramUser(
+        id=123456789,
+        username="old_username",
+        first_name="Alice",
+        last_name=None,
+        language_code="en",
+        is_bot=False,
+        created_at=created_at,
+        updated_at=created_at,
+    )
+    first_request = models.MediaRequest(
+        telegram_user_id=first_user.id,
+        url="https://vm.tiktok.com/short",
+        normalized_url=None,
+        provider="tiktok",
+        media_kind="video",
+        provider_item_id=None,
+        created_at=created_at,
+    )
+    repo.upsert_telegram_user(first_user)
+    first_request_id = repo.insert_media_requests([first_request])[0]
+
+    updated_at = datetime.datetime.now()
+    updated_user = first_user.model_copy(
+        update={
+            "username": "new_username",
+            "last_name": "Example",
+            "language_code": "uk",
+            "updated_at": updated_at,
+        }
+    )
+    second_request = models.MediaRequest(
+        telegram_user_id=updated_user.id,
+        url="https://www.instagram.com/reel/ABC123?igsh=tracking",
+        normalized_url="https://www.instagram.com/reel/ABC123",
+        provider="instagram",
+        media_kind="reel",
+        provider_item_id="ABC123",
+        created_at=updated_at,
+    )
+    repo.upsert_telegram_user(updated_user)
+    second_request_id = repo.insert_media_requests([second_request])[0]
+    media = _make_media_item(asset_indexes=[0])
+    repo.insert_media_for_request(second_request_id, media)
+
+    with repo.engine.connect() as connection:
+        user_row = (
+            connection.execute(
+                text("SELECT * FROM telegram_users WHERE id = 123456789")
+            )
+            .mappings()
+            .one()
+        )
+        request_rows = (
+            connection.execute(
+                text(
+                    "SELECT id, telegram_user_id, url, normalized_url, provider, "
+                    "media_kind, provider_item_id, media_item_id, failure_reason, "
+                    "failure_url, created_at, completed_at "
+                    "FROM media_requests ORDER BY id"
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+    assert user_row["username"] == "new_username"
+    assert user_row["first_name"] == "Alice"
+    assert user_row["last_name"] == "Example"
+    assert user_row["language_code"] == "uk"
+    assert user_row["is_bot"] is False
+    assert user_row["created_at"] == created_at
+    assert user_row["updated_at"] == updated_at
+    assert len(request_rows) == 2
+    assert request_rows[0]["telegram_user_id"] == first_user.id
+    assert request_rows[0]["media_item_id"] is None
+    assert request_rows[0]["completed_at"] is None
+    assert request_rows[0]["url"] == "https://vm.tiktok.com/short"
+    assert request_rows[0]["provider_item_id"] is None
+    assert request_rows[1]["normalized_url"] == (
+        "https://www.instagram.com/reel/ABC123"
+    )
+    assert request_rows[1]["provider_item_id"] == "ABC123"
+    assert request_rows[1]["media_item_id"] == media.id
+    assert request_rows[1]["failure_reason"] is None
+    assert request_rows[1]["failure_url"] is None
+    assert request_rows[1]["completed_at"] is not None
+    assert [row["id"] for row in request_rows] == [
+        first_request_id,
+        second_request_id,
+    ]
+
+
+def test_insert_media_for_request_rolls_back_for_unknown_request(
+    repo: PostgreSQLRepository,
+) -> None:
+    media = _make_media_item(asset_indexes=[0])
+
+    with pytest.raises(ValueError, match="Unknown media request id"):
+        repo.insert_media_for_request(999, media)
+
+    assert repo.get_media_by_provider_item("instagram", "reel", "ABC123") is None
+
+
+def test_insert_media_requests_accepts_userless_request(
+    repo: PostgreSQLRepository,
+) -> None:
+    now = datetime.datetime.now()
+    request_id = repo.insert_media_requests(
+        [
+            models.MediaRequest(
+                telegram_user_id=None,
+                url="https://www.instagram.com/reel/ABC123",
+                normalized_url="https://www.instagram.com/reel/ABC123",
+                provider="instagram",
+                media_kind="reel",
+                provider_item_id="ABC123",
+                created_at=now,
+            )
+        ]
+    )[0]
+
+    with repo.engine.connect() as connection:
+        telegram_user_id = connection.execute(
+            text("SELECT telegram_user_id FROM media_requests WHERE id = :id"),
+            {"id": request_id},
+        ).scalar_one()
+
+    assert telegram_user_id is None
+
+
+def test_mark_media_request_succeeded_clears_previous_failure(
+    repo: PostgreSQLRepository,
+) -> None:
+    now = datetime.datetime.now()
+    request_id = repo.insert_media_requests(
+        [
+            models.MediaRequest(
+                telegram_user_id=None,
+                url="https://www.instagram.com/reel/ABC123",
+                normalized_url="https://www.instagram.com/reel/ABC123",
+                provider="instagram",
+                media_kind="reel",
+                provider_item_id="ABC123",
+                created_at=now,
+            )
+        ]
+    )[0]
+    media = _make_media_item(asset_indexes=[0])
+    repo.insert_media(media)
+    repo.mark_media_request_failed(
+        request_id,
+        "unknown",
+        media.original_url,
+        media.provider_item_id,
+    )
+
+    repo.mark_media_request_succeeded(request_id, media.id)
+
+    with repo.engine.connect() as connection:
+        row = (
+            connection.execute(
+                text(
+                    "SELECT media_item_id, failure_reason, failure_url, completed_at "
+                    "FROM media_requests WHERE id = :id"
+                ),
+                {"id": request_id},
+            )
+            .mappings()
+            .one()
+        )
+
+    assert row["media_item_id"] == media.id
+    assert row["failure_reason"] is None
+    assert row["failure_url"] is None
+    assert row["completed_at"] is not None
+
+
+def test_media_request_outcome_constraint_rejects_invalid_state(
+    repo: PostgreSQLRepository,
+) -> None:
+    now = datetime.datetime.now()
+    request_id = repo.insert_media_requests(
+        [
+            models.MediaRequest(
+                telegram_user_id=None,
+                url="https://www.instagram.com/reel/ABC123",
+                normalized_url=None,
+                provider="instagram",
+                media_kind="reel",
+                provider_item_id="ABC123",
+                created_at=now,
+            )
+        ]
+    )[0]
+
+    with pytest.raises(IntegrityError), repo.engine.begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE media_requests SET completed_at = :completed_at WHERE id = :id"
+            ),
+            {"completed_at": now, "id": request_id},
+        )
+
+
+# ---------------------------------------------------------------------------
+# Failed request outcomes
+# ---------------------------------------------------------------------------
+
+
+def test_mark_media_requests_failed_records_outcomes(
+    repo: PostgreSQLRepository,
+) -> None:
+    created_at = datetime.datetime.now()
+    request_ids = repo.insert_media_requests(
+        [
+            models.MediaRequest(
+                telegram_user_id=None,
+                url=url,
+                normalized_url=None,
+                provider=provider,
+                media_kind=media_kind,
+                provider_item_id=None,
+                created_at=created_at,
+            )
+            for url, provider, media_kind in (
+                ("https://www.instagram.com/reel/ABC123", "instagram", "reel"),
+                ("https://youtu.be/unresolved", "youtube", "video"),
+            )
+        ]
+    )
+
+    repo.mark_media_request_failed(
+        request_ids[0],
+        "auth",
+        "https://www.instagram.com/reel/ABC123",
+        "ABC123",
+    )
+    repo.mark_media_request_failed(
+        request_ids[1],
+        "unknown",
+        "https://youtu.be/unresolved",
+        None,
+    )
+
+    with repo.engine.connect() as connection:
+        rows = (
+            connection.execute(
+                text(
+                    "SELECT id, provider_item_id, failure_reason, failure_url, "
+                    "completed_at FROM media_requests ORDER BY id"
+                )
+            )
+            .mappings()
+            .all()
+        )
+
+    assert [row["id"] for row in rows] == request_ids
+    assert rows[0]["provider_item_id"] == "ABC123"
+    assert rows[0]["failure_reason"] == "auth"
+    assert rows[0]["failure_url"] == ("https://www.instagram.com/reel/ABC123")
+    assert rows[0]["completed_at"] is not None
+    assert rows[1]["provider_item_id"] is None
+    assert rows[1]["failure_reason"] == "unknown"
+    assert rows[1]["failure_url"] == "https://youtu.be/unresolved"
+    assert rows[1]["completed_at"] is not None
+
+
+# ---------------------------------------------------------------------------
 # Judgmental animation file IDs
 # ---------------------------------------------------------------------------
 

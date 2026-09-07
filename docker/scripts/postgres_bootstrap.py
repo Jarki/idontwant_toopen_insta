@@ -17,8 +17,6 @@ import os
 import sys
 from typing import Any
 
-APPLICATION_TABLES = ("media_items", "media_assets", "judgmental_animations")
-APPLICATION_SEQUENCES = ("media_assets_id_seq", "judgmental_animations_id_seq")
 MIGRATION_ONLY_TABLES = ("alembic_version", "reels")
 
 
@@ -96,16 +94,13 @@ def main() -> None:
             f"TO {_q(migration_user)}"
         )
 
-        # Application role — DML only on runtime tables.
-        for table in APPLICATION_TABLES:
-            if _relation_exists(cur, table):
-                cur.execute(
-                    f"GRANT SELECT, INSERT, UPDATE, DELETE ON TABLE {_q(table)} "
-                    f"TO {_q(app_user)}"
-                )
-        for sequence in APPLICATION_SEQUENCES:
-            if _relation_exists(cur, sequence):
-                cur.execute(f"GRANT USAGE ON SEQUENCE {_q(sequence)} TO {_q(app_user)}")
+        # Application role — DML on existing runtime objects. Migration-only
+        # tables are explicitly revoked below.
+        cur.execute(
+            f"GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public "
+            f"TO {_q(app_user)}"
+        )
+        cur.execute(f"GRANT USAGE ON ALL SEQUENCES IN SCHEMA public TO {_q(app_user)}")
 
         # Default privileges — objects created by migration role grant DML to app
         cur.execute(

@@ -6,11 +6,17 @@ from typing import Any, cast
 
 from sqlalchemy import create_engine, delete, make_url, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.orm import Session, sessionmaker
 
 from .. import constants
 from . import base, models
-from .schema import JudgmentalAnimationRecord, MediaAssetRecord, MediaItemRecord
+from .schema import (
+    JudgmentalAnimationRecord,
+    MediaAssetRecord,
+    MediaItemRecord,
+    MediaRequestRecord,
+    TelegramUserRecord,
+)
 
 
 class PostgreSQLRepository(base.Repository):
@@ -58,45 +64,94 @@ class PostgreSQLRepository(base.Repository):
             return _media_record_to_model(item)
 
     def insert_media(self, media: models.MediaItem) -> None:
-        _validate_unique_asset_indexes(media)
         with self.session_factory() as session:
-            existing = session.scalar(
-                select(MediaItemRecord).where(MediaItemRecord.id == media.id)
-            )
-            created_at = (
-                existing.created_at if existing is not None else media.created_at
-            )
-            statement = pg_insert(MediaItemRecord).values(
-                id=media.id,
-                provider=media.provider,
-                media_kind=media.media_kind,
-                provider_item_id=media.provider_item_id,
-                original_url=media.original_url,
-                title=media.title,
-                description=media.description,
-                metadata_json=json.dumps(media.metadata),
-                created_at=created_at,
-                updated_at=media.updated_at,
+            _upsert_media(session, media)
+            session.commit()
+
+    def insert_media_for_request(
+        self,
+        media_request_id: int,
+        media: models.MediaItem,
+    ) -> None:
+        with self.session_factory() as session:
+            request = _get_media_request(session, media_request_id)
+            _upsert_media(session, media)
+            _mark_media_request_succeeded(request, media.id)
+            session.commit()
+
+    def upsert_telegram_user(self, user: models.TelegramUser) -> None:
+        with self.session_factory() as session:
+            statement = pg_insert(TelegramUserRecord).values(
+                id=user.id,
+                username=user.username,
+                first_name=user.first_name,
+                last_name=user.last_name,
+                language_code=user.language_code,
+                is_bot=user.is_bot,
+                created_at=user.created_at,
+                updated_at=user.updated_at,
             )
             session.execute(
                 statement.on_conflict_do_update(
-                    index_elements=[MediaItemRecord.id],
+                    index_elements=[TelegramUserRecord.id],
                     set_={
-                        "original_url": statement.excluded.original_url,
-                        "title": statement.excluded.title,
-                        "description": statement.excluded.description,
-                        "metadata_json": statement.excluded.metadata_json,
+                        "username": statement.excluded.username,
+                        "first_name": statement.excluded.first_name,
+                        "last_name": statement.excluded.last_name,
+                        "language_code": statement.excluded.language_code,
+                        "is_bot": statement.excluded.is_bot,
                         "updated_at": statement.excluded.updated_at,
                     },
                 )
             )
-            session.execute(
-                delete(MediaAssetRecord).where(
-                    MediaAssetRecord.media_item_id == media.id
-                )
+            session.commit()
+
+    def insert_media_requests(
+        self,
+        requests: list[models.MediaRequest],
+    ) -> list[int]:
+        records = [
+            MediaRequestRecord(
+                telegram_user_id=request.telegram_user_id,
+                url=request.url,
+                normalized_url=request.normalized_url,
+                provider=request.provider,
+                media_kind=request.media_kind,
+                provider_item_id=request.provider_item_id,
+                created_at=request.created_at,
             )
-            for asset in media.assets:
-                session.add(_asset_model_to_record(media.id, asset, media.updated_at))
+            for request in requests
+        ]
+        with self.session_factory() as session:
+            session.add_all(records)
+            session.commit()
+            return [record.id for record in records]
+
+    def mark_media_request_succeeded(
+        self,
+        media_request_id: int,
+        media_item_id: str,
+    ) -> None:
+        with self.session_factory() as session:
+            request = _get_media_request(session, media_request_id)
+            _mark_media_request_succeeded(request, media_item_id)
+            session.commit()
+
+    def mark_media_request_failed(
+        self,
+        media_request_id: int,
+        failure_reason: models.DownloadFailureReason,
+        failure_url: str,
+        provider_item_id: str | None,
+    ) -> None:
+        with self.session_factory() as session:
+            request = _get_media_request(session, media_request_id)
+            request.media_item_id = None
+            request.failure_reason = failure_reason
+            request.failure_url = failure_url
+            if provider_item_id is not None:
+                request.provider_item_id = provider_item_id
+            request.completed_at = datetime.datetime.now()
             session.commit()
 
     def add_judgmental_animation_file_id(
@@ -157,6 +212,62 @@ class PostgreSQLRepository(base.Repository):
 # ------------------------------------------------------------------
 # Repository/model conversion helpers.
 # ------------------------------------------------------------------
+
+
+def _get_media_request(
+    session: Session,
+    media_request_id: int,
+) -> MediaRequestRecord:
+    request = session.get(MediaRequestRecord, media_request_id)
+    if request is None:
+        msg = f"Unknown media request id: {media_request_id}"
+        raise ValueError(msg)
+    return request
+
+
+def _mark_media_request_succeeded(
+    request: MediaRequestRecord,
+    media_item_id: str,
+) -> None:
+    request.media_item_id = media_item_id
+    request.failure_reason = None
+    request.failure_url = None
+    request.completed_at = datetime.datetime.now()
+
+
+def _upsert_media(session: Session, media: models.MediaItem) -> None:
+    _validate_unique_asset_indexes(media)
+    existing = session.get(MediaItemRecord, media.id)
+    created_at = existing.created_at if existing is not None else media.created_at
+    statement = pg_insert(MediaItemRecord).values(
+        id=media.id,
+        provider=media.provider,
+        media_kind=media.media_kind,
+        provider_item_id=media.provider_item_id,
+        original_url=media.original_url,
+        title=media.title,
+        description=media.description,
+        metadata_json=json.dumps(media.metadata),
+        created_at=created_at,
+        updated_at=media.updated_at,
+    )
+    session.execute(
+        statement.on_conflict_do_update(
+            index_elements=[MediaItemRecord.id],
+            set_={
+                "original_url": statement.excluded.original_url,
+                "title": statement.excluded.title,
+                "description": statement.excluded.description,
+                "metadata_json": statement.excluded.metadata_json,
+                "updated_at": statement.excluded.updated_at,
+            },
+        )
+    )
+    session.execute(
+        delete(MediaAssetRecord).where(MediaAssetRecord.media_item_id == media.id)
+    )
+    for asset in media.assets:
+        session.add(_asset_model_to_record(media.id, asset, media.updated_at))
 
 
 def _validate_unique_asset_indexes(media: models.MediaItem) -> None:

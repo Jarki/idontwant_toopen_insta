@@ -4,6 +4,28 @@ from typing import Any, Literal
 import pydantic
 
 AssetType = Literal["video", "image"]
+DownloadFailureReason = Literal["auth", "blocked", "unsupported", "unknown"]
+
+
+class TelegramUser(pydantic.BaseModel):
+    id: int
+    username: str | None
+    first_name: str
+    last_name: str | None
+    language_code: str | None
+    is_bot: bool
+    created_at: datetime.datetime
+    updated_at: datetime.datetime
+
+
+class MediaRequest(pydantic.BaseModel):
+    telegram_user_id: int | None
+    url: str
+    normalized_url: str | None
+    provider: str
+    media_kind: str
+    provider_item_id: str | None
+    created_at: datetime.datetime
 
 
 class MediaAsset(pydantic.BaseModel):
