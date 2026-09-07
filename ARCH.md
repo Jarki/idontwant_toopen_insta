@@ -144,7 +144,7 @@ Downloader interfaces live in `downloaders/base.py`:
 - `ProviderItemRef` identifies media as `provider`, `media_kind`, and `provider_item_id`; its cache id is `provider:media_kind:provider_item_id`.
 - `MediaDownloadResult` normalizes successful `MediaItem` downloads and failure reasons.
 
-`downloaders/reddit.py` supports canonical Reddit post URLs and `/r/<subreddit>/s/<token>` share links. Share links are followed to obtain the stable Reddit post ID used by the generic cache. Reddit-hosted videos are downloaded with `yt-dlp`; direct images, image galleries, and Reddit-hosted link previews are downloaded as image assets. Video and audio streams are merged by `ffmpeg` in the application image. Text-only posts are intentionally unsupported. Public age-marked posts generally work anonymously; private or quarantined communities use the same optional `assets/cookies.txt` browser-cookie file as other providers.
+`downloaders/reddit.py` supports canonical Reddit post URLs and `/r/<subreddit>/s/<token>` share links. Share links are followed to obtain the stable Reddit post ID used by the generic cache. Reddit-hosted videos are downloaded with `yt-dlp`; direct images, image galleries, and Reddit-hosted link previews are downloaded as image assets. Video and audio streams are merged by `ffmpeg` in the application image. Text-only posts are cached without assets and sent as Telegram text messages without fetching a preview image. Public age-marked posts generally work anonymously; private or quarantined communities use the same optional `assets/cookies.txt` browser-cookie file as other providers.
 
 `downloaders/instagram.py` contains the Instagram Reel and Post `yt-dlp` integration:
 

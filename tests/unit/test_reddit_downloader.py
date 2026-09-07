@@ -430,7 +430,7 @@ def test_reddit_downloads_hosted_video(
     assert result.media.assets[0].duration_seconds == 83
 
 
-def test_reddit_returns_unsupported_for_text_only_post(
+def test_reddit_returns_text_post_without_downloading_an_image(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -438,15 +438,26 @@ def test_reddit_returns_unsupported_for_text_only_post(
     monkeypatch.setattr(
         downloader,
         "_load_post_data",
-        lambda _url, post_id: {"id": post_id, "title": "Text", "selftext": "body"},
+        lambda _url, post_id: {
+            "id": post_id,
+            "title": "Text post",
+            "selftext": "Post body",
+            "is_self": True,
+            "ups": 42,
+        },
     )
 
     result = downloader.download(
         _request(downloader, "text123"), DownloadContext(output_dir=tmp_path)
     )
 
-    assert result.media is None
-    assert result.failure_reason == "unsupported"
+    assert result.failure_reason is None
+    assert result.media is not None
+    assert result.media.title == "Text post"
+    assert result.media.description == "Post body"
+    assert result.media.assets == []
+    assert result.media.metadata["text_only"] is True
+    assert not (tmp_path / "reddit").exists()
 
 
 @pytest.mark.parametrize("reason", ["private", "quarantined"])

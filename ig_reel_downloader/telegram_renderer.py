@@ -35,13 +35,19 @@ class TelegramMediaRenderer:
         update: Update,
         media_items: list[MediaItem],
     ) -> list[MediaRenderResult]:
-        unsupported = [item for item in media_items if not _is_supported(item)]
-        supported = [item for item in media_items if _is_supported(item)]
+        text_items = [item for item in media_items if _is_text_item(item)]
+        supported_media = [item for item in media_items if _is_supported_media(item)]
+        unsupported = [
+            item
+            for item in media_items
+            if not _is_text_item(item) and not _is_supported_media(item)
+        ]
         results = [
             MediaRenderResult(media=item, sent=False, failure_reason="unsupported")
             for item in unsupported
         ]
-        if not supported:
+        renderable = text_items + supported_media
+        if not renderable:
             return results
 
         chat = update.effective_chat
@@ -49,11 +55,18 @@ class TelegramMediaRenderer:
             logger.warning("Cannot send media: update has no effective chat")
             return results + [
                 MediaRenderResult(media=item, sent=False, failure_reason="unknown")
-                for item in supported
+                for item in renderable
             ]
 
-        if len(supported) == 1 and len(supported[0].assets) == 1:
-            item = supported[0]
+        for item in text_items:
+            await chat.send_message(
+                _format_text_message(item),
+                write_timeout=self.telegram_media_write_timeout,
+                read_timeout=self.telegram_read_timeout,
+            )
+
+        if len(supported_media) == 1 and len(supported_media[0].assets) == 1:
+            item = supported_media[0]
             asset = item.assets[0]
             if asset.asset_type == "video":
                 await chat.send_video(
@@ -69,12 +82,12 @@ class TelegramMediaRenderer:
                     write_timeout=self.telegram_media_write_timeout,
                     read_timeout=self.telegram_read_timeout,
                 )
-        else:
+        elif supported_media:
             with ExitStack() as stack:
                 # Build flat list of all assets across all supported items,
                 # ordered by media item index then asset_index.
                 medias: list[InputMediaVideo | InputMediaPhoto] = []
-                for item in supported:
+                for item in supported_media:
                     for asset in sorted(item.assets, key=lambda a: a.asset_index):
                         fp = stack.enter_context(Path(asset.filepath).open("rb"))
                         caption = _format_caption(item) if not medias else None
@@ -92,7 +105,7 @@ class TelegramMediaRenderer:
                         read_timeout=self.telegram_read_timeout,
                     )
         return results + [
-            MediaRenderResult(media=item, sent=True) for item in supported
+            MediaRenderResult(media=item, sent=True) for item in renderable
         ]
 
 
@@ -111,30 +124,45 @@ def _media_groups(
     return groups
 
 
-def _is_supported(media: MediaItem) -> bool:
+def _is_text_item(media: MediaItem) -> bool:
+    return (
+        media.provider == "reddit"
+        and not media.assets
+        and media.metadata.get("text_only") is True
+    )
+
+
+def _is_supported_media(media: MediaItem) -> bool:
     return bool(media.assets) and all(
         asset.asset_type in {"video", "image"} for asset in media.assets
     )
 
 
 def _format_caption(media: MediaItem) -> str:
-    max_caption = 1024
+    return _format_item_text(media, max_length=1024)
+
+
+def _format_text_message(media: MediaItem) -> str:
+    return _format_item_text(media, max_length=4096)
+
+
+def _format_item_text(media: MediaItem, *, max_length: int) -> str:
     like_count = int(media.metadata.get("like_count") or 0)
     likes = f" • ❤️ {like_count}"
 
     title = media.title
-    if len(title) + len(likes) > max_caption:
-        max_title = max_caption - len(likes) - 1
+    if len(title) + len(likes) > max_length:
+        max_title = max_length - len(likes) - 1
         title = (title[:max_title] + "…") if max_title > 0 else "…"
 
     caption = f"{title}{likes}"
 
     if media.description:
         desc_with_prefix = f"\n\n{media.description}"
-        if len(caption) + len(desc_with_prefix) <= max_caption:
+        if len(caption) + len(desc_with_prefix) <= max_length:
             caption += desc_with_prefix
         else:
-            room = max_caption - len(caption) - 2
+            room = max_length - len(caption) - 2
             if room >= 1:
                 caption += f"\n\n{media.description[: room - 1]}…"
 

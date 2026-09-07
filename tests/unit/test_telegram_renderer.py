@@ -40,6 +40,7 @@ class FakeChat:
         self.sent_videos: list[dict[str, Any]] = []
         self.sent_photos: list[dict[str, Any]] = []
         self.sent_groups: list[dict[str, Any]] = []
+        self.sent_messages: list[dict[str, Any]] = []
         self.raise_timeout = False
 
     async def send_video(self, video: str, **kwargs: Any) -> None:
@@ -56,6 +57,11 @@ class FakeChat:
         if self.raise_timeout:
             raise TimedOut("timeout")
         self.sent_groups.append({"media": media, **kwargs})
+
+    async def send_message(self, text: str, **kwargs: Any) -> None:
+        if self.raise_timeout:
+            raise TimedOut("timeout")
+        self.sent_messages.append({"text": text, **kwargs})
 
 
 class FakeUpdate:
@@ -178,6 +184,37 @@ def test_renderer_splits_more_than_ten_assets_into_valid_media_groups(
     assert [len(group["media"]) for group in chat.sent_groups] == [9, 2]
     assert chat.sent_groups[0]["media"][0].caption == "Title • ❤️ 12\n\nDescription"
     assert chat.sent_groups[1]["media"][0].caption is None
+
+
+def test_renderer_sends_reddit_text_post_without_media(tmp_path: Path) -> None:
+    text_post = make_media(
+        "unused",
+        assets=[],
+        title="Text post",
+        description="Post body",
+    )
+    text_post.provider = "reddit"
+    text_post.media_kind = "post"
+    text_post.metadata = {"like_count": 42, "text_only": True}
+    chat = FakeChat()
+    renderer = TelegramMediaRenderer(
+        telegram_media_write_timeout=120,
+        telegram_read_timeout=30,
+    )
+
+    results = asyncio.run(renderer.render(FakeUpdate(chat), [text_post]))
+
+    assert [result.sent for result in results] == [True]
+    assert chat.sent_messages == [
+        {
+            "text": "Text post • ❤️ 42\n\nPost body",
+            "write_timeout": 120,
+            "read_timeout": 30,
+        }
+    ]
+    assert chat.sent_photos == []
+    assert chat.sent_videos == []
+    assert chat.sent_groups == []
 
 
 def test_renderer_returns_unsupported_for_empty_assets(tmp_path: Path) -> None:

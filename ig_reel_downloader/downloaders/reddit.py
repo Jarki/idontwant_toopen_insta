@@ -167,9 +167,12 @@ class RedditDownloader:
                 assets = [self._download_video(url, ref, context)]
             else:
                 image_candidates = _image_candidates(post_data)
-                if not image_candidates:
+                if image_candidates:
+                    assets = self._download_images(image_candidates, ref, context)
+                elif post_data.get("is_self") is True:
+                    assets = []
+                else:
                     return MediaDownloadResult(media=None, failure_reason="unsupported")
-                assets = self._download_images(image_candidates, ref, context)
 
             now = datetime.now()
             return MediaDownloadResult(
@@ -185,6 +188,7 @@ class RedditDownloader:
                         "like_count": int(post_data.get("ups") or 0),
                         "comment_count": int(post_data.get("num_comments") or 0),
                         "over_18": bool(post_data.get("over_18")),
+                        **({"text_only": True} if not assets else {}),
                     },
                     assets=assets,
                     created_at=now,

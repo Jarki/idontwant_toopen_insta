@@ -44,7 +44,7 @@ Send a supported link to the bot and it will download the media when supported:
 - Instagram Reels
 - Instagram posts, including carousel posts
 - TikTok videos
-- Reddit hosted videos, images, image galleries, and link-post previews
+- Reddit hosted videos, images, image galleries, link-post previews, and text posts
 - YouTube Shorts
 - Normal YouTube videos under 60 seconds
 
