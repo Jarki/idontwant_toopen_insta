@@ -88,3 +88,11 @@ def test_classify_download_error_detects_auth() -> None:
     )
 
     assert classify_download_error(error) == "auth"
+
+
+def test_classify_download_error_detects_bot_block() -> None:
+    error = DownloadError(
+        "[TikTok] 7668090902816017671: Unexpected response from webpage request"
+    )
+
+    assert classify_download_error(error) == "blocked"

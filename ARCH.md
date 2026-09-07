@@ -153,10 +153,16 @@ Downloader interfaces live in `downloaders/base.py`:
 Download failures are normalized into:
 
 - `auth`: recognized `yt-dlp` errors that indicate Instagram authentication/cookies are required.
+- `blocked`: recognized bot-detection or IP-block responses from an upstream provider.
 - `unsupported`: URLs or media shapes not supported by the current downloader/renderer.
 - `unknown`: every other exception or mismatch.
 
-`utils.py` contains only the shared authentication-error classifier used by the Instagram downloader.
+`utils.py` contains shared classifiers for authentication and bot-detection errors.
+TikTok bot-detection failures are retried up to three times. If all attempts
+fail, the error is logged as a warning and produces a retry-later message instead
+of escaping the Telegram handler. An opt-in live smoke test in
+`tests/e2e/test_tiktok_live.py` exercises one URL or a newline-delimited corpus
+from the current host/IP.
 
 ## Persistence model
 
@@ -345,7 +351,7 @@ Developer tasks are defined in `pyproject.toml` via Poe:
 - `uv run poe check` for the read-only CI quality gate
 - `uv run poe db-upgrade`, `db-current`, `db-history`, `db-downgrade`, and `db-revision` for Alembic migrations
 
-The current test suite includes unit tests for downloader registry, Instagram URL matching/downloading seams, media fetching, Telegram rendering, authentication-error detection, app orchestration, and repository integration tests for PostgreSQL/Alembic behavior.
+The current test suite includes unit tests for downloader registry, Instagram URL matching/downloading seams, TikTok bot-detection handling, media fetching, Telegram rendering, authentication-error detection, app orchestration, and repository integration tests for PostgreSQL/Alembic behavior. The opt-in TikTok end-to-end smoke test requires `TIKTOK_SMOKE_TEST_URL` and is skipped by default.
 
 ## Important architectural constraints and notes
 

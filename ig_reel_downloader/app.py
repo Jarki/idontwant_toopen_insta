@@ -79,6 +79,10 @@ class IgReelDownloaderApp:
     ) -> str:
         if failure_reason == "auth":
             return f"Could not download (auth expired): {reel_url}"
+        if failure_reason == "blocked":
+            return (
+                f"Download was temporarily blocked; please try again later: {reel_url}"
+            )
         return f"Could not download {reel_url}"
 
     async def _get_media_items(
