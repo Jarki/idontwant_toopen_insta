@@ -36,11 +36,11 @@ jobs:
         with:
           ref: ${{ inputs.compose_ref }}
 
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
+        with:
+          name: dev-builder
+          keep-state: true
 
       - name: Lowercase repository name
         run: echo "REPO_LC=${GITHUB_REPOSITORY,,}" >> "$GITHUB_ENV"
@@ -50,13 +50,11 @@ jobs:
         with:
           context: .
           file: docker/Dockerfile.app
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/arm64
           push: true
           tags: |
             ghcr.io/${{ env.REPO_LC }}:${{ inputs.image_tag }}
             ghcr.io/${{ env.REPO_LC }}:${{ github.sha }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
 
       - name: Prepare deployment directory
         run: |
@@ -104,7 +102,7 @@ jobs:
             -f docker/compose.dev.yaml \
             pull
 
-      - name: Start PostgreSQL
+      - name: Start deployment
         env:
           IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
@@ -117,52 +115,7 @@ jobs:
             -p ig-reel-downloader-dev \
             -f docker/compose.yaml \
             -f docker/compose.dev.yaml \
-            up -d --wait postgres
-
-      - name: Run PostgreSQL bootstrap
-        env:
-          IMAGE_TAG: ${{ inputs.image_tag }}
-        run: |
-          set -euo pipefail
-          deploy_dir="${HOME}/deploy/ig-reel-downloader-dev"
-          cd "${deploy_dir}"
-
-          docker compose \
-            --env-file "${deploy_dir}/.env" \
-            -p ig-reel-downloader-dev \
-            -f docker/compose.yaml \
-            -f docker/compose.dev.yaml \
-            run --rm postgres-bootstrap
-
-      - name: Run migrations
-        env:
-          IMAGE_TAG: ${{ inputs.image_tag }}
-        run: |
-          set -euo pipefail
-          deploy_dir="${HOME}/deploy/ig-reel-downloader-dev"
-          cd "${deploy_dir}"
-
-          docker compose \
-            --env-file "${deploy_dir}/.env" \
-            -p ig-reel-downloader-dev \
-            -f docker/compose.yaml \
-            -f docker/compose.dev.yaml \
-            run --rm migrate
-
-      - name: Start downloader
-        env:
-          IMAGE_TAG: ${{ inputs.image_tag }}
-        run: |
-          set -euo pipefail
-          deploy_dir="${HOME}/deploy/ig-reel-downloader-dev"
-          cd "${deploy_dir}"
-
-          docker compose \
-            --env-file "${deploy_dir}/.env" \
-            -p ig-reel-downloader-dev \
-            -f docker/compose.yaml \
-            -f docker/compose.dev.yaml \
-            up -d --remove-orphans downloader
+            up -d --wait --remove-orphans downloader
 
       - name: Show status
         env:
