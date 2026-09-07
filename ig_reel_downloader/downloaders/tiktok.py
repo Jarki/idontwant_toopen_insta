@@ -30,6 +30,8 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+TIKTOK_MAX_ATTEMPTS = 3
+
 CANONICAL_VIDEO_URL_PATTERN = re.compile(
     r"(?P<url>https://www\.tiktok\.com/@(?P<username>[a-zA-Z0-9._-]+)"
     r"/video/(?P<id>\d+)(?:/)?(?:\?[^\s#]*)?(?:#[^\s]*)?)(?=\s|$)"
@@ -112,13 +114,22 @@ class TikTokDownloader:
         source_url = candidate.url
         display_url = candidate.normalized_url or candidate.url
         ydl_opts = build_metadata_ytdlp_options(cookie_filepath=self.cookie_filepath)
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info: _InfoDict = ydl.extract_info(source_url, download=False)
-        except Exception as error:
-            raise ResolutionError(
-                display_url, classify_download_error(error)
-            ) from error
+        for attempt in range(1, TIKTOK_MAX_ATTEMPTS + 1):
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info: _InfoDict = ydl.extract_info(source_url, download=False)
+                break
+            except Exception as error:
+                failure_reason = classify_download_error(error)
+                if failure_reason == "blocked" and attempt < TIKTOK_MAX_ATTEMPTS:
+                    logger.warning(
+                        "TikTok blocked share-link resolution for %s; retrying (%d/%d)",
+                        display_url,
+                        attempt,
+                        TIKTOK_MAX_ATTEMPTS,
+                    )
+                    continue
+                raise ResolutionError(display_url, failure_reason) from error
 
         video_id_value = info.get("id")
         if video_id_value is None:
@@ -156,43 +167,55 @@ class TikTokDownloader:
             provider_item_id=ref.provider_item_id,
         )
 
-        try:
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = (
-                    cast("_InfoDict", request.info)
-                    if request.info is not None
-                    else ydl.extract_info(url, download=False)
-                )
-                filepath = ydl.prepare_filename(info)
-                ydl.download([url])
-                now = datetime.now()
-                media = MediaItem(
-                    id=ref.media_id,
-                    provider=ref.provider,
-                    media_kind=ref.media_kind,
-                    provider_item_id=ref.provider_item_id,
-                    original_url=url,
-                    title=str(info.get("title") or ""),
-                    description=info.get("description"),
-                    metadata={
-                        "like_count": int(info.get("like_count") or 0),
-                        "comments": info.get("comments", []),
-                    },
-                    assets=[map_video_asset(info, filepath=filepath)],
-                    created_at=now,
-                    updated_at=now,
-                )
-                return MediaDownloadResult(media=media)
-        except Exception as error:
-            failure_reason = classify_download_error(error)
-            if failure_reason == "auth":
-                logger.warning(
-                    "Failed to download TikTok video from %s: authentication required (%s)",
-                    url,
-                    error,
-                )
-            else:
-                logger.exception(
-                    "Failed to download TikTok video from %s (%s)", url, error
-                )
-            return MediaDownloadResult(media=None, failure_reason=failure_reason)
+        for attempt in range(1, TIKTOK_MAX_ATTEMPTS + 1):
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = (
+                        cast("_InfoDict", request.info)
+                        if request.info is not None
+                        else ydl.extract_info(url, download=False)
+                    )
+                    filepath = ydl.prepare_filename(info)
+                    ydl.download([url])
+                    now = datetime.now()
+                    media = MediaItem(
+                        id=ref.media_id,
+                        provider=ref.provider,
+                        media_kind=ref.media_kind,
+                        provider_item_id=ref.provider_item_id,
+                        original_url=url,
+                        title=str(info.get("title") or ""),
+                        description=info.get("description"),
+                        metadata={
+                            "like_count": int(info.get("like_count") or 0),
+                            "comments": info.get("comments", []),
+                        },
+                        assets=[map_video_asset(info, filepath=filepath)],
+                        created_at=now,
+                        updated_at=now,
+                    )
+                    return MediaDownloadResult(media=media)
+            except Exception as error:
+                failure_reason = classify_download_error(error)
+                if failure_reason == "blocked" and attempt < TIKTOK_MAX_ATTEMPTS:
+                    logger.warning(
+                        "TikTok blocked download for %s; retrying (%d/%d)",
+                        url,
+                        attempt,
+                        TIKTOK_MAX_ATTEMPTS,
+                    )
+                    continue
+                if failure_reason in ("auth", "blocked"):
+                    logger.warning(
+                        "Failed to download TikTok video from %s: %s (%s)",
+                        url,
+                        failure_reason,
+                        error,
+                    )
+                else:
+                    logger.exception(
+                        "Failed to download TikTok video from %s (%s)", url, error
+                    )
+                return MediaDownloadResult(media=None, failure_reason=failure_reason)
+
+        raise AssertionError("TikTok download attempts exhausted without a result")

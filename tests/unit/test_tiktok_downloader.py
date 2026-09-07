@@ -175,6 +175,80 @@ def test_tiktok_share_resolve_raises_resolution_error(
     assert exc_info.value.failure_reason == "auth"
 
 
+def test_tiktok_share_resolve_normalizes_bot_detection_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeYoutubeDL:
+        def __init__(self, options: dict[str, object]) -> None:
+            pass
+
+        def __enter__(self) -> "FakeYoutubeDL":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+        def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
+            raise DownloadError(
+                "[TikTok] 7668090902816017671: Unexpected response from webpage request"
+            )
+
+    monkeypatch.setattr(
+        "ig_reel_downloader.downloaders.tiktok.yt_dlp.YoutubeDL",
+        FakeYoutubeDL,
+    )
+    downloader = TikTokDownloader()
+    candidate = downloader.extract_candidates("https://vm.tiktok.com/ZMabc123/")[0]
+
+    with pytest.raises(ResolutionError) as exc_info:
+        downloader.resolve(candidate)
+
+    assert exc_info.value.failure_reason == "blocked"
+
+
+def test_tiktok_share_resolve_retries_bot_detection_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeYoutubeDL:
+        attempts = 0
+
+        def __init__(self, options: dict[str, object]) -> None:
+            pass
+
+        def __enter__(self) -> "FakeYoutubeDL":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+        def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
+            self.__class__.attempts += 1
+            if self.attempts == 1:
+                raise DownloadError(
+                    "[TikTok] 7680948066874232085: "
+                    "Unable to extract universal data for rehydration"
+                )
+            return {
+                "id": "7680948066874232085",
+                "webpage_url": (
+                    "https://www.tiktok.com/@alice/video/7680948066874232085"
+                ),
+            }
+
+    monkeypatch.setattr(
+        "ig_reel_downloader.downloaders.tiktok.yt_dlp.YoutubeDL",
+        FakeYoutubeDL,
+    )
+    downloader = TikTokDownloader()
+    candidate = downloader.extract_candidates("https://vt.tiktok.com/ZSq1MVD1B/")[0]
+
+    result = downloader.resolve(candidate)
+
+    assert FakeYoutubeDL.attempts == 2
+    assert result.request is not None
+    assert result.request.provider_item_ref.provider_item_id == "7680948066874232085"
+
+
 def test_tiktok_download_maps_single_video(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -235,6 +309,42 @@ def test_tiktok_download_maps_single_video(
     assert result.media.title == "TikTok"
     assert result.media.description == "desc"
     assert result.media.assets[0].asset_type == "video"
+
+
+def test_tiktok_download_normalizes_bot_detection_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FakeYoutubeDL:
+        def __init__(self, options: dict[str, object]) -> None:
+            pass
+
+        def __enter__(self) -> "FakeYoutubeDL":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+        def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
+            raise DownloadError(
+                "[TikTok] 7668090902816017671: Unexpected response from webpage request"
+            )
+
+    monkeypatch.setattr(
+        "ig_reel_downloader.downloaders.tiktok.yt_dlp.YoutubeDL",
+        FakeYoutubeDL,
+    )
+    downloader = TikTokDownloader()
+    request = ResolvedMediaRequest(
+        url="https://www.tiktok.com/@alice/video/7668090902816017671",
+        downloader=downloader,
+        provider_item_ref=ProviderItemRef("tiktok", "video", "7668090902816017671"),
+    )
+
+    result = downloader.download(request, DownloadContext(output_dir=tmp_path))
+
+    assert result.media is None
+    assert result.failure_reason == "blocked"
 
 
 def test_tiktok_download_reuses_request_info(

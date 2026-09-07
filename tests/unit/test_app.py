@@ -337,6 +337,29 @@ def test_message_handler_sends_auth_failure_error(
     ]
 
 
+def test_message_handler_sends_temporary_block_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = "https://www.tiktok.com/@alice/video/7668090902816017671"
+    candidate = make_candidate(url, "7668090902816017671")
+    events: list[str] = []
+    registry = FakeRegistry([candidate], events)
+    fetch_service = FakeFetchService(
+        {url: MediaFetchResult(media=None, url=url, failure_reason="blocked")},
+        events,
+    )
+    renderer = FakeRenderer(events)
+    app = build_app(monkeypatch, registry, fetch_service, renderer)
+    chat = FakeChat()
+
+    asyncio.run(app._message_handler(FakeUpdate(url, chat), object()))
+
+    assert chat.sent_messages == [
+        "Download was temporarily blocked; please try again later: "
+        "https://www.tiktok.com/@alice/video/7668090902816017671"
+    ]
+
+
 def test_message_handler_does_not_send_error_for_skipped_fetch_result(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

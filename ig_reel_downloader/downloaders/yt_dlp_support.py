@@ -9,7 +9,10 @@ if TYPE_CHECKING:
 
 from ig_reel_downloader.downloaders.base import DownloadFailureReason
 from ig_reel_downloader.repository.models import MediaAsset
-from ig_reel_downloader.utils import is_auth_required_download_error
+from ig_reel_downloader.utils import (
+    is_auth_required_download_error,
+    is_bot_detection_download_error,
+)
 
 
 def build_metadata_ytdlp_options(
@@ -82,7 +85,11 @@ def map_image_asset(
 
 
 def classify_download_error(error: Exception) -> DownloadFailureReason:
-    return "auth" if is_auth_required_download_error(error) else "unknown"
+    if is_auth_required_download_error(error):
+        return "auth"
+    if is_bot_detection_download_error(error):
+        return "blocked"
+    return "unknown"
 
 
 def _optional_int(value: object) -> int | None:

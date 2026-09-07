@@ -6,7 +6,7 @@ from typing import Any, Literal, Protocol
 
 from ig_reel_downloader.repository.models import MediaItem
 
-DownloadFailureReason = Literal["auth", "unsupported", "unknown"]
+DownloadFailureReason = Literal["auth", "blocked", "unsupported", "unknown"]
 
 
 class ResolutionError(Exception):
