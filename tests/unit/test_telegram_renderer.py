@@ -150,6 +150,36 @@ def test_renderer_sends_multi_asset_item_as_media_group(tmp_path: Path) -> None:
     assert chat.sent_groups[0]["media"][0].caption == "Title • ❤️ 12\n\nDescription"
 
 
+def test_renderer_splits_more_than_ten_assets_into_valid_media_groups(
+    tmp_path: Path,
+) -> None:
+    assets = []
+    for index in range(11):
+        image_path = tmp_path / f"image-{index}.jpg"
+        image_path.write_bytes(b"image")
+        assets.append(
+            MediaAsset(
+                asset_index=index,
+                asset_type="image",
+                filepath=str(image_path),
+            )
+        )
+    chat = FakeChat()
+    renderer = TelegramMediaRenderer(
+        telegram_media_write_timeout=120,
+        telegram_read_timeout=30,
+    )
+
+    results = asyncio.run(
+        renderer.render(FakeUpdate(chat), [make_media("unused", assets=assets)])
+    )
+
+    assert [result.sent for result in results] == [True]
+    assert [len(group["media"]) for group in chat.sent_groups] == [9, 2]
+    assert chat.sent_groups[0]["media"][0].caption == "Title • ❤️ 12\n\nDescription"
+    assert chat.sent_groups[1]["media"][0].caption is None
+
+
 def test_renderer_returns_unsupported_for_empty_assets(tmp_path: Path) -> None:
     chat = FakeChat()
     renderer = TelegramMediaRenderer(

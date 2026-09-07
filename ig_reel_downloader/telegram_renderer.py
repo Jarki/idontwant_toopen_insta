@@ -11,6 +11,7 @@ from ig_reel_downloader.downloaders.base import DownloadFailureReason
 from ig_reel_downloader.repository.models import MediaItem
 
 logger = logging.getLogger(__name__)
+TELEGRAM_MEDIA_GROUP_MAX_ITEMS = 10
 
 
 @dataclass(frozen=True)
@@ -84,14 +85,30 @@ class TelegramMediaRenderer:
                         else:
                             media = InputMediaPhoto(fp, caption=caption)
                         medias.append(media)
-                await chat.send_media_group(
-                    medias,
-                    write_timeout=self.telegram_media_write_timeout,
-                    read_timeout=self.telegram_read_timeout,
-                )
+                for media_group in _media_groups(medias):
+                    await chat.send_media_group(
+                        media_group,
+                        write_timeout=self.telegram_media_write_timeout,
+                        read_timeout=self.telegram_read_timeout,
+                    )
         return results + [
             MediaRenderResult(media=item, sent=True) for item in supported
         ]
+
+
+def _media_groups(
+    medias: list[InputMediaVideo | InputMediaPhoto],
+) -> list[list[InputMediaVideo | InputMediaPhoto]]:
+    groups = []
+    start = 0
+    while start < len(medias):
+        remaining = len(medias) - start
+        group_size = min(TELEGRAM_MEDIA_GROUP_MAX_ITEMS, remaining)
+        if remaining == TELEGRAM_MEDIA_GROUP_MAX_ITEMS + 1:
+            group_size -= 1
+        groups.append(medias[start : start + group_size])
+        start += group_size
+    return groups
 
 
 def _is_supported(media: MediaItem) -> bool:

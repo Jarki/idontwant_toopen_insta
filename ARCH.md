@@ -7,7 +7,7 @@ _Last reviewed: 2026-07-15_
 `ig-reel-downloader` is a small Telegram bot that lets users send supported social media links and receive the downloaded media back in Telegram. The app is implemented as a Python package with a single runtime process:
 
 - `python-telegram-bot` handles Telegram long-polling and message delivery.
-- `yt-dlp` extracts metadata and downloads media files for Instagram, TikTok, and YouTube.
+- `yt-dlp` extracts metadata and downloads media files for Instagram, TikTok, Reddit, and YouTube.
 - PostgreSQL stores Telegram users and detected link requests, caches generic media metadata and local file paths, and records failed download attempts.
 - Alembic manages database schema creation and migrations.
 - Docker Compose runs PostgreSQL and a bootstrap service for role provisioning, then applies migrations in a one-shot container before starting the bot with persistent `output/` and `assets/` mounts.
@@ -56,6 +56,7 @@ TelegramMediaRenderer
 │   │   ├── base.py              # Downloader Protocol and shared download models
 │   │   ├── instagram.py         # Instagram Reel and Post URL matching and yt-dlp downloader
 │   │   ├── tiktok.py            # TikTok video downloader with share-link resolution
+│   │   ├── reddit.py            # Reddit post/share links, video, images, and galleries
 │   │   ├── youtube.py           # YouTube Shorts and video downloader with duration gate
 │   │   ├── yt_dlp_support.py    # Shared yt-dlp options, asset mapping, error helpers
 │   │   └── registry.py          # URL candidate extraction, overlap handling, deduplication
@@ -142,6 +143,8 @@ Downloader interfaces live in `downloaders/base.py`:
 - `Downloader` defines URL extraction, provider identity resolution, and download operations.
 - `ProviderItemRef` identifies media as `provider`, `media_kind`, and `provider_item_id`; its cache id is `provider:media_kind:provider_item_id`.
 - `MediaDownloadResult` normalizes successful `MediaItem` downloads and failure reasons.
+
+`downloaders/reddit.py` supports canonical Reddit post URLs and `/r/<subreddit>/s/<token>` share links. Share links are followed to obtain the stable Reddit post ID used by the generic cache. Reddit-hosted videos are downloaded with `yt-dlp`; direct images, image galleries, and Reddit-hosted link previews are downloaded as image assets. Video and audio streams are merged by `ffmpeg` in the application image. Text-only posts are intentionally unsupported. Public age-marked posts generally work anonymously; private or quarantined communities use the same optional `assets/cookies.txt` browser-cookie file as other providers.
 
 `downloaders/instagram.py` contains the Instagram Reel and Post `yt-dlp` integration:
 

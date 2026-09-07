@@ -93,6 +93,11 @@ def test_main_does_not_run_migrations(monkeypatch, tmp_path: Path) -> None:
     )
     monkeypatch.setattr(
         main_module.ig_reel_downloader.downloaders,
+        "RedditDownloader",
+        FakeDownloader,
+    )
+    monkeypatch.setattr(
+        main_module.ig_reel_downloader.downloaders,
         "YouTubeDownloader",
         FakeDownloader,
     )
@@ -127,6 +132,7 @@ def test_main_does_not_run_migrations(monkeypatch, tmp_path: Path) -> None:
     )
     assert app.fetch_service.output_dir == Path("output")
     assert [d.__class__.__name__ for d in app.registry.downloaders] == [
+        "FakeDownloader",
         "FakeDownloader",
         "FakeDownloader",
         "FakeDownloader",

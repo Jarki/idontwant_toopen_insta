@@ -12,6 +12,7 @@ from .base import (
     UrlMatch,
 )
 from .instagram import InstagramPostDownloader, InstagramReelDownloader
+from .reddit import RedditDownloader
 from .registry import DownloaderRegistry
 from .tiktok import TikTokDownloader
 from .youtube import YouTubeDownloader
@@ -25,6 +26,7 @@ __all__ = [
     "InstagramReelDownloader",
     "MediaDownloadResult",
     "ProviderItemRef",
+    "RedditDownloader",
     "ResolutionError",
     "ResolveResult",
     "ResolvedMediaRequest",
