@@ -42,6 +42,28 @@ Send a supported link to the bot and it will download the media when supported:
 - YouTube Shorts
 - Normal YouTube videos under 60 seconds
 
+### TikTok extractor smoke test
+
+TikTok may return bot-detection responses depending on the machine's public IP and
+TLS fingerprint. The automated suite simulates known failure responses without
+network access. To reproduce the real extractor behavior from the bot host, run
+the opt-in smoke test with a currently public TikTok video:
+
+```bash
+TIKTOK_SMOKE_TEST_URL='https://www.tiktok.com/@user/video/1234567890' \
+  uv run pytest tests/e2e/test_tiktok_live.py -v -s
+```
+
+A newline-delimited corpus can be tested in one run:
+
+```bash
+TIKTOK_SMOKE_TEST_URLS_FILE=/path/to/tiktok-urls.txt \
+  uv run pytest tests/e2e/test_tiktok_live.py -v -s
+```
+
+The test is skipped unless one of these variables is set. It downloads videos to
+pytest's temporary directory and does not contact Telegram or PostgreSQL.
+
 ### Judgmental GIFs
 
 If `JUDGMENTAL_CHANCE` is enabled, the bot can reply with a stored judgmental Telegram GIF instead of downloading. To seed one, send a GIF/animation to Telegram, then reply to that GIF with:
