@@ -192,7 +192,14 @@ def test_fetch_returns_skipped_without_cache_lookup_or_download(tmp_path: Path) 
     assert result.media is None
     assert repository.lookup is None
     assert downloader.download_requests == []
-    assert repository.failed_requests == []
+    assert repository.failed_requests == [
+        (
+            99,
+            "unsupported",
+            "https://www.instagram.com/reel/ABC123",
+            "ABC123",
+        )
+    ]
     assert repository.succeeded_requests == []
 
 

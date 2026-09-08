@@ -64,6 +64,12 @@ class MediaFetchService:
                 failure_reason="unknown",
             )
         if resolve_result.skipped:
+            self._record_failure(
+                media_request_id,
+                candidate,
+                result_url,
+                "unsupported",
+            )
             return MediaFetchResult(media=None, url=result_url, skipped=True)
         if resolve_result.request is None:
             failure_reason = resolve_result.failure_reason or "unknown"

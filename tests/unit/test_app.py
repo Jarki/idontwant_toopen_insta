@@ -18,9 +18,12 @@ from ig_reel_downloader.downloaders import (
 )
 from ig_reel_downloader.media_fetch import MediaFetchResult
 from ig_reel_downloader.repository.models import (
+    ChatLeaderboardEntry,
+    ChatUserStats,
     MediaAsset,
     MediaItem,
     MediaRequest,
+    MediaTypeCount,
     TelegramUser,
 )
 from ig_reel_downloader.telegram_renderer import MediaRenderResult
@@ -95,7 +98,8 @@ class FakeMessage:
 
 
 class FakeChat:
-    def __init__(self) -> None:
+    def __init__(self, chat_id: int = -100123) -> None:
+        self.id = chat_id
         self.sent_messages: list[str] = []
         self.sent_animations: list[SentAnimation] = []
 
@@ -159,6 +163,16 @@ class FakeRepository:
         self.upserted_users: list[TelegramUser] = []
         self.inserted_requests: list[MediaRequest] = []
         self.updated_media_file_ids: list[tuple[str, int, str]] = []
+        self.user_stats = ChatUserStats(
+            requested=0,
+            delivered=0,
+            delivery_failed=0,
+            download_failed=0,
+        )
+        self.chat_leaderboard: list[ChatLeaderboardEntry] = []
+        self.requested_stats_keys: list[tuple[int, int]] = []
+        self.requested_leaderboard_chat_ids: list[int] = []
+        self.delivered_request_ids: list[int] = []
 
     def update_media_asset_telegram_file_id(
         self,
@@ -176,6 +190,26 @@ class FakeRepository:
     def insert_media_requests(self, requests: list[MediaRequest]) -> list[int]:
         self.inserted_requests.extend(requests)
         return list(range(100, 100 + len(requests)))
+
+    def get_chat_user_stats(
+        self,
+        telegram_user_id: int,
+        telegram_chat_id: int,
+    ) -> ChatUserStats:
+        self.requested_stats_keys.append((telegram_user_id, telegram_chat_id))
+        return self.user_stats
+
+    def mark_media_requests_delivered(self, media_request_ids: list[int]) -> None:
+        self.delivered_request_ids.extend(media_request_ids)
+
+    def get_chat_leaderboard(
+        self,
+        telegram_chat_id: int,
+        limit: int = 10,
+    ) -> list[ChatLeaderboardEntry]:
+        del limit
+        self.requested_leaderboard_chat_ids.append(telegram_chat_id)
+        return self.chat_leaderboard
 
     def add_judgmental_animation_file_id(
         self,
@@ -227,9 +261,12 @@ class FakeRenderer:
         self,
         events: list[str],
         telegram_file_ids: dict[int, str] | None = None,
+        *,
+        sent: bool = True,
     ) -> None:
         self.events = events
         self.telegram_file_ids = telegram_file_ids or {}
+        self.sent = sent
         self.updates: list[FakeUpdate] = []
         self.media_items: list[list[MediaItem]] = []
 
@@ -244,7 +281,8 @@ class FakeRenderer:
         return [
             MediaRenderResult(
                 media=item,
-                sent=True,
+                sent=self.sent,
+                failure_reason=None if self.sent else "unknown",
                 telegram_file_ids=self.telegram_file_ids,
             )
             for item in media_items
@@ -321,6 +359,19 @@ def build_app(
     )
 
 
+def build_command_app(
+    monkeypatch: pytest.MonkeyPatch,
+    repository: FakeRepository,
+) -> app_module.IgReelDownloaderApp:
+    events: list[str] = []
+    return build_app(
+        monkeypatch,
+        FakeRegistry([], events),
+        FakeFetchService({}, events, repository=repository),
+        FakeRenderer(events),
+    )
+
+
 def test_message_handler_uses_registry_fetch_service_and_renderer(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -366,8 +417,10 @@ def test_message_handler_uses_registry_fetch_service_and_renderer(
     assert user.language_code == "en"
     assert user.is_bot is False
     assert [request.url for request in requests] == [first_url, second_url]
+    assert [request.telegram_chat_id for request in requests] == [-100123, -100123]
     assert [request.provider_item_id for request in requests] == ["ABC123", "DEF456"]
     assert set(fetch_service.media_request_ids) == {100, 101}
+    assert fetch_service.repository.delivered_request_ids == [100]
     assert chat.sent_messages == [
         "Could not download (auth expired): https://www.instagram.com/reel/DEF456"
     ]
@@ -401,6 +454,116 @@ def test_message_handler_persists_file_ids_returned_by_renderer(
     assert repository.updated_media_file_ids == [
         ("instagram:reel:ABC123", 0, "telegram-video-id")
     ]
+
+
+def test_message_handler_does_not_mark_failed_render_as_delivered(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = "https://www.instagram.com/reel/ABC123"
+    candidate = make_candidate(url, "ABC123")
+    media = make_media(url, "ABC123")
+    events: list[str] = []
+    fetch_service = FakeFetchService(
+        {url: MediaFetchResult(media=media, url=url)},
+        events,
+    )
+    app = build_app(
+        monkeypatch,
+        FakeRegistry([candidate], events),
+        fetch_service,
+        FakeRenderer(events, sent=False),
+    )
+    chat = FakeChat()
+
+    asyncio.run(app._message_handler(FakeUpdate(url, chat), object()))
+
+    assert fetch_service.repository.delivered_request_ids == []
+    assert chat.sent_messages == [f"Could not download {url}"]
+
+
+def test_stats_command_shows_request_outcome_breakdown(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = FakeRepository()
+    repository.user_stats = ChatUserStats(
+        requested=6,
+        delivered=3,
+        delivery_failed=1,
+        download_failed=2,
+        delivered_by_type=[
+            MediaTypeCount(provider="instagram", media_kind="reel", count=2),
+            MediaTypeCount(provider="tiktok", media_kind="video", count=1),
+        ],
+    )
+    app = build_command_app(monkeypatch, repository)
+    chat = FakeChat()
+
+    asyncio.run(app._stats_handler(FakeUpdate("/stats", chat), object()))
+
+    assert repository.requested_stats_keys == [(123, -100123)]
+    assert chat.sent_messages == [
+        "Stats for user 123 in this chat\n"
+        "Requested: 6\n"
+        "Delivered: 3\n"
+        "Failed delivery: 1\n"
+        "Failed download: 2\n"
+        "Delivered by type:\n"
+        "• instagram reel: 2\n"
+        "• tiktok video: 1"
+    ]
+
+
+def test_stats_command_handles_no_media(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = build_command_app(monkeypatch, FakeRepository())
+    chat = FakeChat()
+
+    asyncio.run(app._stats_handler(FakeUpdate("/stats", chat), object()))
+
+    assert chat.sent_messages == [
+        "Stats for user 123 in this chat\n"
+        "Requested: 0\n"
+        "Delivered: 0\n"
+        "Failed delivery: 0\n"
+        "Failed download: 0"
+    ]
+
+
+def test_top_command_shows_chat_leaderboard(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = FakeRepository()
+    repository.chat_leaderboard = [
+        ChatLeaderboardEntry(
+            username="alice",
+            first_name="Alice",
+            last_name="Example",
+            count=4,
+        ),
+        ChatLeaderboardEntry(
+            username=None,
+            first_name="Bob",
+            last_name=None,
+            count=2,
+        ),
+    ]
+    app = build_command_app(monkeypatch, repository)
+    chat = FakeChat(chat_id=-987)
+
+    asyncio.run(app._top_handler(FakeUpdate("/top", chat), object()))
+
+    assert repository.requested_leaderboard_chat_ids == [-987]
+    assert chat.sent_messages == [
+        "Top media requesters in this chat\n1. Alice Example (@alice) — 4\n2. Bob — 2"
+    ]
+
+
+def test_top_command_handles_empty_chat(monkeypatch: pytest.MonkeyPatch) -> None:
+    app = build_command_app(monkeypatch, FakeRepository())
+    chat = FakeChat()
+
+    asyncio.run(app._top_handler(FakeUpdate("/top", chat), object()))
+
+    assert chat.sent_messages == ["No media requests recorded in this chat yet."]
 
 
 def test_message_handler_records_and_processes_userless_request(

@@ -84,13 +84,20 @@ class MediaRequestRecord(Base):
             "telegram_user_id",
             "created_at",
         ),
+        Index(
+            "ix_media_requests_chat_user",
+            "telegram_chat_id",
+            "telegram_user_id",
+        ),
         CheckConstraint(
             "(media_item_id IS NULL AND failure_reason IS NULL "
-            "AND failure_url IS NULL AND completed_at IS NULL) OR "
+            "AND failure_url IS NULL AND completed_at IS NULL "
+            "AND delivered_at IS NULL) OR "
             "(media_item_id IS NOT NULL AND failure_reason IS NULL "
             "AND failure_url IS NULL AND completed_at IS NOT NULL) OR "
             "(media_item_id IS NULL AND failure_reason IS NOT NULL "
-            "AND failure_url IS NOT NULL AND completed_at IS NOT NULL)",
+            "AND failure_url IS NOT NULL AND completed_at IS NOT NULL "
+            "AND delivered_at IS NULL)",
             name="ck_media_requests_valid_outcome",
         ),
     )
@@ -101,6 +108,7 @@ class MediaRequestRecord(Base):
         ForeignKey("telegram_users.id"),
         nullable=True,
     )
+    telegram_chat_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     url: Mapped[str] = mapped_column(String, nullable=False)
     normalized_url: Mapped[str | None] = mapped_column(String, nullable=True)
     provider: Mapped[str] = mapped_column(String, nullable=False)
@@ -115,6 +123,10 @@ class MediaRequestRecord(Base):
     failure_url: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
     completed_at: Mapped[datetime.datetime | None] = mapped_column(
+        DateTime,
+        nullable=True,
+    )
+    delivered_at: Mapped[datetime.datetime | None] = mapped_column(
         DateTime,
         nullable=True,
     )

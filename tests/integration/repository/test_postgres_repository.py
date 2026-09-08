@@ -351,6 +351,7 @@ def test_user_upsert_request_insert_and_success_linkage(
     )
     first_request = models.MediaRequest(
         telegram_user_id=first_user.id,
+        telegram_chat_id=-1001,
         url="https://vm.tiktok.com/short",
         normalized_url=None,
         provider="tiktok",
@@ -372,6 +373,7 @@ def test_user_upsert_request_insert_and_success_linkage(
     )
     second_request = models.MediaRequest(
         telegram_user_id=updated_user.id,
+        telegram_chat_id=-1001,
         url="https://www.instagram.com/reel/ABC123?igsh=tracking",
         normalized_url="https://www.instagram.com/reel/ABC123",
         provider="instagram",
@@ -395,8 +397,9 @@ def test_user_upsert_request_insert_and_success_linkage(
         request_rows = (
             connection.execute(
                 text(
-                    "SELECT id, telegram_user_id, url, normalized_url, provider, "
-                    "media_kind, provider_item_id, media_item_id, failure_reason, "
+                    "SELECT id, telegram_user_id, telegram_chat_id, url, "
+                    "normalized_url, provider, media_kind, provider_item_id, "
+                    "media_item_id, failure_reason, "
                     "failure_url, created_at, completed_at "
                     "FROM media_requests ORDER BY id"
                 )
@@ -414,6 +417,7 @@ def test_user_upsert_request_insert_and_success_linkage(
     assert user_row["updated_at"] == updated_at
     assert len(request_rows) == 2
     assert request_rows[0]["telegram_user_id"] == first_user.id
+    assert request_rows[0]["telegram_chat_id"] == -1001
     assert request_rows[0]["media_item_id"] is None
     assert request_rows[0]["completed_at"] is None
     assert request_rows[0]["url"] == "https://vm.tiktok.com/short"
@@ -429,6 +433,133 @@ def test_user_upsert_request_insert_and_success_linkage(
     assert [row["id"] for row in request_rows] == [
         first_request_id,
         second_request_id,
+    ]
+
+
+def test_user_stats_partition_outcomes_and_leaderboard_counts_all_requests(
+    repo: PostgreSQLRepository,
+) -> None:
+    now = datetime.datetime.now()
+    users = [
+        models.TelegramUser(
+            id=1,
+            username="alice",
+            first_name="Alice",
+            last_name=None,
+            language_code="en",
+            is_bot=False,
+            created_at=now,
+            updated_at=now,
+        ),
+        models.TelegramUser(
+            id=2,
+            username=None,
+            first_name="Bob",
+            last_name="Example",
+            language_code="en",
+            is_bot=False,
+            created_at=now,
+            updated_at=now,
+        ),
+    ]
+    for user in users:
+        repo.upsert_telegram_user(user)
+
+    reel = _make_media_item(asset_indexes=[0])
+    video = _make_media_item(
+        item_id="tiktok:video:TT123",
+        provider="tiktok",
+        media_kind="video",
+        provider_item_id="TT123",
+        original_url="https://www.tiktok.com/@alice/video/TT123",
+        asset_indexes=[0],
+    )
+    repo.insert_media(reel)
+    repo.insert_media(video)
+
+    request_specs = [
+        (1, -1001, reel),
+        (1, -1001, reel),
+        (1, -2002, video),
+        (2, -1001, video),
+    ]
+    request_ids: list[int] = []
+    for user_id, chat_id, media in request_specs:
+        request_id = repo.insert_media_requests(
+            [
+                models.MediaRequest(
+                    telegram_user_id=user_id,
+                    telegram_chat_id=chat_id,
+                    url=media.original_url,
+                    normalized_url=media.original_url,
+                    provider=media.provider,
+                    media_kind=media.media_kind,
+                    provider_item_id=media.provider_item_id,
+                    created_at=now,
+                )
+            ]
+        )[0]
+        repo.mark_media_request_succeeded(request_id, media.id)
+        request_ids.append(request_id)
+
+    failed_request_id = repo.insert_media_requests(
+        [
+            models.MediaRequest(
+                telegram_user_id=1,
+                telegram_chat_id=-1001,
+                url=reel.original_url,
+                normalized_url=reel.original_url,
+                provider=reel.provider,
+                media_kind=reel.media_kind,
+                provider_item_id=reel.provider_item_id,
+                created_at=now,
+            )
+        ]
+    )[0]
+    repo.mark_media_request_failed(
+        failed_request_id,
+        "unknown",
+        reel.original_url,
+        reel.provider_item_id,
+    )
+    repo.mark_media_requests_delivered([request_ids[0], request_ids[2]])
+
+    stats = repo.get_chat_user_stats(1, -1001)
+    other_chat_stats = repo.get_chat_user_stats(1, -2002)
+    leaderboard = repo.get_chat_leaderboard(-1001)
+
+    assert stats == models.ChatUserStats(
+        requested=3,
+        delivered=1,
+        delivery_failed=1,
+        download_failed=1,
+        delivered_by_type=[
+            models.MediaTypeCount(
+                provider="instagram",
+                media_kind="reel",
+                count=1,
+            )
+        ],
+    )
+    assert other_chat_stats == models.ChatUserStats(
+        requested=1,
+        delivered=1,
+        delivery_failed=0,
+        download_failed=0,
+        delivered_by_type=[
+            models.MediaTypeCount(
+                provider="tiktok",
+                media_kind="video",
+                count=1,
+            )
+        ],
+    )
+    assert stats.delivered + stats.delivery_failed + stats.download_failed == (
+        stats.requested
+    )
+    assert [(entry.username, entry.count) for entry in leaderboard] == [
+        ("alice", 3),
+        (None, 1),
     ]
 
 
