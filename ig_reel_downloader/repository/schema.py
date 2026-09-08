@@ -164,5 +164,6 @@ class MediaAssetRecord(Base):
     height: Mapped[int | None] = mapped_column(Integer, nullable=True)
     duration_seconds: Mapped[float | None] = mapped_column(Float, nullable=True)
     file_size_bytes: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    telegram_file_id: Mapped[str | None] = mapped_column(String, nullable=True)
     created_at: Mapped[datetime.datetime] = mapped_column(DateTime, nullable=False)
     media_item: Mapped[MediaItemRecord] = relationship(back_populates="assets")

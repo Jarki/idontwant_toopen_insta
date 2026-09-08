@@ -85,7 +85,7 @@ The bot stores Telegram's `file_id` in PostgreSQL and reuses it later, avoiding 
 
 ## Database
 
-The bot stores Telegram users, detected link requests, cached media metadata, failed download attempts, and judgmental animation file IDs in PostgreSQL. Mutable Telegram profile fields are refreshed whenever that user submits a detected link. Each request records the submitted and normalized URLs, provider/media identity when known, timestamp, and requesting Telegram user when available. Successful requests reference the cached media item that satisfied them; failed requests record their normalized reason directly. Schema changes are managed with Alembic, running separately from the bot process.
+The bot stores Telegram users, detected link requests, cached media metadata, failed download attempts, reusable Telegram media file IDs, and judgmental animation file IDs in PostgreSQL. After an asset is uploaded once, later fresh cache hits send Telegram's `file_id` instead of uploading the local file again. Mutable Telegram profile fields are refreshed whenever that user submits a detected link. Each request records the submitted and normalized URLs, provider/media identity when known, timestamp, and requesting Telegram user when available. Successful requests reference the cached media item that satisfied them; failed requests record their normalized reason directly. Schema changes are managed with Alembic, running separately from the bot process.
 
 ### Configuration
 

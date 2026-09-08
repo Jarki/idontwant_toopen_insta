@@ -38,7 +38,8 @@ MediaFetchService
     │
     ▼
 TelegramMediaRenderer
-    └── sends one-video Reels as a video or media group
+    ├── reuses persisted Telegram file IDs when available
+    └── otherwise uploads media and returns new file IDs for persistence
 ```
 
 ## Repository layout
@@ -128,8 +129,10 @@ For each text message:
    - Marks resolution failures, downloader-reported failures, and identity mismatches directly on the originating `media_requests` row; intentional skips have no outcome.
 6. Successful media items are passed to `TelegramMediaRenderer`:
    - Text-only posts: `chat.send_message(...)` with the post text.
-   - One supported photo or video: the matching single-media Telegram method with a caption containing title, likes, and description.
-   - Multiple supported assets: `chat.send_media_group(...)` with photo/video items.
+   - Assets with a stored Telegram `file_id` are sent by ID, avoiding another upload.
+   - Assets without an ID are uploaded from their local path. The returned IDs are persisted on their `media_assets` rows for later cache hits.
+   - An invalid stored ID falls back to uploading the local file and refreshes the stored ID.
+   - One supported photo or video uses the matching single-media Telegram method with a caption; multiple assets use `chat.send_media_group(...)`.
 7. Failed downloads or unsupported rendered items are summarized as chat messages.
 8. Telegram upload `TimedOut` errors are logged and reported to the user with a friendly timeout message.
 
@@ -191,6 +194,7 @@ class MediaAsset(pydantic.BaseModel):
     height: int | None = None
     duration_seconds: float | None = None
     file_size_bytes: int | None = None
+    telegram_file_id: str | None = None
 
 class MediaItem(pydantic.BaseModel):
     id: str
@@ -217,6 +221,7 @@ The `reels` table is a legacy table created by early Alembic migrations. It is p
 - `get_media_by_provider_item(provider, media_kind, provider_item_id)`.
 - `insert_media(media)`.
 - `insert_media_for_request(media_request_id, media)`.
+- `update_media_asset_telegram_file_id(media_item_id, asset_index, telegram_file_id)`.
 - `upsert_telegram_user(user)`.
 - `insert_media_requests(requests)`.
 - `mark_media_request_succeeded(media_request_id, media_item_id)`.
@@ -242,7 +247,7 @@ The runtime tables are:
 - `telegram_users`: one row per Telegram user ID; mutable username/profile fields are refreshed on each detected request while `created_at` is preserved.
 - `media_requests`: detected links, optionally associated with a Telegram user, including raw and normalized URLs plus provider/media identity when known. Outcome columns link successful requests to `media_items` or store a failure reason and URL directly; a check constraint permits only pending, successful, or failed outcome shapes.
 - `media_items`: one row per provider/media/item identity, with metadata stored as JSON text and a unique constraint on `(provider, media_kind, provider_item_id)`.
-- `media_assets`: ordered local assets for each media item, with a foreign key to `media_items` and a unique `(media_item_id, asset_index)` constraint.
+- `media_assets`: ordered local assets for each media item, including an optional reusable Telegram `file_id`, with a foreign key to `media_items` and a unique `(media_item_id, asset_index)` constraint.
 - `judgmental_animations`: Telegram animation `file_id` and `file_unique_id` cache, used for judgmental GIF replies.
 
 The legacy `reels` table exists as a historical artifact from early migration revisions. It may be removed through a later PostgreSQL migration.

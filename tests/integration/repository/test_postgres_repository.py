@@ -166,6 +166,26 @@ def test_insert_and_get_media_round_trips_item_with_assets(
     assert [asset.asset_index for asset in result.assets] == [0, 1]
 
 
+def test_update_media_asset_telegram_file_id_round_trips(
+    repo: PostgreSQLRepository,
+) -> None:
+    media = _make_media_item(asset_indexes=[0])
+    repo.insert_media(media)
+
+    repo.update_media_asset_telegram_file_id(media.id, 0, "telegram-video-file-id")
+
+    result = repo.get_media_by_provider_item("instagram", "reel", "ABC123")
+    assert result is not None
+    assert result.assets[0].telegram_file_id == "telegram-video-file-id"
+
+
+def test_update_media_asset_telegram_file_id_rejects_unknown_asset(
+    repo: PostgreSQLRepository,
+) -> None:
+    with pytest.raises(ValueError, match="Unknown media asset"):
+        repo.update_media_asset_telegram_file_id("missing", 0, "file-id")
+
+
 def test_insert_media_persists_all_fields(repo: PostgreSQLRepository) -> None:
     media = _make_media_item(
         title="Exact fields",
