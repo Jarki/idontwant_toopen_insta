@@ -28,7 +28,6 @@ from ig_reel_downloader.downloaders.base import (
 )
 from ig_reel_downloader.downloaders.yt_dlp_support import (
     build_download_ytdlp_options,
-    classify_download_error,
     map_image_asset,
     map_video_asset,
 )
@@ -163,7 +162,7 @@ class InstagramReelDownloader:
                 )
                 return MediaDownloadResult(media=media)
         except Exception as error:
-            failure_reason = classify_download_error(error)
+            failure_reason = _classify_instagram_error(error)
             if failure_reason == "auth":
                 logger.warning(
                     "Failed to download video from %s: authentication required (%s)",
@@ -498,7 +497,18 @@ def _optional_int_or_zero(value: object) -> int:
     return 0
 
 
+def _classify_instagram_error(error: Exception) -> DownloadFailureReason:
+    if isinstance(error, DownloadError):
+        message = str(error).lower()
+        if (
+            "instagram sent an empty media response" in message
+            and "--cookies" in message
+        ):
+            return "auth"
+    return "unknown"
+
+
 def _classify_post_download_error(error: Exception) -> DownloadFailureReason:
     if isinstance(error, urllib.error.HTTPError) and error.code in {401, 403}:
         return "auth"
-    return classify_download_error(error)
+    return _classify_instagram_error(error)

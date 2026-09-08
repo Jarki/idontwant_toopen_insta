@@ -2,6 +2,7 @@ import io
 from pathlib import Path
 
 import pytest
+from yt_dlp.utils import DownloadError
 
 from ig_reel_downloader.downloaders.base import (
     DownloadContext,
@@ -487,6 +488,25 @@ def test_reddit_classifies_restricted_metadata_as_auth(
 
     assert result.media is None
     assert result.failure_reason == "auth"
+
+
+def test_reddit_classifies_provider_ip_block(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    downloader = RedditDownloader()
+
+    def raise_blocked(_url: str, _post_id: str) -> dict[str, object]:
+        raise DownloadError("IP address is blocked from accessing this post")
+
+    monkeypatch.setattr(downloader, "_load_post_data", raise_blocked)
+
+    result = downloader.download(
+        _request(downloader, "blocked1"), DownloadContext(output_dir=tmp_path)
+    )
+
+    assert result.media is None
+    assert result.failure_reason == "blocked"
 
 
 def _request(downloader: RedditDownloader, post_id: str) -> ResolvedMediaRequest:

@@ -51,14 +51,13 @@ TelegramMediaRenderer
 │   ├── constants.py             # Shared constants, currently cache TTL
 │   ├── media_fetch.py           # Cache lookup, file-existence validation, download refresh
 │   ├── telegram_renderer.py     # Telegram video/media-group rendering
-│   ├── utils.py                 # Download error classification helpers
 │   ├── downloaders/
 │   │   ├── base.py              # Downloader Protocol and shared download models
 │   │   ├── instagram.py         # Instagram Reel and Post URL matching and yt-dlp downloader
 │   │   ├── tiktok.py            # TikTok video downloader with share-link resolution
 │   │   ├── reddit.py            # Reddit post/share links, video, images, and galleries
 │   │   ├── youtube.py           # YouTube Shorts and video downloader with duration gate
-│   │   ├── yt_dlp_support.py    # Shared yt-dlp options, asset mapping, error helpers
+│   │   ├── yt_dlp_support.py    # Shared yt-dlp options and asset mapping
 │   │   └── registry.py          # URL candidate extraction, overlap handling, deduplication
 │   └── repository/
 │       ├── base.py              # Repository Protocol
@@ -158,13 +157,15 @@ Downloader interfaces live in `downloaders/base.py`:
 
 Download failures are normalized into:
 
-- `auth`: recognized `yt-dlp` errors that indicate Instagram authentication/cookies are required.
-- `blocked`: recognized bot-detection or IP-block responses from an upstream provider.
+- `auth`: provider-specific authentication or cookie requirements.
+- `blocked`: provider-specific bot-detection or IP-block responses.
 - `unsupported`: URLs or media shapes not supported by the current downloader/renderer.
 - `unknown`: every other exception or mismatch.
 
-`utils.py` contains shared classifiers for authentication and bot-detection errors.
-TikTok bot-detection failures are retried up to three times. If all attempts
+Each downloader translates its own typed internal errors and provider-specific
+`yt-dlp` messages into these domain failure reasons. Shared downloader support
+contains no provider-specific error strings. TikTok bot-detection failures are
+retried up to three times. If all attempts
 fail, the error is logged as a warning and produces a retry-later message instead
 of escaping the Telegram handler. An opt-in live smoke test in
 `tests/e2e/test_tiktok_live.py` exercises one URL or a newline-delimited corpus
@@ -366,7 +367,7 @@ Developer tasks are defined in `pyproject.toml` via Poe:
 - `uv run poe check` for the read-only CI quality gate
 - `uv run poe db-upgrade`, `db-current`, `db-history`, `db-downgrade`, and `db-revision` for Alembic migrations
 
-The current test suite includes unit tests for downloader registry, Instagram URL matching/downloading seams, TikTok bot-detection handling, media fetching, Telegram rendering, authentication-error detection, app orchestration, and repository integration tests for PostgreSQL/Alembic behavior. The opt-in TikTok end-to-end smoke test requires `TIKTOK_SMOKE_TEST_URL` and is skipped by default.
+The current test suite includes unit tests for downloader registry, provider-specific URL matching/downloading and error handling, media fetching, Telegram rendering, app orchestration, and repository integration tests for PostgreSQL/Alembic behavior. The opt-in TikTok end-to-end smoke test requires `TIKTOK_SMOKE_TEST_URL` and is skipped by default.
 
 ## Important architectural constraints and notes
 

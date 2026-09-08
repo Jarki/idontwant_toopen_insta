@@ -11,7 +11,7 @@ Important paths:
 - `pyproject.toml` — dependencies and Poe task definitions.
 - `ig_reel_downloader/__main__.py` — runtime entry point and environment wiring.
 - `ig_reel_downloader/app.py` — Telegram application and message flow.
-- `ig_reel_downloader/utils.py` — URL parsing, `yt-dlp` integration, and error classification.
+- `ig_reel_downloader/downloaders/` — provider URL parsing, `yt-dlp` integration, and provider-specific error translation.
 - `ig_reel_downloader/constants.py` — shared constants.
 - `ig_reel_downloader/repository/` — repository protocol, Pydantic models, shared schema, and PostgreSQL runtime implementation.
 - `migrations/` — Alembic migration environment and revisions.
@@ -22,7 +22,7 @@ Important paths:
 Runtime/local state paths:
 
 - `.env` — local secrets/config; never commit.
-- `assets/cookies.txt` — optional Instagram cookies; never commit.
+- `assets/cookies.txt` — optional provider cookies; never commit.
 - `output/` — downloaded media files; never commit.
 
 ## Detailed workflow
@@ -73,7 +73,7 @@ Default to parallelizing context gathering, review, and research when it helps.
 ## Testing expectations
 
 - Add pytest coverage for new parsing, error handling, cache, or message-flow behavior when practical.
-- For `utils.py` behavior, prefer small unit tests in `tests/unit/test_utils.py` or a new focused test file.
+- Keep provider-specific parsing and error-handling tests with that downloader's focused unit tests.
 - For `IgReelDownloaderApp` behavior, prefer dependency injection/mocking rather than real Telegram or network calls.
 - Do not rely on live Instagram, Telegram, or network access in automated tests.
 - If a test cannot be added reasonably, explain why and run the closest focused validation.

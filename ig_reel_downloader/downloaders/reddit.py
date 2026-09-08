@@ -17,6 +17,7 @@ from yt_dlp.utils import DownloadError
 
 from ig_reel_downloader.downloaders.base import (
     DownloadContext,
+    DownloadFailureReason,
     MediaDownloadResult,
     ProviderItemRef,
     ResolutionError,
@@ -27,7 +28,6 @@ from ig_reel_downloader.downloaders.base import (
 from ig_reel_downloader.downloaders.yt_dlp_support import (
     build_download_ytdlp_options,
     build_metadata_ytdlp_options,
-    classify_download_error,
     map_image_asset,
     map_video_asset,
 )
@@ -56,12 +56,26 @@ REDDIT_HOSTS = {"reddit.com", "www.reddit.com", "old.reddit.com", "m.reddit.com"
 REDDIT_IMAGE_HOSTS = {"i.redd.it", "preview.redd.it", "external-preview.redd.it"}
 MAX_REDDIT_IMAGE_BYTES = 20 * 1024 * 1024
 DOWNLOAD_CHUNK_BYTES = 64 * 1024
+REDDIT_AUTH_MARKERS = (
+    "account authentication is required",
+    "an account that has opted in is required",
+    "an account that has been approved is required",
+)
+REDDIT_BLOCK_MARKERS = ("ip address is blocked from accessing this post",)
 
 
 class ImageCandidate(TypedDict):
     url: str
     width: NotRequired[object]
     height: NotRequired[object]
+
+
+class RedditAuthenticationRequiredError(Exception):
+    pass
+
+
+class RedditMetadataError(Exception):
+    pass
 
 
 class UnsupportedRedditMediaError(Exception):
@@ -134,7 +148,7 @@ class RedditDownloader:
         except Exception as error:
             raise ResolutionError(
                 candidate.normalized_url or candidate.url,
-                classify_download_error(error),
+                _classify_reddit_error(error),
             ) from error
 
         post_id = _post_id_from_url(redirected_url)
@@ -199,7 +213,7 @@ class RedditDownloader:
             logger.warning("Unsupported Reddit media at %s (%s)", url, error)
             return MediaDownloadResult(media=None, failure_reason="unsupported")
         except Exception as error:
-            failure_reason = classify_download_error(error)
+            failure_reason = _classify_reddit_error(error)
             if failure_reason in ("auth", "blocked"):
                 logger.warning(
                     "Failed to download Reddit post from %s: %s (%s)",
@@ -228,23 +242,25 @@ class RedditDownloader:
         if isinstance(payload, Mapping) and payload.get("error") == 403:
             reason = payload.get("reason")
             if reason == "quarantined":
-                raise DownloadError(
+                raise RedditAuthenticationRequiredError(
                     "Quarantined subreddit; an account that has opted in is required"
                 )
             if reason == "private":
-                raise DownloadError(
+                raise RedditAuthenticationRequiredError(
                     "Private subreddit; an account that has been approved is required"
                 )
-            raise DownloadError(f"Reddit rejected metadata access: {reason or '403'}")
+            raise RedditMetadataError(
+                f"Reddit rejected metadata access: {reason or '403'}"
+            )
 
         try:
             post_data = payload[0]["data"]["children"][0]["data"]
         except (IndexError, KeyError, TypeError) as error:
-            raise DownloadError(
+            raise RedditMetadataError(
                 f"Reddit returned no post metadata for {post_id}"
             ) from error
         if not isinstance(post_data, dict) or str(post_data.get("id")) != post_id:
-            raise DownloadError(
+            raise RedditMetadataError(
                 f"Reddit returned mismatched post metadata for {post_id}"
             )
         return cast("dict[str, Any]", post_data)
@@ -306,6 +322,18 @@ class RedditDownloader:
                     )
                 )
         return assets
+
+
+def _classify_reddit_error(error: Exception) -> DownloadFailureReason:
+    if isinstance(error, RedditAuthenticationRequiredError):
+        return "auth"
+    if isinstance(error, DownloadError):
+        message = str(error).lower()
+        if any(marker in message for marker in REDDIT_AUTH_MARKERS):
+            return "auth"
+        if any(marker in message for marker in REDDIT_BLOCK_MARKERS):
+            return "blocked"
+    return "unknown"
 
 
 def _post_id_from_url(url: str) -> str | None:
