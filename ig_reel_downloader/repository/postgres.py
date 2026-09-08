@@ -4,7 +4,15 @@ import datetime
 import json
 from typing import Any, cast
 
-from sqlalchemy import CursorResult, create_engine, delete, make_url, select, update
+from sqlalchemy import (
+    CursorResult,
+    create_engine,
+    delete,
+    func,
+    make_url,
+    select,
+    update,
+)
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -139,6 +147,7 @@ class PostgreSQLRepository(base.Repository):
         records = [
             MediaRequestRecord(
                 telegram_user_id=request.telegram_user_id,
+                telegram_chat_id=request.telegram_chat_id,
                 url=request.url,
                 normalized_url=request.normalized_url,
                 provider=request.provider,
@@ -152,6 +161,123 @@ class PostgreSQLRepository(base.Repository):
             session.add_all(records)
             session.commit()
             return [record.id for record in records]
+
+    def get_chat_user_stats(
+        self,
+        telegram_user_id: int,
+        telegram_chat_id: int,
+    ) -> models.ChatUserStats:
+        with self.session_factory() as session:
+            requested, delivered, download_failed = session.execute(
+                select(
+                    func.count(MediaRequestRecord.id),
+                    func.count(MediaRequestRecord.delivered_at),
+                    func.count(MediaRequestRecord.id).filter(
+                        MediaRequestRecord.failure_reason.is_not(None)
+                    ),
+                ).where(
+                    MediaRequestRecord.telegram_chat_id == telegram_chat_id,
+                    MediaRequestRecord.telegram_user_id == telegram_user_id,
+                )
+            ).one()
+            type_count = func.count(MediaRequestRecord.id).label("type_count")
+            delivered_by_type = session.execute(
+                select(
+                    MediaItemRecord.provider,
+                    MediaItemRecord.media_kind,
+                    type_count,
+                )
+                .join(
+                    MediaRequestRecord,
+                    MediaRequestRecord.media_item_id == MediaItemRecord.id,
+                )
+                .where(
+                    MediaRequestRecord.telegram_chat_id == telegram_chat_id,
+                    MediaRequestRecord.telegram_user_id == telegram_user_id,
+                    MediaRequestRecord.delivered_at.is_not(None),
+                )
+                .group_by(MediaItemRecord.provider, MediaItemRecord.media_kind)
+                .order_by(
+                    type_count.desc(),
+                    MediaItemRecord.provider,
+                    MediaItemRecord.media_kind,
+                )
+            ).all()
+        return models.ChatUserStats(
+            requested=requested,
+            delivered=delivered,
+            delivery_failed=requested - delivered - download_failed,
+            download_failed=download_failed,
+            delivered_by_type=[
+                models.MediaTypeCount(
+                    provider=provider,
+                    media_kind=media_kind,
+                    count=count,
+                )
+                for provider, media_kind, count in delivered_by_type
+            ],
+        )
+
+    def get_chat_leaderboard(
+        self,
+        telegram_chat_id: int,
+        limit: int = 10,
+    ) -> list[models.ChatLeaderboardEntry]:
+        media_count = func.count(MediaRequestRecord.id).label("media_count")
+        with self.session_factory() as session:
+            rows = session.execute(
+                select(
+                    TelegramUserRecord.username,
+                    TelegramUserRecord.first_name,
+                    TelegramUserRecord.last_name,
+                    media_count,
+                )
+                .join(
+                    MediaRequestRecord,
+                    MediaRequestRecord.telegram_user_id == TelegramUserRecord.id,
+                )
+                .where(MediaRequestRecord.telegram_chat_id == telegram_chat_id)
+                .group_by(
+                    TelegramUserRecord.id,
+                    TelegramUserRecord.username,
+                    TelegramUserRecord.first_name,
+                    TelegramUserRecord.last_name,
+                )
+                .order_by(media_count.desc(), TelegramUserRecord.id)
+                .limit(limit)
+            ).all()
+        return [
+            models.ChatLeaderboardEntry(
+                username=username,
+                first_name=first_name,
+                last_name=last_name,
+                count=count,
+            )
+            for username, first_name, last_name, count in rows
+        ]
+
+    def mark_media_requests_delivered(self, media_request_ids: list[int]) -> None:
+        if not media_request_ids:
+            return
+        with self.session_factory() as session:
+            requests = list(
+                session.scalars(
+                    select(MediaRequestRecord).where(
+                        MediaRequestRecord.id.in_(media_request_ids)
+                    )
+                )
+            )
+            if len(requests) != len(media_request_ids) or any(
+                request.media_item_id is None or request.failure_reason is not None
+                for request in requests
+            ):
+                msg = "Cannot deliver unknown or unsuccessful media requests"
+                raise ValueError(msg)
+            delivered_at = datetime.datetime.now()
+            for request in requests:
+                if request.delivered_at is None:
+                    request.delivered_at = delivered_at
+            session.commit()
 
     def mark_media_request_succeeded(
         self,

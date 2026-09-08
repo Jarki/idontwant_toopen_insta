@@ -45,6 +45,26 @@ class Repository(Protocol):
         """Append detected link requests and return their generated IDs."""
         raise NotImplementedError
 
+    def get_chat_user_stats(
+        self,
+        telegram_user_id: int,
+        telegram_chat_id: int,
+    ) -> models.ChatUserStats:
+        """Summarize a user's request and delivery outcomes in a chat."""
+        raise NotImplementedError
+
+    def get_chat_leaderboard(
+        self,
+        telegram_chat_id: int,
+        limit: int = 10,
+    ) -> list[models.ChatLeaderboardEntry]:
+        """Rank users by all media requests in a chat."""
+        raise NotImplementedError
+
+    def mark_media_requests_delivered(self, media_request_ids: list[int]) -> None:
+        """Mark successfully delivered media requests."""
+        raise NotImplementedError
+
     def mark_media_request_succeeded(
         self,
         media_request_id: int,

@@ -9,7 +9,11 @@ from telegram import InputMediaVideo
 from telegram.error import BadRequest, TimedOut
 
 from ig_reel_downloader.repository.models import MediaAsset, MediaItem
-from ig_reel_downloader.telegram_renderer import TelegramMediaRenderer, _format_caption
+from ig_reel_downloader.telegram_renderer import (
+    MediaRenderTimedOut,
+    TelegramMediaRenderer,
+    _format_caption,
+)
 
 
 def make_media(
@@ -44,6 +48,7 @@ class FakeChat:
         self.sent_groups: list[dict[str, Any]] = []
         self.sent_messages: list[dict[str, Any]] = []
         self.raise_timeout = False
+        self.timeout_message_number: int | None = None
         self.invalid_file_ids: set[str] = set()
 
     async def send_video(self, video: str, **kwargs: Any) -> Any:
@@ -90,7 +95,8 @@ class FakeChat:
         ]
 
     async def send_message(self, text: str, **kwargs: Any) -> None:
-        if self.raise_timeout:
+        message_number = len(self.sent_messages) + 1
+        if self.raise_timeout or message_number == self.timeout_message_number:
             raise TimedOut("timeout")
         self.sent_messages.append({"text": text, **kwargs})
 
@@ -404,6 +410,26 @@ def test_renderer_sends_text_only_x_post_body() -> None:
             "read_timeout": 30,
         }
     ]
+
+
+def test_renderer_reports_completed_items_when_later_send_times_out() -> None:
+    first = make_media("unused", assets=[], title="First", description="Body")
+    first.metadata = {"text_only": True}
+    second = first.model_copy(
+        deep=True,
+        update={"id": "x:post:second", "provider_item_id": "second"},
+    )
+    chat = FakeChat()
+    chat.timeout_message_number = 2
+    renderer = TelegramMediaRenderer(120, 30)
+
+    with pytest.raises(MediaRenderTimedOut) as exc_info:
+        asyncio.run(renderer.render(FakeUpdate(chat), [first, second]))
+
+    assert [result.media.id for result in exc_info.value.completed_results] == [
+        first.id
+    ]
+    assert [result.sent for result in exc_info.value.completed_results] == [True]
 
 
 def test_renderer_truncates_long_text_only_x_post() -> None:

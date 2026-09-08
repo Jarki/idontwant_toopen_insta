@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from telegram import Chat, InputMediaPhoto, InputMediaVideo, Message, Update
-from telegram.error import BadRequest
+from telegram.error import BadRequest, TimedOut
 
 from ig_reel_downloader.downloaders.base import DownloadFailureReason
 from ig_reel_downloader.repository.models import MediaAsset, MediaItem
@@ -21,6 +21,12 @@ class MediaRenderResult:
     sent: bool
     failure_reason: DownloadFailureReason | None = None
     telegram_file_ids: dict[int, str] = field(default_factory=dict)
+
+
+class MediaRenderTimedOut(TimedOut):
+    def __init__(self, completed_results: list[MediaRenderResult]) -> None:
+        super().__init__("Timed out while rendering media")
+        self.completed_results = completed_results
 
 
 class TelegramMediaRenderer:
@@ -60,106 +66,116 @@ class TelegramMediaRenderer:
                 for item in renderable
             ]
 
-        for item in text_items:
-            await chat.send_message(
-                _format_text_message(item),
-                write_timeout=self.telegram_media_write_timeout,
-                read_timeout=self.telegram_read_timeout,
-            )
-
+        completed_results: list[MediaRenderResult] = []
         sent_file_ids: dict[tuple[int, int], str] = {}
-        if len(supported_media) == 1 and len(supported_media[0].assets) == 1:
-            item = supported_media[0]
-            asset = item.assets[0]
-            if asset.telegram_file_id is None:
-                message = await self._send_single(
-                    chat, item, asset.asset_type, asset.filepath
+        try:
+            for item in text_items:
+                await chat.send_message(
+                    _format_text_message(item),
+                    write_timeout=self.telegram_media_write_timeout,
+                    read_timeout=self.telegram_read_timeout,
                 )
-            else:
-                try:
-                    message = await self._send_single(
-                        chat,
-                        item,
-                        asset.asset_type,
-                        asset.telegram_file_id,
-                    )
-                except BadRequest:
-                    logger.warning(
-                        "Stored Telegram file_id failed for %s asset %d; "
-                        "uploading the local file instead",
-                        item.id,
-                        asset.asset_index,
-                    )
+                completed_results.append(MediaRenderResult(media=item, sent=True))
+
+            if len(supported_media) == 1 and len(supported_media[0].assets) == 1:
+                item = supported_media[0]
+                asset = item.assets[0]
+                if asset.telegram_file_id is None:
                     message = await self._send_single(
                         chat, item, asset.asset_type, asset.filepath
                     )
-            file_id = _message_file_id(message, asset.asset_type)
-            if file_id is not None:
-                sent_file_ids[(id(item), asset.asset_index)] = file_id
-        elif supported_media:
-            descriptors: list[tuple[MediaItem, MediaAsset, str | None]] = []
-            for item in supported_media:
-                for asset in sorted(item.assets, key=lambda a: a.asset_index):
-                    caption = _format_caption(item) if not descriptors else None
-                    descriptors.append((item, asset, caption))
-
-            for descriptor_group in _media_groups(descriptors):
-                with ExitStack() as stack:
-                    medias = [
-                        _input_media(item, asset, caption, stack)
-                        for item, asset, caption in descriptor_group
-                    ]
+                else:
                     try:
-                        messages = await chat.send_media_group(
-                            medias,
-                            write_timeout=self.telegram_media_write_timeout,
-                            read_timeout=self.telegram_read_timeout,
+                        message = await self._send_single(
+                            chat,
+                            item,
+                            asset.asset_type,
+                            asset.telegram_file_id,
                         )
                     except BadRequest:
-                        if not any(
-                            asset.telegram_file_id is not None
-                            for _, asset, _ in descriptor_group
-                        ):
-                            raise
                         logger.warning(
-                            "Stored Telegram file_id failed in media group; "
-                            "uploading the group again"
+                            "Stored Telegram file_id failed for %s asset %d; "
+                            "uploading the local file instead",
+                            item.id,
+                            asset.asset_index,
                         )
-                        with ExitStack() as retry_stack:
-                            retry_medias = [
-                                _input_media(
-                                    item,
-                                    asset,
-                                    caption,
-                                    retry_stack,
-                                    force_upload=True,
-                                )
-                                for item, asset, caption in descriptor_group
-                            ]
+                        message = await self._send_single(
+                            chat, item, asset.asset_type, asset.filepath
+                        )
+                file_id = _message_file_id(message, asset.asset_type)
+                if file_id is not None:
+                    sent_file_ids[(id(item), asset.asset_index)] = file_id
+                completed_results.append(_sent_result(item, sent_file_ids))
+            elif supported_media:
+                descriptors: list[tuple[MediaItem, MediaAsset, str | None]] = []
+                for item in supported_media:
+                    for asset in sorted(item.assets, key=lambda a: a.asset_index):
+                        caption = _format_caption(item) if not descriptors else None
+                        descriptors.append((item, asset, caption))
+
+                sent_asset_indexes: dict[int, set[int]] = {}
+                completed_media_ids: set[int] = set()
+                for descriptor_group in _media_groups(descriptors):
+                    with ExitStack() as stack:
+                        medias = [
+                            _input_media(item, asset, caption, stack)
+                            for item, asset, caption in descriptor_group
+                        ]
+                        try:
                             messages = await chat.send_media_group(
-                                retry_medias,
+                                medias,
                                 write_timeout=self.telegram_media_write_timeout,
                                 read_timeout=self.telegram_read_timeout,
                             )
-                for (item, asset, _), message in zip(
-                    descriptor_group, messages, strict=False
-                ):
-                    file_id = _message_file_id(message, asset.asset_type)
-                    if file_id is not None:
-                        sent_file_ids[(id(item), asset.asset_index)] = file_id
-        return results + [
-            MediaRenderResult(
-                media=item,
-                sent=True,
-                telegram_file_ids={
-                    asset.asset_index: file_id
-                    for asset in item.assets
-                    if (file_id := sent_file_ids.get((id(item), asset.asset_index)))
-                    is not None
-                },
-            )
-            for item in renderable
-        ]
+                        except BadRequest:
+                            if not any(
+                                asset.telegram_file_id is not None
+                                for _, asset, _ in descriptor_group
+                            ):
+                                raise
+                            logger.warning(
+                                "Stored Telegram file_id failed in media group; "
+                                "uploading the group again"
+                            )
+                            with ExitStack() as retry_stack:
+                                retry_medias = [
+                                    _input_media(
+                                        item,
+                                        asset,
+                                        caption,
+                                        retry_stack,
+                                        force_upload=True,
+                                    )
+                                    for item, asset, caption in descriptor_group
+                                ]
+                                messages = await chat.send_media_group(
+                                    retry_medias,
+                                    write_timeout=self.telegram_media_write_timeout,
+                                    read_timeout=self.telegram_read_timeout,
+                                )
+                    for item, asset, _ in descriptor_group:
+                        sent_asset_indexes.setdefault(id(item), set()).add(
+                            asset.asset_index
+                        )
+                    for (item, asset, _), message in zip(
+                        descriptor_group, messages, strict=False
+                    ):
+                        file_id = _message_file_id(message, asset.asset_type)
+                        if file_id is not None:
+                            sent_file_ids[(id(item), asset.asset_index)] = file_id
+                    for item in supported_media:
+                        item_id = id(item)
+                        if item_id in completed_media_ids:
+                            continue
+                        if len(sent_asset_indexes.get(item_id, set())) == len(
+                            item.assets
+                        ):
+                            completed_results.append(_sent_result(item, sent_file_ids))
+                            completed_media_ids.add(item_id)
+        except TimedOut as exc:
+            raise MediaRenderTimedOut(completed_results) from exc
+
+        return results + completed_results
 
     async def _send_single(
         self,
@@ -181,6 +197,22 @@ class TelegramMediaRenderer:
             write_timeout=self.telegram_media_write_timeout,
             read_timeout=self.telegram_read_timeout,
         )
+
+
+def _sent_result(
+    media: MediaItem,
+    sent_file_ids: dict[tuple[int, int], str],
+) -> MediaRenderResult:
+    return MediaRenderResult(
+        media=media,
+        sent=True,
+        telegram_file_ids={
+            asset.asset_index: file_id
+            for asset in media.assets
+            if (file_id := sent_file_ids.get((id(media), asset.asset_index)))
+            is not None
+        },
+    )
 
 
 def _input_media(

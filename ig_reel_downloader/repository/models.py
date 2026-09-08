@@ -20,12 +20,34 @@ class TelegramUser(pydantic.BaseModel):
 
 class MediaRequest(pydantic.BaseModel):
     telegram_user_id: int | None
+    telegram_chat_id: int | None = None
     url: str
     normalized_url: str | None
     provider: str
     media_kind: str
     provider_item_id: str | None
     created_at: datetime.datetime
+
+
+class MediaTypeCount(pydantic.BaseModel):
+    provider: str
+    media_kind: str
+    count: int
+
+
+class ChatUserStats(pydantic.BaseModel):
+    requested: int
+    delivered: int
+    delivery_failed: int
+    download_failed: int
+    delivered_by_type: list[MediaTypeCount] = pydantic.Field(default_factory=list)
+
+
+class ChatLeaderboardEntry(pydantic.BaseModel):
+    username: str | None
+    first_name: str
+    last_name: str | None
+    count: int
 
 
 class MediaAsset(pydantic.BaseModel):

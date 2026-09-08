@@ -108,11 +108,7 @@ The bot process does not run Alembic migrations. In Docker Compose deployments, 
 
 ## Core message flow
 
-`IgReelDownloaderApp` in `app.py` owns the Telegram `Application` and registers one handler:
-
-```text
-MessageHandler(filters.TEXT, self._message_handler)
-```
+`IgReelDownloaderApp` in `app.py` owns the Telegram `Application` and registers command handlers plus the general text-message handler.
 
 For each text message:
 
@@ -126,13 +122,14 @@ For each text message:
    - Calls the matched downloader on cache miss, stale cache, or missing local files.
    - Verifies the downloader returned the expected provider/media/item identity.
    - Persists a new successful download and links its originating request atomically with `repository.insert_media_for_request(media_request_id, media)`; cache hits link through `mark_media_request_succeeded(...)`.
-   - Marks resolution failures, downloader-reported failures, and identity mismatches directly on the originating `media_requests` row; intentional skips have no outcome.
+   - Marks resolution failures, downloader-reported failures, identity mismatches, and intentional unsupported skips directly on the originating `media_requests` row.
 6. Successful media items are passed to `TelegramMediaRenderer`:
    - Text-only posts: `chat.send_message(...)` with the post text.
    - Assets with a stored Telegram `file_id` are sent by ID, avoiding another upload.
    - Assets without an ID are uploaded from their local path. The returned IDs are persisted on their `media_assets` rows for later cache hits.
    - An invalid stored ID falls back to uploading the local file and refreshes the stored ID.
    - One supported photo or video uses the matching single-media Telegram method with a caption; multiple assets use `chat.send_media_group(...)`.
+   - Requests are marked delivered only after Telegram confirms the send.
 7. Failed downloads or unsupported rendered items are summarized as chat messages.
 8. Telegram upload `TimedOut` errors are logged and reported to the user with a friendly timeout message.
 
@@ -210,7 +207,7 @@ class MediaItem(pydantic.BaseModel):
     updated_at: datetime.datetime
 ```
 
-`TelegramUser` stores the current Telegram profile fields keyed by numeric user ID. `MediaRequest` represents one detected link and includes the optional requesting user ID, submitted and normalized URLs, provider/media identity when available, and detection timestamp. Requests without an effective Telegram user remain recordable with a null user ID.
+`TelegramUser` stores the current Telegram profile fields keyed by numeric user ID. `MediaRequest` represents one detected link and includes the optional requesting user ID and chat ID, submitted and normalized URLs, provider/media identity when available, and detection timestamp. Requests without an effective Telegram user or chat remain recordable with null IDs. Historical requests created before chat tracking retain a null chat ID.
 
 The `reels` table is a legacy table created by early Alembic migrations. It is preserved in the schema for compatibility; the runtime uses `media_items` for all cache operations.
 
@@ -224,7 +221,8 @@ The `reels` table is a legacy table created by early Alembic migrations. It is p
 - `update_media_asset_telegram_file_id(media_item_id, asset_index, telegram_file_id)`.
 - `upsert_telegram_user(user)`.
 - `insert_media_requests(requests)`.
-- `mark_media_request_succeeded(media_request_id, media_item_id)`.
+- `get_chat_user_stats(telegram_user_id, telegram_chat_id)` and `get_chat_leaderboard(telegram_chat_id, limit)`.
+- `mark_media_request_succeeded(media_request_id, media_item_id)` and `mark_media_requests_delivered(media_request_ids)`.
 - `mark_media_request_failed(media_request_id, failure_reason, failure_url, provider_item_id)`.
 
 The app layer depends on `MediaFetchService` and the repository protocol rather than concrete SQLAlchemy dialect code.
@@ -245,7 +243,7 @@ The app layer depends on `MediaFetchService` and the repository protocol rather 
 The runtime tables are:
 
 - `telegram_users`: one row per Telegram user ID; mutable username/profile fields are refreshed on each detected request while `created_at` is preserved.
-- `media_requests`: detected links, optionally associated with a Telegram user, including raw and normalized URLs plus provider/media identity when known. Outcome columns link successful requests to `media_items` or store a failure reason and URL directly; a check constraint permits only pending, successful, or failed outcome shapes.
+- `media_requests`: detected links, optionally associated with a Telegram user and chat, including raw and normalized URLs plus provider/media identity when known. Download outcome columns link successful requests to `media_items` or store a failure reason and URL directly; `delivered_at` records confirmed Telegram delivery. `/stats` partitions the caller's chat requests into delivered, delivery-failed, and download-failed totals and groups confirmed deliveries by media type, while `/top` ranks all requests in the chat regardless of outcome.
 - `media_items`: one row per provider/media/item identity, with metadata stored as JSON text and a unique constraint on `(provider, media_kind, provider_item_id)`.
 - `media_assets`: ordered local assets for each media item, including an optional reusable Telegram `file_id`, with a foreign key to `media_items` and a unique `(media_item_id, asset_index)` constraint.
 - `judgmental_animations`: Telegram animation `file_id` and `file_unique_id` cache, used for judgmental GIF replies.

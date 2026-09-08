@@ -51,6 +51,13 @@ Send a supported link to the bot and it will download the media when supported:
 
 X videos larger than 100 MB, or whose size cannot be determined, are rejected before download.
 
+Usage totals are available through Telegram commands:
+
+- `/stats` shows the caller's requested, delivered, delivery-failed, and download-failed totals in the current chat, plus confirmed deliveries by media type.
+- `/top` shows the top 10 media requesters in the current chat, including unsuccessful requests.
+
+Chat-scoped statistics begin after the migration that adds chat IDs; older requests cannot be assigned to their original chats retroactively.
+
 ### TikTok extractor smoke test
 
 TikTok may return bot-detection responses depending on the machine's public IP and
@@ -85,7 +92,7 @@ The bot stores Telegram's `file_id` in PostgreSQL and reuses it later, avoiding 
 
 ## Database
 
-The bot stores Telegram users, detected link requests, cached media metadata, failed download attempts, reusable Telegram media file IDs, and judgmental animation file IDs in PostgreSQL. After an asset is uploaded once, later fresh cache hits send Telegram's `file_id` instead of uploading the local file again. Mutable Telegram profile fields are refreshed whenever that user submits a detected link. Each request records the submitted and normalized URLs, provider/media identity when known, timestamp, and requesting Telegram user when available. Successful requests reference the cached media item that satisfied them; failed requests record their normalized reason directly. Schema changes are managed with Alembic, running separately from the bot process.
+The bot stores Telegram users, detected link requests, cached media metadata, failed download attempts, reusable Telegram media file IDs, delivery outcomes, and judgmental animation file IDs in PostgreSQL. After an asset is uploaded once, later fresh cache hits send Telegram's `file_id` instead of uploading the local file again. Mutable Telegram profile fields are refreshed whenever that user submits a detected link. Each request records the submitted and normalized URLs, provider/media identity when known, timestamp, requesting Telegram user when available, and Telegram chat ID for chat-scoped statistics. Successful downloads reference the cached media item that satisfied them, download failures record their normalized reason directly, and confirmed Telegram deliveries record a delivery timestamp. Schema changes are managed with Alembic, running separately from the bot process.
 
 ### Configuration
 

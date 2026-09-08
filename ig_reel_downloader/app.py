@@ -9,6 +9,7 @@ from telegram.error import BadRequest, TimedOut
 from telegram.ext import (
     Application,
     ApplicationBuilder,
+    CommandHandler,
     ContextTypes,
     MessageHandler,
     filters,
@@ -18,7 +19,11 @@ from . import judgmental as judgmental_module
 from .downloaders import DownloaderRegistry, DownloadFailureReason, UrlCandidate
 from .media_fetch import MediaFetchResult, MediaFetchService
 from .repository import models
-from .telegram_renderer import MediaRenderResult, TelegramMediaRenderer
+from .telegram_renderer import (
+    MediaRenderResult,
+    MediaRenderTimedOut,
+    TelegramMediaRenderer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +35,26 @@ def _duration_summary(media: models.MediaItem) -> str:
         f"{a.duration_seconds or '?'}s" for a in media.assets if a.asset_type == "video"
     ]
     return ", ".join(durations) if durations else "no video"
+
+
+def _user_display_name(
+    first_name: str,
+    last_name: str | None,
+    username: str | None,
+) -> str:
+    name = " ".join(part for part in (first_name, last_name) if part)
+    return f"{name} (@{username})" if username else name
+
+
+def _media_type_name(provider: str, media_kind: str) -> str:
+    provider_names = {
+        "instagram": "Instagram",
+        "reddit": "Reddit",
+        "tiktok": "TikTok",
+        "x": "X",
+        "youtube": "YouTube",
+    }
+    return f"{provider_names.get(provider, provider.title())} {media_kind}"
 
 
 DEFAULT_TELEGRAM_READ_TIMEOUT = 30.0
@@ -71,6 +96,8 @@ class IgReelDownloaderApp:
                 self._add_judgmental_handler,
             )
         )
+        self.app.add_handler(CommandHandler("stats", self._stats_handler))
+        self.app.add_handler(CommandHandler("top", self._top_handler))
         self.app.add_handler(MessageHandler(filters.TEXT, self._message_handler))
 
     def _format_download_error(
@@ -121,12 +148,30 @@ class IgReelDownloaderApp:
                         asset_index,
                     )
 
+    async def _record_deliveries(
+        self,
+        render_results: list[MediaRenderResult],
+        request_ids_by_media_object: dict[int, collections.deque[int]],
+    ) -> None:
+        await self._store_telegram_file_ids(render_results)
+        delivered_request_ids = [
+            request_ids_by_media_object[id(result.media)].popleft()
+            for result in render_results
+            if result.sent
+        ]
+        await asyncio.to_thread(
+            self.fetch_service.repository.mark_media_requests_delivered,
+            delivered_request_ids,
+        )
+
     async def _record_media_requests(
         self,
         update: Update,
         candidates: list[UrlCandidate],
     ) -> list[int]:
         telegram_user = update.effective_user
+        telegram_chat = update.effective_chat
+        telegram_chat_id = telegram_chat.id if telegram_chat is not None else None
         now = datetime.datetime.now()
         telegram_user_id: int | None = None
         if telegram_user is not None:
@@ -149,6 +194,7 @@ class IgReelDownloaderApp:
         requests = [
             models.MediaRequest(
                 telegram_user_id=telegram_user_id,
+                telegram_chat_id=telegram_chat_id,
                 url=candidate.url,
                 normalized_url=candidate.normalized_url,
                 provider=candidate.provider,
@@ -168,6 +214,78 @@ class IgReelDownloaderApp:
             self.fetch_service.repository.insert_media_requests,
             requests,
         )
+
+    async def _stats_handler(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        del context
+        user = update.effective_user
+        chat = update.effective_chat
+        if user is None or chat is None:
+            return
+
+        stats = await asyncio.to_thread(
+            self.fetch_service.repository.get_chat_user_stats,
+            user.id,
+            chat.id,
+        )
+        lines = [
+            "📊 Stats for "
+            + _user_display_name(user.first_name, user.last_name, user.username),
+            f"🆔 {user.id}",
+            "",
+            "🎞️ Delivered by type",
+        ]
+        if stats.delivered_by_type:
+            lines.extend(
+                f"• {_media_type_name(item.provider, item.media_kind)}: {item.count}"
+                for item in stats.delivered_by_type
+            )
+        else:
+            lines.append("• None yet")
+        lines.extend(
+            [
+                "",
+                "📈 Request outcomes",
+                f"📨 Requested: {stats.requested}",
+                f"✅ Delivered: {stats.delivered}",
+                f"⚠️ Failed delivery: {stats.delivery_failed}",
+                f"❌ Failed download: {stats.download_failed}",
+            ]
+        )
+        await chat.send_message("\n".join(lines))
+
+    async def _top_handler(
+        self,
+        update: Update,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        del context
+        chat = update.effective_chat
+        if chat is None:
+            return
+
+        leaderboard = await asyncio.to_thread(
+            self.fetch_service.repository.get_chat_leaderboard,
+            chat.id,
+        )
+        if not leaderboard:
+            await chat.send_message("No media requests recorded in this chat yet.")
+            return
+
+        lines = ["🏆 Top media requesters in this chat"]
+        medals = ("🥇", "🥈", "🥉")
+        for rank, entry in enumerate(leaderboard, start=1):
+            prefix = medals[rank - 1] if rank <= len(medals) else f"{rank}."
+            name = _user_display_name(
+                entry.first_name,
+                entry.last_name,
+                entry.username,
+            )
+            lines.append(f"{prefix} {name} — {entry.count} requests")
+        await chat.send_message("\n".join(lines))
 
     async def _add_judgmental_handler(
         self,
@@ -315,7 +433,12 @@ class IgReelDownloaderApp:
         fetch_results = await self._get_media_items(candidates, media_request_ids)
         errors: list[str] = []
         media_items: list[models.MediaItem] = []
-        for result in fetch_results:
+        request_ids_by_media_object: dict[int, collections.deque[int]] = {}
+        for request_id, result in zip(
+            media_request_ids,
+            fetch_results,
+            strict=True,
+        ):
             if result.skipped:
                 continue
             if result.media is None:
@@ -324,6 +447,10 @@ class IgReelDownloaderApp:
                 )
             else:
                 media_items.append(result.media)
+                request_ids_by_media_object.setdefault(
+                    id(result.media),
+                    collections.deque(),
+                ).append(request_id)
 
         if not media_items and not errors:
             return
@@ -342,6 +469,24 @@ class IgReelDownloaderApp:
 
         try:
             render_results = await self.renderer.render(update, media_items)
+        except MediaRenderTimedOut as exc:
+            await self._record_deliveries(
+                exc.completed_results,
+                request_ids_by_media_object,
+            )
+            logger.exception(
+                "Timed out after sending %d of %d media items for user %s",
+                len(exc.completed_results),
+                len(media_items),
+                sender_id,
+            )
+            chat = update.effective_chat
+            if chat is not None:
+                with suppress(TimedOut):
+                    await chat.send_message(
+                        "Timed out while uploading video(s) to Telegram. "
+                        "Some media may have been delivered."
+                    )
         except TimedOut:
             logger.exception(
                 "Timed out while sending %s videos for user %s. "
@@ -357,7 +502,10 @@ class IgReelDownloaderApp:
                         "The file may be large or the network may be slow."
                     )
         else:
-            await self._store_telegram_file_ids(render_results)
+            await self._record_deliveries(
+                render_results,
+                request_ids_by_media_object,
+            )
             for render_result in render_results:
                 if not render_result.sent:
                     errors.append(
