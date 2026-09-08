@@ -125,11 +125,7 @@ def _media_groups(
 
 
 def _is_text_item(media: MediaItem) -> bool:
-    return (
-        media.provider == "reddit"
-        and not media.assets
-        and media.metadata.get("text_only") is True
-    )
+    return not media.assets and media.metadata.get("text_only") is True
 
 
 def _is_supported_media(media: MediaItem) -> bool:
@@ -143,7 +139,13 @@ def _format_caption(media: MediaItem) -> str:
 
 
 def _format_text_message(media: MediaItem) -> str:
-    return _format_item_text(media, max_length=4096)
+    max_length = 4096
+    if media.metadata.get("body_only") is True:
+        text = media.description or media.title
+        if len(text) <= max_length:
+            return text
+        return f"{text[: max_length - 1]}…"
+    return _format_item_text(media, max_length=max_length)
 
 
 def _format_item_text(media: MediaItem, *, max_length: int) -> str:

@@ -217,6 +217,51 @@ def test_renderer_sends_reddit_text_post_without_media(tmp_path: Path) -> None:
     assert chat.sent_groups == []
 
 
+def test_renderer_sends_text_only_x_post_body() -> None:
+    text_post = make_media(
+        "unused",
+        assets=[],
+        title="Alice (@alice) on X",
+        description="Text-only post body",
+    )
+    text_post.provider = "x"
+    text_post.media_kind = "post"
+    text_post.metadata = {"text_only": True, "body_only": True}
+    chat = FakeChat()
+    renderer = TelegramMediaRenderer(
+        telegram_media_write_timeout=120,
+        telegram_read_timeout=30,
+    )
+
+    results = asyncio.run(renderer.render(FakeUpdate(chat), [text_post]))
+
+    assert [result.sent for result in results] == [True]
+    assert chat.sent_messages == [
+        {
+            "text": "Text-only post body",
+            "write_timeout": 120,
+            "read_timeout": 30,
+        }
+    ]
+
+
+def test_renderer_truncates_long_text_only_x_post() -> None:
+    text_post = make_media("unused", assets=[], description="D" * 5000)
+    text_post.provider = "x"
+    text_post.media_kind = "post"
+    text_post.metadata = {"text_only": True, "body_only": True}
+    chat = FakeChat()
+    renderer = TelegramMediaRenderer(
+        telegram_media_write_timeout=120,
+        telegram_read_timeout=30,
+    )
+
+    asyncio.run(renderer.render(FakeUpdate(chat), [text_post]))
+
+    assert len(chat.sent_messages[0]["text"]) == 4096
+    assert chat.sent_messages[0]["text"].endswith("…")
+
+
 def test_renderer_returns_unsupported_for_empty_assets(tmp_path: Path) -> None:
     chat = FakeChat()
     renderer = TelegramMediaRenderer(

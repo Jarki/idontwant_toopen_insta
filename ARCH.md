@@ -7,7 +7,7 @@ _Last reviewed: 2026-07-15_
 `ig-reel-downloader` is a small Telegram bot that lets users send supported social media links and receive the downloaded media back in Telegram. The app is implemented as a Python package with a single runtime process:
 
 - `python-telegram-bot` handles Telegram long-polling and message delivery.
-- `yt-dlp` extracts metadata and downloads media files for Instagram, TikTok, Reddit, and YouTube.
+- `yt-dlp` extracts metadata and downloads media files for Instagram, TikTok, Reddit, X, and YouTube.
 - PostgreSQL stores Telegram users and detected link requests, caches generic media metadata and local file paths, and records failed download attempts.
 - Alembic manages database schema creation and migrations.
 - Docker Compose runs PostgreSQL and a bootstrap service for role provisioning, then applies migrations in a one-shot container before starting the bot with persistent `output/` and `assets/` mounts.
@@ -56,6 +56,7 @@ TelegramMediaRenderer
 │   │   ├── instagram.py         # Instagram Reel and Post URL matching and yt-dlp downloader
 │   │   ├── tiktok.py            # TikTok video downloader with share-link resolution
 │   │   ├── reddit.py            # Reddit post/share links, video, images, and galleries
+│   │   ├── x.py                 # X/Twitter text, photo, and video downloader
 │   │   ├── youtube.py           # YouTube Shorts and video downloader with duration gate
 │   │   ├── yt_dlp_support.py    # Shared yt-dlp options and asset mapping
 │   │   └── registry.py          # URL candidate extraction, overlap handling, deduplication
@@ -126,8 +127,9 @@ For each text message:
    - Persists a new successful download and links its originating request atomically with `repository.insert_media_for_request(media_request_id, media)`; cache hits link through `mark_media_request_succeeded(...)`.
    - Marks resolution failures, downloader-reported failures, and identity mismatches directly on the originating `media_requests` row; intentional skips have no outcome.
 6. Successful media items are passed to `TelegramMediaRenderer`:
-   - One supported video: `chat.send_video(...)` with a caption containing title, likes, and description.
-   - Multiple supported videos: `chat.send_media_group(...)` with `InputMediaVideo` items.
+   - Text-only posts: `chat.send_message(...)` with the post text.
+   - One supported photo or video: the matching single-media Telegram method with a caption containing title, likes, and description.
+   - Multiple supported assets: `chat.send_media_group(...)` with photo/video items.
 7. Failed downloads or unsupported rendered items are summarized as chat messages.
 8. Telegram upload `TimedOut` errors are logged and reported to the user with a friendly timeout message.
 
@@ -144,6 +146,8 @@ Downloader interfaces live in `downloaders/base.py`:
 - `MediaDownloadResult` normalizes successful `MediaItem` downloads and failure reasons.
 
 `downloaders/reddit.py` supports canonical Reddit post URLs and `/r/<subreddit>/s/<token>` share links. Share links are followed to obtain the stable Reddit post ID used by the generic cache. Reddit-hosted videos are downloaded with `yt-dlp`; direct images, image galleries, and Reddit-hosted link previews are downloaded as image assets. Video and audio streams are merged by `ffmpeg` in the application image. Text-only posts are cached without assets and sent as Telegram text messages without fetching a preview image. Public age-marked posts generally work anonymously; private or quarantined communities use the same optional `assets/cookies.txt` browser-cookie file as other providers.
+
+`downloaders/x.py` supports X and legacy Twitter status URLs. Videos are downloaded with `yt-dlp`; photo and text-only posts fall back to X page metadata. Text-only posts are cached without assets and their post body is sent as a Telegram text message.
 
 `downloaders/instagram.py` contains the Instagram Reel and Post `yt-dlp` integration:
 
@@ -378,7 +382,7 @@ The current test suite includes unit tests for downloader registry, provider-spe
 - Multiple-video responses use a Telegram media group without per-item captions; single-video responses include the formatted caption.
 - Cache invalidation is time-based (`24h`) and file-existence-based.
 - Cleanup only removes media files; it does not prune stale database rows.
-- URL matching targets Instagram Reels, Instagram Posts, TikTok canonical/share links, YouTube Shorts, and YouTube Short/standard video links specifically.
+- URL matching targets Instagram Reels, Instagram Posts, TikTok canonical/share links, Reddit post/share links, X/Twitter status links, YouTube Shorts, and YouTube Short/standard video links specifically.
 - Auth failure detection is based on a specific `yt-dlp` Instagram error message.
 
 ## Extension points
