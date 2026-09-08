@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import logging
 import re
 import urllib.request
@@ -40,6 +41,7 @@ URL_PATTERN = re.compile(
 )
 SUPPORTED_HOSTS = {"x.com", "www.x.com", "twitter.com", "www.twitter.com"}
 TRAILING_PUNCTUATION = ".,;:!?\"')]/"
+X_METADATA_VERSION = 1
 X_BLOCK_MARKERS = (
     "ip address is blocked from accessing this post",
     "sign in to confirm you're not a bot",
@@ -152,6 +154,7 @@ class XDownloader:
                 metadata={
                     "like_count": int(info.get("like_count") or 0),
                     "comments": info.get("comments", []),
+                    "x_metadata_version": X_METADATA_VERSION,
                 },
                 assets=[
                     map_video_asset(asset_info, filepath=filepath, asset_index=index)
@@ -245,16 +248,26 @@ def _download_non_video_post(
             title=metadata.title,
             description=metadata.description,
             metadata={
-                "like_count": 0,
+                "like_count": _extract_like_count(page, ref.provider_item_id),
                 "comments": [],
                 "text_only": not assets,
-                "body_only": not assets,
+                "x_metadata_version": X_METADATA_VERSION,
             },
             assets=assets,
             created_at=now,
             updated_at=now,
         )
     )
+
+
+def _extract_like_count(page: str, post_id: str) -> int:
+    encoded_post_id = base64.b64encode(f"Tweet:{post_id}".encode()).decode()
+    match = re.search(
+        rf'{re.escape(encoded_post_id)}:counts".{{0,500}}?favorite_count:(\d+)',
+        page,
+        re.DOTALL,
+    )
+    return int(match.group(1)) if match is not None else 0
 
 
 def _classify_x_error(error: Exception) -> DownloadFailureReason:

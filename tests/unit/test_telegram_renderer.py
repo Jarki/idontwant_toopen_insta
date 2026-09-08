@@ -226,7 +226,11 @@ def test_renderer_sends_text_only_x_post_body() -> None:
     )
     text_post.provider = "x"
     text_post.media_kind = "post"
-    text_post.metadata = {"text_only": True, "body_only": True}
+    text_post.metadata = {
+        "like_count": 73,
+        "text_only": True,
+        "x_metadata_version": 1,
+    }
     chat = FakeChat()
     renderer = TelegramMediaRenderer(
         telegram_media_write_timeout=120,
@@ -238,7 +242,7 @@ def test_renderer_sends_text_only_x_post_body() -> None:
     assert [result.sent for result in results] == [True]
     assert chat.sent_messages == [
         {
-            "text": "Text-only post body",
+            "text": "Alice (@alice) on X • ❤️ 73\n\nText-only post body",
             "write_timeout": 120,
             "read_timeout": 30,
         }
@@ -249,7 +253,11 @@ def test_renderer_truncates_long_text_only_x_post() -> None:
     text_post = make_media("unused", assets=[], description="D" * 5000)
     text_post.provider = "x"
     text_post.media_kind = "post"
-    text_post.metadata = {"text_only": True, "body_only": True}
+    text_post.metadata = {
+        "like_count": 73,
+        "text_only": True,
+        "x_metadata_version": 1,
+    }
     chat = FakeChat()
     renderer = TelegramMediaRenderer(
         telegram_media_write_timeout=120,

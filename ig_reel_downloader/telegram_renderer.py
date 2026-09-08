@@ -139,13 +139,7 @@ def _format_caption(media: MediaItem) -> str:
 
 
 def _format_text_message(media: MediaItem) -> str:
-    max_length = 4096
-    if media.metadata.get("body_only") is True:
-        text = media.description or media.title
-        if len(text) <= max_length:
-            return text
-        return f"{text[: max_length - 1]}…"
-    return _format_item_text(media, max_length=max_length)
+    return _format_item_text(media, max_length=4096)
 
 
 def _format_item_text(media: MediaItem, *, max_length: int) -> str:

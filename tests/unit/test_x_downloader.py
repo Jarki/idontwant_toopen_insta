@@ -148,6 +148,7 @@ def test_x_download_maps_single_video(
     assert result.media.title == "Alice - post"
     assert result.media.description == "A video post"
     assert result.media.metadata["like_count"] == 42
+    assert result.media.metadata["x_metadata_version"] == 1
     assert len(result.media.assets) == 1
     assert result.media.assets[0].asset_type == "video"
 
@@ -226,6 +227,7 @@ def test_x_download_falls_back_to_post_images(
               content="https://pbs.twimg.com/media/first.jpg:large">
         <meta property="og:image"
               content="https://pbs.twimg.com/media/second.png:large">
+        client:VHdlZXQ6MTIz:counts" data favorite_count:42
     """
 
     def fake_download_image(url: str, filepath: Path) -> None:
@@ -255,6 +257,8 @@ def test_x_download_falls_back_to_post_images(
     assert result.media is not None
     assert result.media.title == "Alice (@alice) on X"
     assert result.media.description == "Photo post"
+    assert result.media.metadata["like_count"] == 42
+    assert result.media.metadata["x_metadata_version"] == 1
     assert [asset.asset_type for asset in result.media.assets] == ["image", "image"]
     assert [Path(asset.filepath).suffix for asset in result.media.assets] == [
         ".jpg",
@@ -289,6 +293,7 @@ def test_x_download_maps_text_only_post(
         lambda _: (
             '<meta property="og:title" content="Alice (@alice) on X">'
             '<meta property="og:description" content="Text-only post body">'
+            'client:VHdlZXQ6MTIz:counts" data favorite_count:73'
         ),
     )
     downloader = XDownloader()
@@ -305,8 +310,9 @@ def test_x_download_maps_text_only_post(
     assert result.media.title == "Alice (@alice) on X"
     assert result.media.description == "Text-only post body"
     assert result.media.assets == []
+    assert result.media.metadata["like_count"] == 73
     assert result.media.metadata["text_only"] is True
-    assert result.media.metadata["body_only"] is True
+    assert result.media.metadata["x_metadata_version"] == 1
 
 
 def test_x_download_normalizes_failure(
