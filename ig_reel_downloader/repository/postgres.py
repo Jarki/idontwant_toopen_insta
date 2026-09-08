@@ -4,7 +4,7 @@ import datetime
 import json
 from typing import Any, cast
 
-from sqlalchemy import create_engine, delete, make_url, select
+from sqlalchemy import CursorResult, create_engine, delete, make_url, select, update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -77,6 +77,32 @@ class PostgreSQLRepository(base.Repository):
             request = _get_media_request(session, media_request_id)
             _upsert_media(session, media)
             _mark_media_request_succeeded(request, media.id)
+            session.commit()
+
+    def update_media_asset_telegram_file_id(
+        self,
+        media_item_id: str,
+        asset_index: int,
+        telegram_file_id: str,
+    ) -> None:
+        with self.session_factory() as session:
+            result = cast(
+                CursorResult[Any],
+                session.execute(
+                    update(MediaAssetRecord)
+                    .where(
+                        MediaAssetRecord.media_item_id == media_item_id,
+                        MediaAssetRecord.asset_index == asset_index,
+                    )
+                    .values(telegram_file_id=telegram_file_id)
+                ),
+            )
+            if result.rowcount != 1:
+                msg = (
+                    "Unknown media asset: "
+                    f"media_item_id={media_item_id!r}, asset_index={asset_index}"
+                )
+                raise ValueError(msg)
             session.commit()
 
     def upsert_telegram_user(self, user: models.TelegramUser) -> None:
@@ -311,6 +337,7 @@ def _asset_record_to_model(record: MediaAssetRecord) -> models.MediaAsset:
         height=record.height,
         duration_seconds=record.duration_seconds,
         file_size_bytes=record.file_size_bytes,
+        telegram_file_id=record.telegram_file_id,
     )
 
 
@@ -329,5 +356,6 @@ def _asset_model_to_record(
         height=asset.height,
         duration_seconds=asset.duration_seconds,
         file_size_bytes=asset.file_size_bytes,
+        telegram_file_id=asset.telegram_file_id,
         created_at=created_at,
     )

@@ -25,6 +25,15 @@ class Repository(Protocol):
         """Persist media and link its request in one transaction."""
         raise NotImplementedError
 
+    def update_media_asset_telegram_file_id(
+        self,
+        media_item_id: str,
+        asset_index: int,
+        telegram_file_id: str,
+    ) -> None:
+        """Store the reusable Telegram file ID returned after sending an asset."""
+        raise NotImplementedError
+
     def upsert_telegram_user(self, user: models.TelegramUser) -> None:
         """Create a Telegram user or refresh their mutable profile fields."""
         raise NotImplementedError

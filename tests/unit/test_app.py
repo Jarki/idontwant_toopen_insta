@@ -158,6 +158,17 @@ class FakeRepository:
         self.deleted_judgmental_file_ids: list[str] = []
         self.upserted_users: list[TelegramUser] = []
         self.inserted_requests: list[MediaRequest] = []
+        self.updated_media_file_ids: list[tuple[str, int, str]] = []
+
+    def update_media_asset_telegram_file_id(
+        self,
+        media_item_id: str,
+        asset_index: int,
+        telegram_file_id: str,
+    ) -> None:
+        self.updated_media_file_ids.append(
+            (media_item_id, asset_index, telegram_file_id)
+        )
 
     def upsert_telegram_user(self, user: TelegramUser) -> None:
         self.upserted_users.append(user)
@@ -212,8 +223,13 @@ class FakeFetchService:
 
 
 class FakeRenderer:
-    def __init__(self, events: list[str]) -> None:
+    def __init__(
+        self,
+        events: list[str],
+        telegram_file_ids: dict[int, str] | None = None,
+    ) -> None:
         self.events = events
+        self.telegram_file_ids = telegram_file_ids or {}
         self.updates: list[FakeUpdate] = []
         self.media_items: list[list[MediaItem]] = []
 
@@ -225,7 +241,14 @@ class FakeRenderer:
         self.events.append("renderer")
         self.updates.append(update)
         self.media_items.append(media_items)
-        return [MediaRenderResult(media=item, sent=True) for item in media_items]
+        return [
+            MediaRenderResult(
+                media=item,
+                sent=True,
+                telegram_file_ids=self.telegram_file_ids,
+            )
+            for item in media_items
+        ]
 
 
 class FakeDownloader:
@@ -351,6 +374,33 @@ def test_message_handler_uses_registry_fetch_service_and_renderer(
     assert events[0] == "registry"
     assert set(events[1:-1]) == {f"fetch:{first_url}", f"fetch:{second_url}"}
     assert events[-1] == "renderer"
+
+
+def test_message_handler_persists_file_ids_returned_by_renderer(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = "https://www.instagram.com/reel/ABC123"
+    media = make_media(url, "ABC123")
+    events: list[str] = []
+    repository = FakeRepository()
+    fetch_service = FakeFetchService(
+        {url: MediaFetchResult(media=media, url=url)},
+        events,
+        repository=repository,
+    )
+    renderer = FakeRenderer(events, telegram_file_ids={0: "telegram-video-id"})
+    app = build_app(
+        monkeypatch,
+        FakeRegistry([make_candidate(url, "ABC123")], events),
+        fetch_service,
+        renderer,
+    )
+
+    asyncio.run(app._message_handler(FakeUpdate(url, FakeChat()), object()))
+
+    assert repository.updated_media_file_ids == [
+        ("instagram:reel:ABC123", 0, "telegram-video-id")
+    ]
 
 
 def test_message_handler_records_and_processes_userless_request(

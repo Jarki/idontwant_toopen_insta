@@ -37,6 +37,7 @@ class MediaAsset(pydantic.BaseModel):
     height: int | None = None
     duration_seconds: float | None = None
     file_size_bytes: int | None = None
+    telegram_file_id: str | None = None
 
 
 class MediaItem(pydantic.BaseModel):

@@ -1,10 +1,12 @@
 import asyncio
 import datetime
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from telegram.error import TimedOut
+from telegram import InputMediaVideo
+from telegram.error import BadRequest, TimedOut
 
 from ig_reel_downloader.repository.models import MediaAsset, MediaItem
 from ig_reel_downloader.telegram_renderer import TelegramMediaRenderer, _format_caption
@@ -42,21 +44,50 @@ class FakeChat:
         self.sent_groups: list[dict[str, Any]] = []
         self.sent_messages: list[dict[str, Any]] = []
         self.raise_timeout = False
+        self.invalid_file_ids: set[str] = set()
 
-    async def send_video(self, video: str, **kwargs: Any) -> None:
+    async def send_video(self, video: str, **kwargs: Any) -> Any:
         if self.raise_timeout:
             raise TimedOut("timeout")
         self.sent_videos.append({"video": video, **kwargs})
+        if video in self.invalid_file_ids:
+            raise BadRequest("invalid file id")
+        return SimpleNamespace(
+            video=SimpleNamespace(file_id="returned-video-file-id"), photo=[]
+        )
 
-    async def send_photo(self, photo: str, **kwargs: Any) -> None:
+    async def send_photo(self, photo: str, **kwargs: Any) -> Any:
         if self.raise_timeout:
             raise TimedOut("timeout")
         self.sent_photos.append({"photo": photo, **kwargs})
+        if photo in self.invalid_file_ids:
+            raise BadRequest("invalid file id")
+        return SimpleNamespace(
+            video=None,
+            photo=[SimpleNamespace(file_id="returned-photo-file-id")],
+        )
 
-    async def send_media_group(self, media: list[Any], **kwargs: Any) -> None:
+    async def send_media_group(self, media: list[Any], **kwargs: Any) -> list[Any]:
         if self.raise_timeout:
             raise TimedOut("timeout")
         self.sent_groups.append({"media": media, **kwargs})
+        if any(item.media in self.invalid_file_ids for item in media):
+            raise BadRequest("invalid file id")
+        return [
+            SimpleNamespace(
+                video=(
+                    SimpleNamespace(file_id=f"returned-video-file-id-{index}")
+                    if isinstance(item, InputMediaVideo)
+                    else None
+                ),
+                photo=(
+                    []
+                    if isinstance(item, InputMediaVideo)
+                    else [SimpleNamespace(file_id=f"returned-photo-file-id-{index}")]
+                ),
+            )
+            for index, item in enumerate(media)
+        ]
 
     async def send_message(self, text: str, **kwargs: Any) -> None:
         if self.raise_timeout:
@@ -87,6 +118,56 @@ def test_renderer_sends_single_video_with_current_caption(tmp_path: Path) -> Non
     assert chat.sent_videos[0]["caption"] == "Title • ❤️ 12\n\nDescription"
     assert chat.sent_videos[0]["write_timeout"] == 120
     assert chat.sent_videos[0]["read_timeout"] == 30
+    assert results[0].telegram_file_ids == {0: "returned-video-file-id"}
+
+
+def test_renderer_reuses_stored_telegram_file_id_without_opening_file(
+    tmp_path: Path,
+) -> None:
+    missing_file = tmp_path / "missing.mp4"
+    asset = MediaAsset(
+        asset_index=0,
+        asset_type="video",
+        filepath=str(missing_file),
+        telegram_file_id="stored-video-file-id",
+    )
+    chat = FakeChat()
+    renderer = TelegramMediaRenderer(120, 30)
+
+    results = asyncio.run(
+        renderer.render(
+            FakeUpdate(chat), [make_media(str(missing_file), assets=[asset])]
+        )
+    )
+
+    assert chat.sent_videos[0]["video"] == "stored-video-file-id"
+    assert results[0].telegram_file_ids == {0: "returned-video-file-id"}
+
+
+def test_renderer_reuploads_when_stored_telegram_file_id_is_invalid(
+    tmp_path: Path,
+) -> None:
+    media_file = tmp_path / "video.mp4"
+    media_file.write_bytes(b"video")
+    asset = MediaAsset(
+        asset_index=0,
+        asset_type="video",
+        filepath=str(media_file),
+        telegram_file_id="invalid-video-file-id",
+    )
+    chat = FakeChat()
+    chat.invalid_file_ids.add("invalid-video-file-id")
+    renderer = TelegramMediaRenderer(120, 30)
+
+    results = asyncio.run(
+        renderer.render(FakeUpdate(chat), [make_media(str(media_file), assets=[asset])])
+    )
+
+    assert [sent["video"] for sent in chat.sent_videos] == [
+        "invalid-video-file-id",
+        str(media_file),
+    ]
+    assert results[0].telegram_file_ids == {0: "returned-video-file-id"}
 
 
 def test_renderer_sends_multiple_videos_as_media_group(tmp_path: Path) -> None:
@@ -109,6 +190,86 @@ def test_renderer_sends_multiple_videos_as_media_group(tmp_path: Path) -> None:
     assert [result.sent for result in results] == [True, True]
     assert len(chat.sent_groups) == 1
     assert len(chat.sent_groups[0]["media"]) == 2
+    assert results[0].telegram_file_ids == {0: "returned-video-file-id-0"}
+    assert results[1].telegram_file_ids == {0: "returned-video-file-id-1"}
+
+
+def test_renderer_media_group_reuses_stored_telegram_file_ids(
+    tmp_path: Path,
+) -> None:
+    assets = [
+        MediaAsset(
+            asset_index=0,
+            asset_type="video",
+            filepath=str(tmp_path / "missing-video.mp4"),
+            telegram_file_id="stored-video-file-id",
+        ),
+        MediaAsset(
+            asset_index=1,
+            asset_type="image",
+            filepath=str(tmp_path / "missing-image.jpg"),
+            telegram_file_id="stored-photo-file-id",
+        ),
+    ]
+    chat = FakeChat()
+    renderer = TelegramMediaRenderer(120, 30)
+
+    results = asyncio.run(
+        renderer.render(FakeUpdate(chat), [make_media("unused", assets=assets)])
+    )
+
+    assert [item.media for item in chat.sent_groups[0]["media"]] == [
+        "stored-video-file-id",
+        "stored-photo-file-id",
+    ]
+    assert results[0].telegram_file_ids == {
+        0: "returned-video-file-id-0",
+        1: "returned-photo-file-id-1",
+    }
+
+
+def test_renderer_reuploads_media_group_when_stored_file_id_is_invalid(
+    tmp_path: Path,
+) -> None:
+    video_path = tmp_path / "video.mp4"
+    image_path = tmp_path / "image.jpg"
+    video_path.write_bytes(b"video")
+    image_path.write_bytes(b"image")
+    assets = [
+        MediaAsset(
+            asset_index=0,
+            asset_type="video",
+            filepath=str(video_path),
+            telegram_file_id="invalid-video-file-id",
+        ),
+        MediaAsset(
+            asset_index=1,
+            asset_type="image",
+            filepath=str(image_path),
+            telegram_file_id="stored-photo-file-id",
+        ),
+    ]
+    chat = FakeChat()
+    chat.invalid_file_ids.add("invalid-video-file-id")
+    renderer = TelegramMediaRenderer(120, 30)
+
+    results = asyncio.run(
+        renderer.render(FakeUpdate(chat), [make_media("unused", assets=assets)])
+    )
+
+    assert len(chat.sent_groups) == 2
+    assert [item.media for item in chat.sent_groups[0]["media"]] == [
+        "invalid-video-file-id",
+        "stored-photo-file-id",
+    ]
+    assert all(
+        item.media not in {"invalid-video-file-id", "stored-photo-file-id"}
+        for item in chat.sent_groups[1]["media"]
+    )
+    assert results[0].telegram_file_ids == {
+        0: "returned-video-file-id-0",
+        1: "returned-photo-file-id-1",
+    }
 
 
 def test_renderer_sends_single_image_with_caption(tmp_path: Path) -> None:

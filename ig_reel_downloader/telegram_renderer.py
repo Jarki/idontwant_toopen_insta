@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import logging
 from contextlib import ExitStack
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
-from telegram import InputMediaPhoto, InputMediaVideo, Update
+from telegram import Chat, InputMediaPhoto, InputMediaVideo, Message, Update
+from telegram.error import BadRequest
 
 from ig_reel_downloader.downloaders.base import DownloadFailureReason
-from ig_reel_downloader.repository.models import MediaItem
+from ig_reel_downloader.repository.models import MediaAsset, MediaItem
 
 logger = logging.getLogger(__name__)
 TELEGRAM_MEDIA_GROUP_MAX_ITEMS = 10
@@ -19,6 +20,7 @@ class MediaRenderResult:
     media: MediaItem
     sent: bool
     failure_reason: DownloadFailureReason | None = None
+    telegram_file_ids: dict[int, str] = field(default_factory=dict)
 
 
 class TelegramMediaRenderer:
@@ -65,53 +67,154 @@ class TelegramMediaRenderer:
                 read_timeout=self.telegram_read_timeout,
             )
 
+        sent_file_ids: dict[tuple[int, int], str] = {}
         if len(supported_media) == 1 and len(supported_media[0].assets) == 1:
             item = supported_media[0]
             asset = item.assets[0]
-            if asset.asset_type == "video":
-                await chat.send_video(
-                    asset.filepath,
-                    caption=_format_caption(item),
-                    write_timeout=self.telegram_media_write_timeout,
-                    read_timeout=self.telegram_read_timeout,
+            if asset.telegram_file_id is None:
+                message = await self._send_single(
+                    chat, item, asset.asset_type, asset.filepath
                 )
             else:
-                await chat.send_photo(
-                    asset.filepath,
-                    caption=_format_caption(item),
-                    write_timeout=self.telegram_media_write_timeout,
-                    read_timeout=self.telegram_read_timeout,
-                )
-        elif supported_media:
-            with ExitStack() as stack:
-                # Build flat list of all assets across all supported items,
-                # ordered by media item index then asset_index.
-                medias: list[InputMediaVideo | InputMediaPhoto] = []
-                for item in supported_media:
-                    for asset in sorted(item.assets, key=lambda a: a.asset_index):
-                        fp = stack.enter_context(Path(asset.filepath).open("rb"))
-                        caption = _format_caption(item) if not medias else None
-                        if asset.asset_type == "video":
-                            media: InputMediaVideo | InputMediaPhoto = InputMediaVideo(
-                                fp, caption=caption
-                            )
-                        else:
-                            media = InputMediaPhoto(fp, caption=caption)
-                        medias.append(media)
-                for media_group in _media_groups(medias):
-                    await chat.send_media_group(
-                        media_group,
-                        write_timeout=self.telegram_media_write_timeout,
-                        read_timeout=self.telegram_read_timeout,
+                try:
+                    message = await self._send_single(
+                        chat,
+                        item,
+                        asset.asset_type,
+                        asset.telegram_file_id,
                     )
+                except BadRequest:
+                    logger.warning(
+                        "Stored Telegram file_id failed for %s asset %d; "
+                        "uploading the local file instead",
+                        item.id,
+                        asset.asset_index,
+                    )
+                    message = await self._send_single(
+                        chat, item, asset.asset_type, asset.filepath
+                    )
+            file_id = _message_file_id(message, asset.asset_type)
+            if file_id is not None:
+                sent_file_ids[(id(item), asset.asset_index)] = file_id
+        elif supported_media:
+            descriptors: list[tuple[MediaItem, MediaAsset, str | None]] = []
+            for item in supported_media:
+                for asset in sorted(item.assets, key=lambda a: a.asset_index):
+                    caption = _format_caption(item) if not descriptors else None
+                    descriptors.append((item, asset, caption))
+
+            for descriptor_group in _media_groups(descriptors):
+                with ExitStack() as stack:
+                    medias = [
+                        _input_media(item, asset, caption, stack)
+                        for item, asset, caption in descriptor_group
+                    ]
+                    try:
+                        messages = await chat.send_media_group(
+                            medias,
+                            write_timeout=self.telegram_media_write_timeout,
+                            read_timeout=self.telegram_read_timeout,
+                        )
+                    except BadRequest:
+                        if not any(
+                            asset.telegram_file_id is not None
+                            for _, asset, _ in descriptor_group
+                        ):
+                            raise
+                        logger.warning(
+                            "Stored Telegram file_id failed in media group; "
+                            "uploading the group again"
+                        )
+                        with ExitStack() as retry_stack:
+                            retry_medias = [
+                                _input_media(
+                                    item,
+                                    asset,
+                                    caption,
+                                    retry_stack,
+                                    force_upload=True,
+                                )
+                                for item, asset, caption in descriptor_group
+                            ]
+                            messages = await chat.send_media_group(
+                                retry_medias,
+                                write_timeout=self.telegram_media_write_timeout,
+                                read_timeout=self.telegram_read_timeout,
+                            )
+                for (item, asset, _), message in zip(
+                    descriptor_group, messages, strict=False
+                ):
+                    file_id = _message_file_id(message, asset.asset_type)
+                    if file_id is not None:
+                        sent_file_ids[(id(item), asset.asset_index)] = file_id
         return results + [
-            MediaRenderResult(media=item, sent=True) for item in renderable
+            MediaRenderResult(
+                media=item,
+                sent=True,
+                telegram_file_ids={
+                    asset.asset_index: file_id
+                    for asset in item.assets
+                    if (file_id := sent_file_ids.get((id(item), asset.asset_index)))
+                    is not None
+                },
+            )
+            for item in renderable
         ]
 
+    async def _send_single(
+        self,
+        chat: Chat,
+        item: MediaItem,
+        asset_type: str,
+        source: str,
+    ) -> Message:
+        if asset_type == "video":
+            return await chat.send_video(
+                source,
+                caption=_format_caption(item),
+                write_timeout=self.telegram_media_write_timeout,
+                read_timeout=self.telegram_read_timeout,
+            )
+        return await chat.send_photo(
+            source,
+            caption=_format_caption(item),
+            write_timeout=self.telegram_media_write_timeout,
+            read_timeout=self.telegram_read_timeout,
+        )
 
-def _media_groups(
-    medias: list[InputMediaVideo | InputMediaPhoto],
-) -> list[list[InputMediaVideo | InputMediaPhoto]]:
+
+def _input_media(
+    item: MediaItem,
+    asset: MediaAsset,
+    caption: str | None,
+    stack: ExitStack,
+    *,
+    force_upload: bool = False,
+) -> InputMediaVideo | InputMediaPhoto:
+    source = (
+        stack.enter_context(Path(asset.filepath).open("rb"))  # noqa: SIM115
+        if force_upload or asset.telegram_file_id is None
+        else asset.telegram_file_id
+    )
+    if asset.asset_type == "video":
+        return InputMediaVideo(source, caption=caption)
+    return InputMediaPhoto(source, caption=caption)
+
+
+def _message_file_id(message: Message | None, asset_type: str) -> str | None:
+    if message is None:
+        return None
+    media = (
+        message.video
+        if asset_type == "video"
+        else (message.photo[-1] if message.photo else None)
+    )
+    return media.file_id if media is not None else None
+
+
+def _media_groups[MediaGroupItem](
+    medias: list[MediaGroupItem],
+) -> list[list[MediaGroupItem]]:
     groups = []
     start = 0
     while start < len(medias):

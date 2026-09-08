@@ -18,7 +18,7 @@ from . import judgmental as judgmental_module
 from .downloaders import DownloaderRegistry, DownloadFailureReason, UrlCandidate
 from .media_fetch import MediaFetchResult, MediaFetchService
 from .repository import models
-from .telegram_renderer import TelegramMediaRenderer
+from .telegram_renderer import MediaRenderResult, TelegramMediaRenderer
 
 logger = logging.getLogger(__name__)
 
@@ -100,6 +100,26 @@ class IgReelDownloaderApp:
             )
         ]
         return list(await asyncio.gather(*tasks))
+
+    async def _store_telegram_file_ids(
+        self,
+        render_results: list[MediaRenderResult],
+    ) -> None:
+        for render_result in render_results:
+            for asset_index, file_id in render_result.telegram_file_ids.items():
+                try:
+                    await asyncio.to_thread(
+                        self.fetch_service.repository.update_media_asset_telegram_file_id,
+                        render_result.media.id,
+                        asset_index,
+                        file_id,
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to store Telegram file_id for %s asset %d",
+                        render_result.media.id,
+                        asset_index,
+                    )
 
     async def _record_media_requests(
         self,
@@ -337,6 +357,7 @@ class IgReelDownloaderApp:
                         "The file may be large or the network may be slow."
                     )
         else:
+            await self._store_telegram_file_ids(render_results)
             for render_result in render_results:
                 if not render_result.sent:
                     errors.append(
