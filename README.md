@@ -49,7 +49,7 @@ Send a supported link to the bot and it will download the media when supported:
 - YouTube Shorts
 - Normal YouTube videos under 60 seconds
 
-X videos larger than 100 MB are rejected before upload.
+X videos larger than 100 MB, or whose size cannot be determined, are rejected before download.
 
 ### TikTok extractor smoke test
 

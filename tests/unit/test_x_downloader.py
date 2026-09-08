@@ -11,7 +11,6 @@ from ig_reel_downloader.downloaders.base import (
 from ig_reel_downloader.downloaders.x import (
     MAX_X_IMAGE_BYTES,
     MAX_X_VIDEO_BYTES,
-    X_METADATA_VERSION,
     UnsupportedXMediaError,
     XDownloader,
     _download_image_file,
@@ -132,6 +131,7 @@ def test_x_download_maps_single_video(
                 "like_count": 42,
                 "ext": "mp4",
                 "duration": 12,
+                "filesize": 1_000_000,
             }
 
         def prepare_filename(self, info: dict[str, object]) -> str:
@@ -163,8 +163,6 @@ def test_x_download_maps_single_video(
     assert result.media.title == "Alice - post"
     assert result.media.description == "A video post"
     assert result.media.metadata["like_count"] == 42
-    assert result.media.metadata["x_metadata_version"] == X_METADATA_VERSION
-    assert result.media.metadata["max_video_bytes"] == MAX_X_VIDEO_BYTES
     assert len(result.media.assets) == 1
     assert result.media.assets[0].asset_type == "video"
 
@@ -188,8 +186,18 @@ def test_x_download_maps_multiple_videos(
                 "id": "123",
                 "title": "Two videos",
                 "entries": [
-                    {"id": "123-1", "ext": "mp4", "duration": 3},
-                    {"id": "123-2", "ext": "mp4", "duration": 4},
+                    {
+                        "id": "123-1",
+                        "ext": "mp4",
+                        "duration": 3,
+                        "filesize": 1_000_000,
+                    },
+                    {
+                        "id": "123-2",
+                        "ext": "mp4",
+                        "duration": 4,
+                        "filesize": 2_000_000,
+                    },
                 ],
             }
 
@@ -263,6 +271,48 @@ def test_x_rejects_video_with_known_size_over_100_mb(
     assert result.failure_reason == "unsupported"
 
 
+def test_x_rejects_unknown_video_size_before_download(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class FakeYoutubeDL:
+        def __init__(self, options: dict[str, object]) -> None:
+            pass
+
+        def __enter__(self) -> "FakeYoutubeDL":
+            return self
+
+        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+            return None
+
+        def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
+            return {"id": "123", "title": "Unknown size", "ext": "mp4"}
+
+        def prepare_filename(self, info: dict[str, object]) -> str:
+            raise AssertionError(
+                "unknown-size video must be rejected before preparation"
+            )
+
+        def download(self, urls: list[str]) -> None:
+            raise AssertionError("unknown-size video must not be downloaded")
+
+    monkeypatch.setattr(
+        "ig_reel_downloader.downloaders.x.yt_dlp.YoutubeDL",
+        FakeYoutubeDL,
+    )
+    downloader = XDownloader()
+    request = ResolvedMediaRequest(
+        url="https://x.com/alice/status/123",
+        downloader=downloader,
+        provider_item_ref=ProviderItemRef("x", "post", "123"),
+    )
+
+    result = downloader.download(request, DownloadContext(output_dir=tmp_path))
+
+    assert result.media is None
+    assert result.failure_reason == "unsupported"
+
+
 def test_x_rejects_silently_skipped_video_download(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -278,7 +328,12 @@ def test_x_rejects_silently_skipped_video_download(
             return None
 
         def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
-            return {"id": "123", "title": "Skipped", "ext": "mp4"}
+            return {
+                "id": "123",
+                "title": "Skipped",
+                "ext": "mp4",
+                "filesize": 1_000_000,
+            }
 
         def prepare_filename(self, info: dict[str, object]) -> str:
             return str(tmp_path / "x" / "post" / "123" / "123.mp4")
@@ -303,7 +358,7 @@ def test_x_rejects_silently_skipped_video_download(
     assert result.failure_reason == "unsupported"
 
 
-def test_x_stops_unknown_size_video_over_100_mb_and_removes_partial_file(
+def test_x_stops_video_crossing_100_mb_and_removes_partial_file(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -320,7 +375,12 @@ def test_x_stops_unknown_size_video_over_100_mb_and_removes_partial_file(
             return None
 
         def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
-            return {"id": "123", "title": "Unknown size", "ext": "mp4"}
+            return {
+                "id": "123",
+                "title": "Unexpected growth",
+                "ext": "mp4",
+                "filesize_approx": 99_000_000,
+            }
 
         def prepare_filename(self, info: dict[str, object]) -> str:
             return str(tmp_path / "x" / "post" / "123" / "123.mp4")
@@ -367,8 +427,8 @@ def test_x_removes_completed_outputs_when_multi_video_post_exceeds_limit(
                 "id": "123",
                 "title": "Two videos",
                 "entries": [
-                    {"id": "123-1", "ext": "mp4"},
-                    {"id": "123-2", "ext": "mp4"},
+                    {"id": "123-1", "ext": "mp4", "filesize": 1_000_000},
+                    {"id": "123-2", "ext": "mp4", "filesize": 99_000_000},
                 ],
             }
 
@@ -506,8 +566,6 @@ def test_x_download_falls_back_to_post_images(
     assert result.media.title == "Alice (@alice) on X"
     assert result.media.description == "Photo post"
     assert result.media.metadata["like_count"] == 42
-    assert result.media.metadata["x_metadata_version"] == X_METADATA_VERSION
-    assert result.media.metadata["max_video_bytes"] == MAX_X_VIDEO_BYTES
     assert [asset.asset_type for asset in result.media.assets] == ["image", "image"]
     assert [Path(asset.filepath).suffix for asset in result.media.assets] == [
         ".jpg",
@@ -561,8 +619,6 @@ def test_x_download_maps_text_only_post(
     assert result.media.assets == []
     assert result.media.metadata["like_count"] == 73
     assert result.media.metadata["text_only"] is True
-    assert result.media.metadata["x_metadata_version"] == X_METADATA_VERSION
-    assert result.media.metadata["max_video_bytes"] == MAX_X_VIDEO_BYTES
 
 
 def test_x_download_normalizes_failure(

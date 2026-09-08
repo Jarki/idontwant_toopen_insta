@@ -256,36 +256,9 @@ def test_text_only_x_cache_is_reusable_without_asset_files() -> None:
     cached.provider = "x"
     cached.media_kind = "post"
     cached.description = "Text-only post body"
-    cached.metadata = {
-        "text_only": True,
-        "x_metadata_version": 2,
-        "max_video_bytes": 100_000_000,
-    }
+    cached.metadata = {"text_only": True}
 
     assert _is_reusable(cached)
-
-
-def test_x_cache_without_current_metadata_version_is_not_reusable(
-    tmp_path: Path,
-) -> None:
-    media_file = tmp_path / "cached.mp4"
-    media_file.write_bytes(b"video")
-    cached = make_media(str(media_file))
-    cached.provider = "x"
-    cached.media_kind = "post"
-
-    assert not _is_reusable(cached)
-
-
-def test_oversized_cached_x_video_is_not_reusable(tmp_path: Path) -> None:
-    media_file = tmp_path / "cached.mp4"
-    media_file.write_bytes(b"oversized")
-    cached = make_media(str(media_file))
-    cached.provider = "x"
-    cached.media_kind = "post"
-    cached.metadata = {"x_metadata_version": 2, "max_video_bytes": 4}
-
-    assert not _is_reusable(cached)
 
 
 def test_fetch_returns_download_failure_without_insert(tmp_path: Path) -> None:

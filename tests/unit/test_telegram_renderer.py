@@ -226,11 +226,7 @@ def test_renderer_sends_text_only_x_post_body() -> None:
     )
     text_post.provider = "x"
     text_post.media_kind = "post"
-    text_post.metadata = {
-        "like_count": 73,
-        "text_only": True,
-        "x_metadata_version": 1,
-    }
+    text_post.metadata = {"like_count": 73, "text_only": True}
     chat = FakeChat()
     renderer = TelegramMediaRenderer(
         telegram_media_write_timeout=120,
@@ -253,11 +249,7 @@ def test_renderer_truncates_long_text_only_x_post() -> None:
     text_post = make_media("unused", assets=[], description="D" * 5000)
     text_post.provider = "x"
     text_post.media_kind = "post"
-    text_post.metadata = {
-        "like_count": 73,
-        "text_only": True,
-        "x_metadata_version": 1,
-    }
+    text_post.metadata = {"like_count": 73, "text_only": True}
     chat = FakeChat()
     renderer = TelegramMediaRenderer(
         telegram_media_write_timeout=120,

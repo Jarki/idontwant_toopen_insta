@@ -41,7 +41,6 @@ URL_PATTERN = re.compile(
 )
 SUPPORTED_HOSTS = {"x.com", "www.x.com", "twitter.com", "www.twitter.com"}
 TRAILING_PUNCTUATION = ".,;:!?\"')]/"
-X_METADATA_VERSION = 2
 MAX_X_VIDEO_BYTES = 100_000_000
 MAX_X_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_X_PAGE_BYTES = 2 * 1024 * 1024
@@ -181,8 +180,6 @@ class XDownloader:
                 metadata={
                     "like_count": int(info.get("like_count") or 0),
                     "comments": info.get("comments", []),
-                    "x_metadata_version": X_METADATA_VERSION,
-                    "max_video_bytes": MAX_X_VIDEO_BYTES,
                 },
                 assets=[
                     map_video_asset(asset_info, filepath=filepath, asset_index=index)
@@ -288,8 +285,6 @@ def _download_non_video_post(
                 "like_count": like_count or 0,
                 "comments": [],
                 "text_only": not assets,
-                "x_metadata_version": X_METADATA_VERSION,
-                "max_video_bytes": MAX_X_VIDEO_BYTES,
             },
             assets=assets,
             created_at=now,
@@ -300,7 +295,9 @@ def _download_non_video_post(
 
 def _enforce_known_x_video_size(info: Mapping[str, Any]) -> None:
     size = info.get("filesize") or info.get("filesize_approx")
-    if isinstance(size, int | float) and size > MAX_X_VIDEO_BYTES:
+    if not isinstance(size, int | float) or size <= 0:
+        raise UnsupportedXMediaError("X video size is unavailable")
+    if size > MAX_X_VIDEO_BYTES:
         raise XMediaTooLargeError(X_TOO_LARGE_MARKER)
 
 
