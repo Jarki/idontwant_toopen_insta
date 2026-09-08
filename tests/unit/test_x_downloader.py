@@ -11,6 +11,7 @@ from ig_reel_downloader.downloaders.base import (
 from ig_reel_downloader.downloaders.x import (
     MAX_X_IMAGE_BYTES,
     MAX_X_VIDEO_BYTES,
+    X_VIDEO_FORMAT,
     UnsupportedXMediaError,
     XDownloader,
     _download_image_file,
@@ -110,7 +111,7 @@ def test_x_download_maps_single_video(
                 "outtmpl": str(
                     tmp_path / "x" / "post" / "1891234567890123456" / "%(id)s.%(ext)s"
                 ),
-                "format": "best",
+                "format": X_VIDEO_FORMAT,
                 "quiet": True,
                 "max_filesize": MAX_X_VIDEO_BYTES,
             }

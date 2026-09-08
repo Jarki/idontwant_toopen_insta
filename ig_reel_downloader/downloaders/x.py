@@ -42,6 +42,9 @@ URL_PATTERN = re.compile(
 SUPPORTED_HOSTS = {"x.com", "www.x.com", "twitter.com", "www.twitter.com"}
 TRAILING_PUNCTUATION = ".,;:!?\"')]/"
 MAX_X_VIDEO_BYTES = 100_000_000
+X_VIDEO_FORMAT = (
+    f"best[filesize<={MAX_X_VIDEO_BYTES}]/best[filesize_approx<={MAX_X_VIDEO_BYTES}]"
+)
 MAX_X_IMAGE_BYTES = 20 * 1024 * 1024
 MAX_X_PAGE_BYTES = 2 * 1024 * 1024
 DOWNLOAD_CHUNK_BYTES = 64 * 1024
@@ -145,6 +148,7 @@ class XDownloader:
             media_kind=ref.media_kind,
             provider_item_id=ref.provider_item_id,
         )
+        ydl_opts["format"] = X_VIDEO_FORMAT
         ydl_opts["max_filesize"] = MAX_X_VIDEO_BYTES
         ydl_opts["progress_hooks"] = [_enforce_x_video_size]
         filepaths: list[str] = []
