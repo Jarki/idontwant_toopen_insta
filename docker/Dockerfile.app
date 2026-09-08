@@ -8,6 +8,11 @@ ENV UV_LINK_MODE=copy
 
 WORKDIR /app
 
+# Reddit hosts video and audio as separate streams; yt-dlp uses ffmpeg to merge them.
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
+
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=uv.lock,target=uv.lock \
     --mount=type=bind,source=pyproject.toml,target=pyproject.toml \

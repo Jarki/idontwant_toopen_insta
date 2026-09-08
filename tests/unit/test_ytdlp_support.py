@@ -1,11 +1,8 @@
 from pathlib import Path
 
-from yt_dlp.utils import DownloadError
-
 from ig_reel_downloader.downloaders.yt_dlp_support import (
     build_download_ytdlp_options,
     build_metadata_ytdlp_options,
-    classify_download_error,
     map_image_asset,
     map_video_asset,
 )
@@ -80,19 +77,3 @@ def test_build_metadata_ytdlp_options_has_no_output_template(tmp_path: Path) -> 
     assert options["quiet"] is True
     assert options["cookiefile"] == str(cookie_file)
     assert "outtmpl" not in options
-
-
-def test_classify_download_error_detects_auth() -> None:
-    error = DownloadError(
-        "Instagram sent an empty media response. Use --cookies for the authentication."
-    )
-
-    assert classify_download_error(error) == "auth"
-
-
-def test_classify_download_error_detects_bot_block() -> None:
-    error = DownloadError(
-        "[TikTok] 7668090902816017671: Unexpected response from webpage request"
-    )
-
-    assert classify_download_error(error) == "blocked"

@@ -263,8 +263,7 @@ def test_youtube_resolve_raises_resolution_error(
 
         def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
             raise DownloadError(
-                "Instagram sent an empty media response. "
-                "Use --cookies for the authentication."
+                "Sign in to confirm your age. Use --cookies-from-browser or --cookies."
             )
 
     monkeypatch.setattr(

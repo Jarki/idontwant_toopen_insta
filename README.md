@@ -21,10 +21,15 @@ cp .env.example .env
 
 ### 3. (Optional) Create a cookies.txt file
 
-If you want to download user-restricted reels, you need to create a cookies.txt file.
-Refer to https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp
+If you want to download account-restricted media, create a Netscape-format
+`cookies.txt` file and put it in the `assets` directory. The same file is used for
+all providers. Refer to https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp
 
-Create a file named `cookies.txt` and put it into the `assets` directory.
+Reddit normally allows public and age-marked posts without an account. Private or
+quarantined communities require cookies exported from a browser that is logged in
+to Reddit and already has access to that community. Do not configure a Reddit
+username/password in the bot; export the browser cookies instead. Treat the file
+as a secret and never commit it.
 
 ### 4. Run the bot using Docker Compose
 
@@ -39,6 +44,7 @@ Send a supported link to the bot and it will download the media when supported:
 - Instagram Reels
 - Instagram posts, including carousel posts
 - TikTok videos
+- Reddit hosted videos, images, image galleries, link-post previews, and text posts
 - YouTube Shorts
 - Normal YouTube videos under 60 seconds
 

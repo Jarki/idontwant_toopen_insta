@@ -8,9 +8,11 @@ from typing import TYPE_CHECKING, cast
 from urllib.parse import parse_qs, urlparse
 
 import yt_dlp
+from yt_dlp.utils import DownloadError
 
 from ig_reel_downloader.downloaders.base import (
     DownloadContext,
+    DownloadFailureReason,
     MediaDownloadResult,
     ProviderItemRef,
     ResolutionError,
@@ -21,7 +23,6 @@ from ig_reel_downloader.downloaders.base import (
 from ig_reel_downloader.downloaders.yt_dlp_support import (
     build_download_ytdlp_options,
     build_metadata_ytdlp_options,
-    classify_download_error,
     map_video_asset,
 )
 from ig_reel_downloader.repository.models import MediaItem
@@ -39,6 +40,11 @@ YOUTUBE_HOSTS = {"youtube.com", "www.youtube.com", "m.youtube.com"}
 SHORTS_PATH_PREFIX = "/shorts/"
 MAX_VIDEO_DURATION_SECONDS = 60
 TRAILING_PUNCTUATION = ".,;:!?\"')]/"
+YOUTUBE_AUTH_MARKERS = (
+    "sign in to confirm your age",
+    "this video is private",
+    "members-only content",
+)
 
 
 class YouTubeDownloader:
@@ -148,7 +154,7 @@ class YouTubeDownloader:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info: _InfoDict = ydl.extract_info(source_url, download=False)
         except Exception as error:
-            raise ResolutionError(source_url, classify_download_error(error)) from error
+            raise ResolutionError(source_url, _classify_youtube_error(error)) from error
 
         duration = _duration_seconds(info.get("duration"))
         if duration is not None and duration > MAX_VIDEO_DURATION_SECONDS:
@@ -207,7 +213,7 @@ class YouTubeDownloader:
                 )
                 return MediaDownloadResult(media=media)
         except Exception as error:
-            failure_reason = classify_download_error(error)
+            failure_reason = _classify_youtube_error(error)
             if failure_reason == "auth":
                 logger.warning(
                     "Failed to download YouTube video from %s: authentication required (%s)",
@@ -219,6 +225,14 @@ class YouTubeDownloader:
                     "Failed to download YouTube video from %s (%s)", url, error
                 )
             return MediaDownloadResult(media=None, failure_reason=failure_reason)
+
+
+def _classify_youtube_error(error: Exception) -> DownloadFailureReason:
+    if isinstance(error, DownloadError):
+        message = str(error).lower()
+        if any(marker in message for marker in YOUTUBE_AUTH_MARKERS):
+            return "auth"
+    return "unknown"
 
 
 def _path_parts(path: str) -> list[str]:

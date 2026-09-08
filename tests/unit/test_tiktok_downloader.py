@@ -147,7 +147,7 @@ def test_tiktok_share_resolve_uses_metadata_id(
     assert result.request.info is not None
 
 
-def test_tiktok_share_resolve_raises_resolution_error(
+def test_tiktok_share_resolve_normalizes_unknown_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     class FakeYoutubeDL:
@@ -161,10 +161,7 @@ def test_tiktok_share_resolve_raises_resolution_error(
             return None
 
         def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
-            raise DownloadError(
-                "Instagram sent an empty media response. "
-                "Use --cookies for the authentication."
-            )
+            raise DownloadError("TikTok returned an unexpected extractor error")
 
     monkeypatch.setattr(
         "ig_reel_downloader.downloaders.tiktok.yt_dlp.YoutubeDL",
@@ -177,7 +174,7 @@ def test_tiktok_share_resolve_raises_resolution_error(
         downloader.resolve(candidate)
 
     assert exc_info.value.url == "https://vm.tiktok.com/ZMabc123/"
-    assert exc_info.value.failure_reason == "auth"
+    assert exc_info.value.failure_reason == "unknown"
 
 
 def test_tiktok_share_resolve_normalizes_bot_detection_failure(

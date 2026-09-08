@@ -10,7 +10,7 @@ from ig_reel_downloader.downloaders.base import (
     ResolveResult,
     UrlCandidate,
 )
-from ig_reel_downloader.media_fetch import MediaFetchService
+from ig_reel_downloader.media_fetch import MediaFetchService, _is_reusable
 from ig_reel_downloader.repository.models import MediaAsset, MediaItem
 
 
@@ -240,6 +240,15 @@ def test_fetch_redownloads_zero_asset_cached_item(tmp_path: Path) -> None:
 
     assert result.media == downloaded
     assert repository.inserted == [downloaded]
+
+
+def test_text_only_reddit_cache_is_reusable_without_asset_files() -> None:
+    cached = make_media("unused", assets=[])
+    cached.provider = "reddit"
+    cached.media_kind = "post"
+    cached.metadata = {"text_only": True}
+
+    assert _is_reusable(cached)
 
 
 def test_fetch_returns_download_failure_without_insert(tmp_path: Path) -> None:

@@ -7,7 +7,7 @@ _Last reviewed: 2026-07-15_
 `ig-reel-downloader` is a small Telegram bot that lets users send supported social media links and receive the downloaded media back in Telegram. The app is implemented as a Python package with a single runtime process:
 
 - `python-telegram-bot` handles Telegram long-polling and message delivery.
-- `yt-dlp` extracts metadata and downloads media files for Instagram, TikTok, and YouTube.
+- `yt-dlp` extracts metadata and downloads media files for Instagram, TikTok, Reddit, and YouTube.
 - PostgreSQL stores Telegram users and detected link requests, caches generic media metadata and local file paths, and records failed download attempts.
 - Alembic manages database schema creation and migrations.
 - Docker Compose runs PostgreSQL and a bootstrap service for role provisioning, then applies migrations in a one-shot container before starting the bot with persistent `output/` and `assets/` mounts.
@@ -51,13 +51,13 @@ TelegramMediaRenderer
 │   ├── constants.py             # Shared constants, currently cache TTL
 │   ├── media_fetch.py           # Cache lookup, file-existence validation, download refresh
 │   ├── telegram_renderer.py     # Telegram video/media-group rendering
-│   ├── utils.py                 # Download error classification helpers
 │   ├── downloaders/
 │   │   ├── base.py              # Downloader Protocol and shared download models
 │   │   ├── instagram.py         # Instagram Reel and Post URL matching and yt-dlp downloader
 │   │   ├── tiktok.py            # TikTok video downloader with share-link resolution
+│   │   ├── reddit.py            # Reddit post/share links, video, images, and galleries
 │   │   ├── youtube.py           # YouTube Shorts and video downloader with duration gate
-│   │   ├── yt_dlp_support.py    # Shared yt-dlp options, asset mapping, error helpers
+│   │   ├── yt_dlp_support.py    # Shared yt-dlp options and asset mapping
 │   │   └── registry.py          # URL candidate extraction, overlap handling, deduplication
 │   └── repository/
 │       ├── base.py              # Repository Protocol
@@ -143,6 +143,8 @@ Downloader interfaces live in `downloaders/base.py`:
 - `ProviderItemRef` identifies media as `provider`, `media_kind`, and `provider_item_id`; its cache id is `provider:media_kind:provider_item_id`.
 - `MediaDownloadResult` normalizes successful `MediaItem` downloads and failure reasons.
 
+`downloaders/reddit.py` supports canonical Reddit post URLs and `/r/<subreddit>/s/<token>` share links. Share links are followed to obtain the stable Reddit post ID used by the generic cache. Reddit-hosted videos are downloaded with `yt-dlp`; direct images, image galleries, and Reddit-hosted link previews are downloaded as image assets. Video and audio streams are merged by `ffmpeg` in the application image. Text-only posts are cached without assets and sent as Telegram text messages without fetching a preview image. Public age-marked posts generally work anonymously; private or quarantined communities use the same optional `assets/cookies.txt` browser-cookie file as other providers.
+
 `downloaders/instagram.py` contains the Instagram Reel and Post `yt-dlp` integration:
 
 - URL matching intentionally targets `https://www.instagram.com/reel/<id>` links specifically.
@@ -155,13 +157,15 @@ Downloader interfaces live in `downloaders/base.py`:
 
 Download failures are normalized into:
 
-- `auth`: recognized `yt-dlp` errors that indicate Instagram authentication/cookies are required.
-- `blocked`: recognized bot-detection or IP-block responses from an upstream provider.
+- `auth`: provider-specific authentication or cookie requirements.
+- `blocked`: provider-specific bot-detection or IP-block responses.
 - `unsupported`: URLs or media shapes not supported by the current downloader/renderer.
 - `unknown`: every other exception or mismatch.
 
-`utils.py` contains shared classifiers for authentication and bot-detection errors.
-TikTok bot-detection failures are retried up to three times. If all attempts
+Each downloader translates its own typed internal errors and provider-specific
+`yt-dlp` messages into these domain failure reasons. Shared downloader support
+contains no provider-specific error strings. TikTok bot-detection failures are
+retried up to three times. If all attempts
 fail, the error is logged as a warning and produces a retry-later message instead
 of escaping the Telegram handler. An opt-in live smoke test in
 `tests/e2e/test_tiktok_live.py` exercises one URL or a newline-delimited corpus
@@ -363,7 +367,7 @@ Developer tasks are defined in `pyproject.toml` via Poe:
 - `uv run poe check` for the read-only CI quality gate
 - `uv run poe db-upgrade`, `db-current`, `db-history`, `db-downgrade`, and `db-revision` for Alembic migrations
 
-The current test suite includes unit tests for downloader registry, Instagram URL matching/downloading seams, TikTok bot-detection handling, media fetching, Telegram rendering, authentication-error detection, app orchestration, and repository integration tests for PostgreSQL/Alembic behavior. The opt-in TikTok end-to-end smoke test requires `TIKTOK_SMOKE_TEST_URL` and is skipped by default.
+The current test suite includes unit tests for downloader registry, provider-specific URL matching/downloading and error handling, media fetching, Telegram rendering, app orchestration, and repository integration tests for PostgreSQL/Alembic behavior. The opt-in TikTok end-to-end smoke test requires `TIKTOK_SMOKE_TEST_URL` and is skipped by default.
 
 ## Important architectural constraints and notes
 

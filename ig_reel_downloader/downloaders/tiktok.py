@@ -7,9 +7,11 @@ from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 import yt_dlp
+from yt_dlp.utils import DownloadError
 
 from ig_reel_downloader.downloaders.base import (
     DownloadContext,
+    DownloadFailureReason,
     MediaDownloadResult,
     ProviderItemRef,
     ResolutionError,
@@ -20,7 +22,6 @@ from ig_reel_downloader.downloaders.base import (
 from ig_reel_downloader.downloaders.yt_dlp_support import (
     build_download_ytdlp_options,
     build_metadata_ytdlp_options,
-    classify_download_error,
     map_video_asset,
 )
 from ig_reel_downloader.repository.models import MediaItem
@@ -31,6 +32,10 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 TIKTOK_MAX_ATTEMPTS = 3
+TIKTOK_BLOCK_MARKERS = (
+    "unexpected response from webpage request",
+    "unable to extract universal data for rehydration",
+)
 
 CANONICAL_VIDEO_URL_PATTERN = re.compile(
     r"(?P<url>https://www\.tiktok\.com/@(?P<username>[a-zA-Z0-9._-]+)"
@@ -120,7 +125,7 @@ class TikTokDownloader:
                     info: _InfoDict = ydl.extract_info(source_url, download=False)
                 break
             except Exception as error:
-                failure_reason = classify_download_error(error)
+                failure_reason = _classify_tiktok_error(error)
                 if failure_reason == "blocked" and attempt < TIKTOK_MAX_ATTEMPTS:
                     logger.warning(
                         "TikTok blocked share-link resolution for %s; retrying (%d/%d)",
@@ -196,7 +201,7 @@ class TikTokDownloader:
                     )
                     return MediaDownloadResult(media=media)
             except Exception as error:
-                failure_reason = classify_download_error(error)
+                failure_reason = _classify_tiktok_error(error)
                 if failure_reason == "blocked" and attempt < TIKTOK_MAX_ATTEMPTS:
                     logger.warning(
                         "TikTok blocked download for %s; retrying (%d/%d)",
@@ -205,7 +210,7 @@ class TikTokDownloader:
                         TIKTOK_MAX_ATTEMPTS,
                     )
                     continue
-                if failure_reason in ("auth", "blocked"):
+                if failure_reason == "blocked":
                     logger.warning(
                         "Failed to download TikTok video from %s: %s (%s)",
                         url,
@@ -219,3 +224,11 @@ class TikTokDownloader:
                 return MediaDownloadResult(media=None, failure_reason=failure_reason)
 
         raise AssertionError("TikTok download attempts exhausted without a result")
+
+
+def _classify_tiktok_error(error: Exception) -> DownloadFailureReason:
+    if isinstance(error, DownloadError):
+        message = str(error).lower()
+        if any(marker in message for marker in TIKTOK_BLOCK_MARKERS):
+            return "blocked"
+    return "unknown"
