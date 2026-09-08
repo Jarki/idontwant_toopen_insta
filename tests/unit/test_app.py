@@ -562,14 +562,18 @@ def test_stats_command_shows_request_outcome_breakdown(
 
     assert repository.requested_stats_keys == [(123, -100123)]
     assert chat.sent_messages == [
-        "Stats for user 123 in this chat\n"
-        "Requested: 6\n"
-        "Delivered: 3\n"
-        "Failed delivery: 1\n"
-        "Failed download: 2\n"
-        "Delivered by type:\n"
-        "• instagram reel: 2\n"
-        "• tiktok video: 1"
+        "📊 Stats for Alice Example (@alice)\n"
+        "🆔 123\n"
+        "\n"
+        "🎞️ Delivered by type\n"
+        "• Instagram reel: 2\n"
+        "• TikTok video: 1\n"
+        "\n"
+        "📈 Request outcomes\n"
+        "📨 Requested: 6\n"
+        "✅ Delivered: 3\n"
+        "⚠️ Failed delivery: 1\n"
+        "❌ Failed download: 2"
     ]
 
 
@@ -580,11 +584,17 @@ def test_stats_command_handles_no_media(monkeypatch: pytest.MonkeyPatch) -> None
     asyncio.run(app._stats_handler(FakeUpdate("/stats", chat), object()))
 
     assert chat.sent_messages == [
-        "Stats for user 123 in this chat\n"
-        "Requested: 0\n"
-        "Delivered: 0\n"
-        "Failed delivery: 0\n"
-        "Failed download: 0"
+        "📊 Stats for Alice Example (@alice)\n"
+        "🆔 123\n"
+        "\n"
+        "🎞️ Delivered by type\n"
+        "• None yet\n"
+        "\n"
+        "📈 Request outcomes\n"
+        "📨 Requested: 0\n"
+        "✅ Delivered: 0\n"
+        "⚠️ Failed delivery: 0\n"
+        "❌ Failed download: 0"
     ]
 
 
@@ -613,7 +623,9 @@ def test_top_command_shows_chat_leaderboard(
 
     assert repository.requested_leaderboard_chat_ids == [-987]
     assert chat.sent_messages == [
-        "Top media requesters in this chat\n1. Alice Example (@alice) — 4\n2. Bob — 2"
+        "🏆 Top media requesters in this chat\n"
+        "🥇 Alice Example (@alice) — 4 requests\n"
+        "🥈 Bob — 2 requests"
     ]
 
 

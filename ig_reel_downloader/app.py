@@ -37,6 +37,26 @@ def _duration_summary(media: models.MediaItem) -> str:
     return ", ".join(durations) if durations else "no video"
 
 
+def _user_display_name(
+    first_name: str,
+    last_name: str | None,
+    username: str | None,
+) -> str:
+    name = " ".join(part for part in (first_name, last_name) if part)
+    return f"{name} (@{username})" if username else name
+
+
+def _media_type_name(provider: str, media_kind: str) -> str:
+    provider_names = {
+        "instagram": "Instagram",
+        "reddit": "Reddit",
+        "tiktok": "TikTok",
+        "x": "X",
+        "youtube": "YouTube",
+    }
+    return f"{provider_names.get(provider, provider.title())} {media_kind}"
+
+
 DEFAULT_TELEGRAM_READ_TIMEOUT = 30.0
 
 
@@ -212,18 +232,29 @@ class IgReelDownloaderApp:
             chat.id,
         )
         lines = [
-            f"Stats for user {user.id} in this chat",
-            f"Requested: {stats.requested}",
-            f"Delivered: {stats.delivered}",
-            f"Failed delivery: {stats.delivery_failed}",
-            f"Failed download: {stats.download_failed}",
+            "📊 Stats for "
+            + _user_display_name(user.first_name, user.last_name, user.username),
+            f"🆔 {user.id}",
+            "",
+            "🎞️ Delivered by type",
         ]
         if stats.delivered_by_type:
-            lines.append("Delivered by type:")
             lines.extend(
-                f"• {item.provider} {item.media_kind}: {item.count}"
+                f"• {_media_type_name(item.provider, item.media_kind)}: {item.count}"
                 for item in stats.delivered_by_type
             )
+        else:
+            lines.append("• None yet")
+        lines.extend(
+            [
+                "",
+                "📈 Request outcomes",
+                f"📨 Requested: {stats.requested}",
+                f"✅ Delivered: {stats.delivered}",
+                f"⚠️ Failed delivery: {stats.delivery_failed}",
+                f"❌ Failed download: {stats.download_failed}",
+            ]
+        )
         await chat.send_message("\n".join(lines))
 
     async def _top_handler(
@@ -244,14 +275,16 @@ class IgReelDownloaderApp:
             await chat.send_message("No media requests recorded in this chat yet.")
             return
 
-        lines = ["Top media requesters in this chat"]
+        lines = ["🏆 Top media requesters in this chat"]
+        medals = ("🥇", "🥈", "🥉")
         for rank, entry in enumerate(leaderboard, start=1):
-            name = " ".join(
-                part for part in (entry.first_name, entry.last_name) if part
+            prefix = medals[rank - 1] if rank <= len(medals) else f"{rank}."
+            name = _user_display_name(
+                entry.first_name,
+                entry.last_name,
+                entry.username,
             )
-            if entry.username:
-                name = f"{name} (@{entry.username})"
-            lines.append(f"{rank}. {name} — {entry.count}")
+            lines.append(f"{prefix} {name} — {entry.count} requests")
         await chat.send_message("\n".join(lines))
 
     async def _add_judgmental_handler(
