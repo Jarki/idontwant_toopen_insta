@@ -281,7 +281,7 @@ def _format_item_text(media: MediaItem, *, max_length: int) -> str:
     like_count = int(media.metadata.get("like_count") or 0)
     likes = f" • ❤️ {like_count}"
 
-    title = media.title
+    title = _display_title(media)
     if len(title) + len(likes) > max_length:
         max_title = max_length - len(likes) - 1
         title = (title[:max_title] + "…") if max_title > 0 else "…"
@@ -298,3 +298,14 @@ def _format_item_text(media: MediaItem, *, max_length: int) -> str:
                 caption += f"\n\n{media.description[: room - 1]}…"
 
     return caption
+
+
+def _display_title(media: MediaItem) -> str:
+    if media.provider != "x" or not media.description:
+        return media.title
+
+    description_prefix = media.description[:40]
+    repeated_text = f" - {description_prefix}"
+    if repeated_text in media.title:
+        return media.title.partition(repeated_text)[0].rstrip()
+    return media.title
