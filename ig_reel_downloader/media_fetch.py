@@ -231,8 +231,22 @@ def _format_size(size_bytes: int) -> str:
 
 
 def _is_reusable(media: MediaItem) -> bool:
-    if media.provider == "x" and media.metadata.get("x_metadata_version") != 1:
-        return False
+    if media.provider == "x":
+        max_video_bytes = media.metadata.get("max_video_bytes")
+        if (
+            media.metadata.get("x_metadata_version") != 2
+            or not isinstance(max_video_bytes, int)
+            or max_video_bytes <= 0
+        ):
+            return False
+        for asset in media.assets:
+            path = Path(asset.filepath)
+            if (
+                asset.asset_type == "video"
+                and path.is_file()
+                and path.stat().st_size > max_video_bytes
+            ):
+                return False
     if not media.assets:
         return media.metadata.get("text_only") is True
     return all(Path(asset.filepath).is_file() for asset in media.assets)

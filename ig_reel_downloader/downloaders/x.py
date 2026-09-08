@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from datetime import datetime
 from html.parser import HTMLParser
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, cast
 from urllib.parse import urlparse
 
 import yt_dlp
@@ -41,11 +41,25 @@ URL_PATTERN = re.compile(
 )
 SUPPORTED_HOSTS = {"x.com", "www.x.com", "twitter.com", "www.twitter.com"}
 TRAILING_PUNCTUATION = ".,;:!?\"')]/"
-X_METADATA_VERSION = 1
+X_METADATA_VERSION = 2
+MAX_X_VIDEO_BYTES = 100_000_000
+MAX_X_IMAGE_BYTES = 20 * 1024 * 1024
+MAX_X_PAGE_BYTES = 2 * 1024 * 1024
+DOWNLOAD_CHUNK_BYTES = 64 * 1024
+X_IMAGE_HOSTS = {"pbs.twimg.com"}
+X_TOO_LARGE_MARKER = "x video exceeds the 100 mb size limit"
 X_BLOCK_MARKERS = (
     "ip address is blocked from accessing this post",
     "sign in to confirm you're not a bot",
 )
+
+
+class XMediaTooLargeError(Exception):
+    pass
+
+
+class UnsupportedXMediaError(Exception):
+    pass
 
 
 class XDownloader:
@@ -132,15 +146,28 @@ class XDownloader:
             media_kind=ref.media_kind,
             provider_item_id=ref.provider_item_id,
         )
+        ydl_opts["max_filesize"] = MAX_X_VIDEO_BYTES
+        ydl_opts["progress_hooks"] = [_enforce_x_video_size]
+        filepaths: list[str] = []
 
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info: _InfoDict = ydl.extract_info(url, download=False)
                 asset_infos = _video_infos(info)
+                for asset_info in asset_infos:
+                    _enforce_known_x_video_size(asset_info)
                 filepaths = [
                     ydl.prepare_filename(asset_info) for asset_info in asset_infos
                 ]
                 ydl.download([url])
+                for filepath in filepaths:
+                    downloaded_path = Path(filepath)
+                    if not downloaded_path.is_file():
+                        raise UnsupportedXMediaError(
+                            "yt-dlp did not produce the expected X video file"
+                        )
+                    if downloaded_path.stat().st_size > MAX_X_VIDEO_BYTES:
+                        raise XMediaTooLargeError(X_TOO_LARGE_MARKER)
 
             now = datetime.now()
             media = MediaItem(
@@ -155,6 +182,7 @@ class XDownloader:
                     "like_count": int(info.get("like_count") or 0),
                     "comments": info.get("comments", []),
                     "x_metadata_version": X_METADATA_VERSION,
+                    "max_video_bytes": MAX_X_VIDEO_BYTES,
                 },
                 assets=[
                     map_video_asset(asset_info, filepath=filepath, asset_index=index)
@@ -170,16 +198,21 @@ class XDownloader:
             if _is_no_video_error(error):
                 try:
                     return _download_non_video_post(url, ref, context)
-                except Exception as image_error:
+                except Exception as fallback_error:
+                    failure_reason = _classify_x_error(fallback_error)
                     logger.exception(
-                        "Failed to download images from X post %s (%s)",
+                        "Failed to download non-video X post %s (%s)",
                         url,
-                        image_error,
+                        fallback_error,
                     )
-                    return MediaDownloadResult(media=None, failure_reason="unknown")
+                    return MediaDownloadResult(
+                        media=None,
+                        failure_reason=failure_reason,
+                    )
 
             failure_reason = _classify_x_error(error)
-            if failure_reason in ("auth", "blocked"):
+            _remove_failed_x_downloads(context.output_dir, ref, filepaths)
+            if failure_reason in ("auth", "blocked", "unsupported"):
                 logger.warning(
                     "Failed to download X post from %s: %s (%s)",
                     url,
@@ -237,6 +270,10 @@ def _download_non_video_post(
             )
         )
 
+    like_count = _extract_like_count(page, ref.provider_item_id)
+    if like_count is None:
+        logger.warning("Could not extract like count from X post %s", url)
+
     now = datetime.now()
     return MediaDownloadResult(
         media=MediaItem(
@@ -248,10 +285,11 @@ def _download_non_video_post(
             title=metadata.title,
             description=metadata.description,
             metadata={
-                "like_count": _extract_like_count(page, ref.provider_item_id),
+                "like_count": like_count or 0,
                 "comments": [],
                 "text_only": not assets,
                 "x_metadata_version": X_METADATA_VERSION,
+                "max_video_bytes": MAX_X_VIDEO_BYTES,
             },
             assets=assets,
             created_at=now,
@@ -260,17 +298,31 @@ def _download_non_video_post(
     )
 
 
-def _extract_like_count(page: str, post_id: str) -> int:
+def _enforce_known_x_video_size(info: Mapping[str, Any]) -> None:
+    size = info.get("filesize") or info.get("filesize_approx")
+    if isinstance(size, int | float) and size > MAX_X_VIDEO_BYTES:
+        raise XMediaTooLargeError(X_TOO_LARGE_MARKER)
+
+
+def _enforce_x_video_size(progress: Mapping[str, Any]) -> None:
+    size = progress.get("downloaded_bytes") or progress.get("total_bytes")
+    if isinstance(size, int | float) and size > MAX_X_VIDEO_BYTES:
+        raise XMediaTooLargeError(X_TOO_LARGE_MARKER)
+
+
+def _extract_like_count(page: str, post_id: str) -> int | None:
     encoded_post_id = base64.b64encode(f"Tweet:{post_id}".encode()).decode()
     match = re.search(
         rf'{re.escape(encoded_post_id)}:counts".{{0,500}}?favorite_count:(\d+)',
         page,
         re.DOTALL,
     )
-    return int(match.group(1)) if match is not None else 0
+    return int(match.group(1)) if match is not None else None
 
 
 def _classify_x_error(error: Exception) -> DownloadFailureReason:
+    if isinstance(error, UnsupportedXMediaError) or _is_x_video_too_large_error(error):
+        return "unsupported"
     if isinstance(error, DownloadError):
         message = str(error).lower()
         if any(marker in message for marker in X_BLOCK_MARKERS):
@@ -278,19 +330,90 @@ def _classify_x_error(error: Exception) -> DownloadFailureReason:
     return "unknown"
 
 
+def _is_x_video_too_large_error(error: Exception) -> bool:
+    return isinstance(error, XMediaTooLargeError) or (
+        isinstance(error, DownloadError) and X_TOO_LARGE_MARKER in str(error).lower()
+    )
+
+
+def _remove_failed_x_downloads(
+    output_dir: Path,
+    ref: ProviderItemRef,
+    filepaths: list[str],
+) -> None:
+    for filepath in filepaths:
+        Path(filepath).unlink(missing_ok=True)
+
+    scoped_dir = output_dir / ref.provider / ref.media_kind / ref.provider_item_id
+    if not scoped_dir.is_dir():
+        return
+    for path in scoped_dir.rglob("*"):
+        if path.is_file() and (".part" in path.name or path.suffix == ".ytdl"):
+            path.unlink(missing_ok=True)
+
+
 def _fetch_x_page(url: str) -> str:
     request = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
     with urllib.request.urlopen(request, timeout=60) as response:
-        return cast("bytes", response.read()).decode("utf-8")
+        content_length = response.headers.get("Content-Length")
+        if content_length and int(content_length) > MAX_X_PAGE_BYTES:
+            raise UnsupportedXMediaError("X page exceeds the size limit")
+        content = cast("bytes", response.read(MAX_X_PAGE_BYTES + 1))
+    if len(content) > MAX_X_PAGE_BYTES:
+        raise UnsupportedXMediaError("X page exceeds the size limit")
+    return content.decode("utf-8")
 
 
 def _download_image_file(url: str, filepath: Path) -> None:
+    if not _is_allowed_x_image_url(url):
+        raise UnsupportedXMediaError("X image URL is not on the allowed CDN")
+
     request = urllib.request.Request(
         url,
         headers={"User-Agent": "Mozilla/5.0", "Referer": "https://x.com/"},
     )
-    with urllib.request.urlopen(request, timeout=60) as response:
-        filepath.write_bytes(response.read())
+    temporary_path = filepath.with_name(f"{filepath.name}.part")
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            if not _is_allowed_x_image_url(response.url):
+                raise UnsupportedXMediaError(
+                    "X image redirected away from the allowed CDN"
+                )
+            content_type = response.headers.get("Content-Type", "")
+            if content_type and not content_type.lower().startswith("image/"):
+                raise UnsupportedXMediaError(
+                    f"expected an image response, got {content_type}"
+                )
+            content_length = response.headers.get("Content-Length")
+            if content_length and int(content_length) > MAX_X_IMAGE_BYTES:
+                raise UnsupportedXMediaError("X image exceeds the size limit")
+
+            bytes_written = 0
+            with temporary_path.open("wb") as output_file:
+                while chunk := response.read(DOWNLOAD_CHUNK_BYTES):
+                    bytes_written += len(chunk)
+                    if bytes_written > MAX_X_IMAGE_BYTES:
+                        raise UnsupportedXMediaError("X image exceeds the size limit")
+                    output_file.write(chunk)
+        temporary_path.replace(filepath)
+    finally:
+        temporary_path.unlink(missing_ok=True)
+
+
+def _is_allowed_x_image_url(url: str) -> bool:
+    parsed = urlparse(url)
+    try:
+        port = parsed.port
+    except ValueError:
+        return False
+    return (
+        parsed.scheme.lower() == "https"
+        and parsed.hostname is not None
+        and parsed.hostname.lower() in X_IMAGE_HOSTS
+        and port is None
+        and parsed.username is None
+        and parsed.password is None
+    )
 
 
 def _image_extension(url: str) -> str:
@@ -325,7 +448,7 @@ class _XPageMetadataParser(HTMLParser):
             self.description = content
         elif (
             property_name == "og:image"
-            and "pbs.twimg.com/media/" in content
+            and _is_allowed_x_image_url(content)
             and content not in self.image_urls
         ):
             self.image_urls.append(content)
