@@ -19,7 +19,11 @@ from . import judgmental as judgmental_module
 from .downloaders import DownloaderRegistry, DownloadFailureReason, UrlCandidate
 from .media_fetch import MediaFetchResult, MediaFetchService
 from .repository import models
-from .telegram_renderer import MediaRenderResult, TelegramMediaRenderer
+from .telegram_renderer import (
+    MediaRenderResult,
+    MediaRenderTimedOut,
+    TelegramMediaRenderer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -123,6 +127,22 @@ class IgReelDownloaderApp:
                         render_result.media.id,
                         asset_index,
                     )
+
+    async def _record_deliveries(
+        self,
+        render_results: list[MediaRenderResult],
+        request_ids_by_media_object: dict[int, collections.deque[int]],
+    ) -> None:
+        await self._store_telegram_file_ids(render_results)
+        delivered_request_ids = [
+            request_ids_by_media_object[id(result.media)].popleft()
+            for result in render_results
+            if result.sent
+        ]
+        await asyncio.to_thread(
+            self.fetch_service.repository.mark_media_requests_delivered,
+            delivered_request_ids,
+        )
 
     async def _record_media_requests(
         self,
@@ -416,6 +436,24 @@ class IgReelDownloaderApp:
 
         try:
             render_results = await self.renderer.render(update, media_items)
+        except MediaRenderTimedOut as exc:
+            await self._record_deliveries(
+                exc.completed_results,
+                request_ids_by_media_object,
+            )
+            logger.exception(
+                "Timed out after sending %d of %d media items for user %s",
+                len(exc.completed_results),
+                len(media_items),
+                sender_id,
+            )
+            chat = update.effective_chat
+            if chat is not None:
+                with suppress(TimedOut):
+                    await chat.send_message(
+                        "Timed out while uploading video(s) to Telegram. "
+                        "Some media may have been delivered."
+                    )
         except TimedOut:
             logger.exception(
                 "Timed out while sending %s videos for user %s. "
@@ -431,24 +469,18 @@ class IgReelDownloaderApp:
                         "The file may be large or the network may be slow."
                     )
         else:
-            await self._store_telegram_file_ids(render_results)
-            delivered_request_ids: list[int] = []
+            await self._record_deliveries(
+                render_results,
+                request_ids_by_media_object,
+            )
             for render_result in render_results:
-                if render_result.sent:
-                    delivered_request_ids.append(
-                        request_ids_by_media_object[id(render_result.media)].popleft()
-                    )
-                else:
+                if not render_result.sent:
                     errors.append(
                         self._format_download_error(
                             render_result.media.original_url,
                             render_result.failure_reason,
                         )
                     )
-            await asyncio.to_thread(
-                self.fetch_service.repository.mark_media_requests_delivered,
-                delivered_request_ids,
-            )
 
         if errors:
             errors_text = "\n".join(errors)

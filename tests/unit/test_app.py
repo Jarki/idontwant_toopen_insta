@@ -26,7 +26,7 @@ from ig_reel_downloader.repository.models import (
     MediaTypeCount,
     TelegramUser,
 )
-from ig_reel_downloader.telegram_renderer import MediaRenderResult
+from ig_reel_downloader.telegram_renderer import MediaRenderResult, MediaRenderTimedOut
 
 
 class FakeApplication:
@@ -289,6 +289,26 @@ class FakeRenderer:
         ]
 
 
+class PartiallyTimedOutRenderer(FakeRenderer):
+    def __init__(
+        self,
+        events: list[str],
+        completed_media: MediaItem,
+    ) -> None:
+        super().__init__(events)
+        self.completed_media = completed_media
+
+    async def render(
+        self,
+        update: FakeUpdate,
+        media_items: list[MediaItem],
+    ) -> list[MediaRenderResult]:
+        del update, media_items
+        raise MediaRenderTimedOut(
+            [MediaRenderResult(media=self.completed_media, sent=True)]
+        )
+
+
 class FakeDownloader:
     provider = "instagram"
     media_kind = "reel"
@@ -479,6 +499,46 @@ def test_message_handler_does_not_mark_failed_render_as_delivered(
 
     assert fetch_service.repository.delivered_request_ids == []
     assert chat.sent_messages == [f"Could not download {url}"]
+
+
+def test_message_handler_records_deliveries_completed_before_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_url = "https://www.instagram.com/reel/ABC123"
+    second_url = "https://www.instagram.com/reel/DEF456"
+    first_media = make_media(first_url, "ABC123")
+    second_media = make_media(second_url, "DEF456")
+    events: list[str] = []
+    fetch_service = FakeFetchService(
+        {
+            first_url: MediaFetchResult(media=first_media, url=first_url),
+            second_url: MediaFetchResult(media=second_media, url=second_url),
+        },
+        events,
+    )
+    app = build_app(
+        monkeypatch,
+        FakeRegistry(
+            [
+                make_candidate(first_url, "ABC123"),
+                make_candidate(second_url, "DEF456"),
+            ],
+            events,
+        ),
+        fetch_service,
+        PartiallyTimedOutRenderer(events, first_media),
+    )
+    chat = FakeChat()
+
+    asyncio.run(
+        app._message_handler(FakeUpdate(f"{first_url} {second_url}", chat), object())
+    )
+
+    assert fetch_service.repository.delivered_request_ids == [100]
+    assert chat.sent_messages == [
+        "Timed out while uploading video(s) to Telegram. "
+        "Some media may have been delivered."
+    ]
 
 
 def test_stats_command_shows_request_outcome_breakdown(
