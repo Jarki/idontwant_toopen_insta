@@ -15,6 +15,7 @@ from .instagram import InstagramPostDownloader, InstagramReelDownloader
 from .reddit import RedditDownloader
 from .registry import DownloaderRegistry
 from .tiktok import TikTokDownloader
+from .x import XDownloader
 from .youtube import YouTubeDownloader
 
 __all__ = [
@@ -34,5 +35,6 @@ __all__ = [
     "TikTokDownloader",
     "UrlCandidate",
     "UrlMatch",
+    "XDownloader",
     "YouTubeDownloader",
 ]

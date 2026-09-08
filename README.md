@@ -45,8 +45,11 @@ Send a supported link to the bot and it will download the media when supported:
 - Instagram posts, including carousel posts
 - TikTok videos
 - Reddit hosted videos, images, image galleries, link-post previews, and text posts
+- X (formerly Twitter) posts, including text, photos, and video
 - YouTube Shorts
 - Normal YouTube videos under 60 seconds
+
+X videos larger than 100 MB, or whose size cannot be determined, are rejected before download.
 
 ### TikTok extractor smoke test
 

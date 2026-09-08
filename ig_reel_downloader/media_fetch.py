@@ -232,7 +232,7 @@ def _format_size(size_bytes: int) -> str:
 
 def _is_reusable(media: MediaItem) -> bool:
     if not media.assets:
-        return media.provider == "reddit" and media.metadata.get("text_only") is True
+        return media.metadata.get("text_only") is True
     return all(Path(asset.filepath).is_file() for asset in media.assets)
 
 

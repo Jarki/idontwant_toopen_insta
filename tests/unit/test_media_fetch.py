@@ -251,6 +251,16 @@ def test_text_only_reddit_cache_is_reusable_without_asset_files() -> None:
     assert _is_reusable(cached)
 
 
+def test_text_only_x_cache_is_reusable_without_asset_files() -> None:
+    cached = make_media("unused", assets=[])
+    cached.provider = "x"
+    cached.media_kind = "post"
+    cached.description = "Text-only post body"
+    cached.metadata = {"text_only": True}
+
+    assert _is_reusable(cached)
+
+
 def test_fetch_returns_download_failure_without_insert(tmp_path: Path) -> None:
     downloader = FakeDownloader(MediaDownloadResult(media=None, failure_reason="auth"))
     repository = FakeRepository(cached=None)

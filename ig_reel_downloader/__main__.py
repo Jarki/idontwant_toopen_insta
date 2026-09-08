@@ -67,6 +67,7 @@ def main() -> None:
         ig_reel_downloader.downloaders.RedditDownloader(
             cookie_filepath=cookie_filepath
         ),
+        ig_reel_downloader.downloaders.XDownloader(cookie_filepath=cookie_filepath),
         ig_reel_downloader.downloaders.YouTubeDownloader(
             cookie_filepath=cookie_filepath
         ),

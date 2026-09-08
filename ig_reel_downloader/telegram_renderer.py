@@ -125,11 +125,7 @@ def _media_groups(
 
 
 def _is_text_item(media: MediaItem) -> bool:
-    return (
-        media.provider == "reddit"
-        and not media.assets
-        and media.metadata.get("text_only") is True
-    )
+    return not media.assets and media.metadata.get("text_only") is True
 
 
 def _is_supported_media(media: MediaItem) -> bool:
