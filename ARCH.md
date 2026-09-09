@@ -370,7 +370,7 @@ The documented environment variables are:
 | `X_DOWNLOADER_ENABLED` | no | `true` | Register the X downloader. |
 | `YOUTUBE_DOWNLOADER_ENABLED` | no | `true` | Register the YouTube downloader. |
 
-A disabled downloader is omitted from URL detection, so matching links receive no bot response. The production deployment workflow exposes these flags as checkbox inputs.
+A disabled downloader is omitted from URL detection, so matching links receive no bot response. The development and production deployment workflows expose these flags as checkbox inputs.
 
 \* Required by the Compose bootstrap and migration services, not by the downloader runtime.
 

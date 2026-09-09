@@ -13,6 +13,36 @@ on:
         required: false
         default: "main"
         type: string
+      enable_instagram_reels:
+        description: "Enable Instagram Reels downloader"
+        required: true
+        default: true
+        type: boolean
+      enable_instagram_posts:
+        description: "Enable Instagram Posts downloader"
+        required: true
+        default: true
+        type: boolean
+      enable_tiktok:
+        description: "Enable TikTok downloader"
+        required: true
+        default: true
+        type: boolean
+      enable_reddit:
+        description: "Enable Reddit downloader"
+        required: true
+        default: true
+        type: boolean
+      enable_x:
+        description: "Enable X downloader"
+        required: true
+        default: true
+        type: boolean
+      enable_youtube:
+        description: "Enable YouTube downloader"
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -105,6 +135,12 @@ jobs:
       - name: Start deployment
         env:
           IMAGE_TAG: ${{ inputs.image_tag }}
+          INSTAGRAM_REEL_DOWNLOADER_ENABLED: ${{ inputs.enable_instagram_reels }}
+          INSTAGRAM_POST_DOWNLOADER_ENABLED: ${{ inputs.enable_instagram_posts }}
+          TIKTOK_DOWNLOADER_ENABLED: ${{ inputs.enable_tiktok }}
+          REDDIT_DOWNLOADER_ENABLED: ${{ inputs.enable_reddit }}
+          X_DOWNLOADER_ENABLED: ${{ inputs.enable_x }}
+          YOUTUBE_DOWNLOADER_ENABLED: ${{ inputs.enable_youtube }}
         run: |
           set -euo pipefail
           deploy_dir="${HOME}/deploy/ig-reel-downloader-dev"

@@ -72,8 +72,9 @@ boolean environment variable:
 
 Accepted values are `true`/`false`, `1`/`0`, `yes`/`no`, and `on`/`off`. When a
 downloader is disabled, the bot ignores its URLs without replying. The manually
-triggered **Deploy Prod** GitHub Actions workflow exposes an enabled-by-default
-checkbox for each downloader and passes those choices to the deployed bot.
+triggered **Deploy Dev** and **Deploy Prod** GitHub Actions workflows expose an
+enabled-by-default checkbox for each downloader and pass those choices to the
+deployed bot.
 
 ### TikTok extractor smoke test
 
