@@ -238,7 +238,14 @@ def _format_size(size_bytes: int) -> str:
 
 def _is_reusable(media: MediaItem) -> bool:
     if not media.assets:
-        return media.metadata.get("text_only") is True
+        if media.metadata.get("text_only") is not True:
+            return False
+        return not (
+            media.provider == "x"
+            and media.description is not None
+            and media.description.endswith("…")
+            and media.metadata.get("description_complete") is not True
+        )
     return all(Path(asset.filepath).is_file() for asset in media.assets)
 
 

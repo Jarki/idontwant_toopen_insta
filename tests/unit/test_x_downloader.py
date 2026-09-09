@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import pytest
@@ -597,7 +598,7 @@ def test_x_download_falls_back_to_post_images(
     assert all(Path(asset.filepath).is_file() for asset in result.media.assets)
 
 
-def test_x_download_maps_text_only_post(
+def test_x_download_maps_text_only_post_with_full_hydration_text(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -618,11 +619,33 @@ def test_x_download_maps_text_only_post(
         "ig_reel_downloader.downloaders.x.yt_dlp.YoutubeDL",
         FakeYoutubeDL,
     )
+    full_text = (
+        "The people building AI earnestly believe that it could kill us all by the "
+        "end of the decade. This is not a marketing stunt. If anything, many "
+        "executives and senior researchers will couch their phrasing in the press "
+        "to sound sensible - but I hear the same people express fear privately. "
+        "No other human activity poses this level of danger."
+    )
+    truncated_open_graph_text = full_text[:299] + "…"
     monkeypatch.setattr(
         "ig_reel_downloader.downloaders.x._fetch_x_page",
         lambda _: (
             '<meta property="og:title" content="Alice (@alice) on X">'
-            '<meta property="og:description" content="Text-only post body">'
+            f'<meta property="og:description" content="{truncated_open_graph_text}">'
+            '"client:VHdlZXQ6MTIz:details":$R[61]={'
+            '__id:"client:VHdlZXQ6MTIz:details",__typename:"TBirdData",'
+            "display_text_range:[0,274],full_text:"
+            f"{json.dumps(full_text[:274])}}}"
+            '"client:VHdlZXQ6MTIz:note_tweet":$R[62]={'
+            '__id:"client:VHdlZXQ6MTIz:note_tweet",'
+            '__typename:"NoteTweetData",note_tweet_results:{'
+            '__ref:"NoteTweetResults:123"}}'
+            '"NoteTweetResults:123":$R[63]={'
+            '__id:"NoteTweetResults:123",__typename:"NoteTweetResults",'
+            'result:{__ref:"NoteTweet:123"}}'
+            '"NoteTweet:123":$R[64]={'
+            '__id:"NoteTweet:123",__typename:"NoteTweet",'
+            f"text:{json.dumps(full_text)}}}"
             '"client:VHdlZXQ6MTIz:counts":{"__typename":"ApiCounts",'
             '"favorite_count":73}'
         ),
@@ -639,10 +662,11 @@ def test_x_download_maps_text_only_post(
     assert result.failure_reason is None
     assert result.media is not None
     assert result.media.title == "Alice (@alice) on X"
-    assert result.media.description == "Text-only post body"
+    assert result.media.description == full_text
     assert result.media.assets == []
     assert result.media.metadata["like_count"] == 73
     assert result.media.metadata["text_only"] is True
+    assert result.media.metadata["description_complete"] is True
 
 
 def test_x_hydration_counts_are_optional_and_post_scoped() -> None:

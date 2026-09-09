@@ -252,7 +252,9 @@ def _download_non_video_post(
     page = _fetch_x_page(url)
     metadata = _XPageMetadataParser()
     metadata.feed(page)
-    if not metadata.description and not metadata.image_urls:
+    full_text = _extract_x_full_text(page, ref.provider_item_id)
+    description = full_text or metadata.description
+    if not description and not metadata.image_urls:
         return MediaDownloadResult(media=None, failure_reason="unsupported")
 
     scoped_dir = (
@@ -286,10 +288,11 @@ def _download_non_video_post(
             provider_item_id=ref.provider_item_id,
             original_url=url,
             title=metadata.title,
-            description=metadata.description,
+            description=description,
             metadata={
                 **engagement_metadata,
                 "text_only": not assets,
+                **({"description_complete": True} if full_text is not None else {}),
             },
             assets=assets,
             created_at=now,
@@ -319,6 +322,108 @@ def _x_metadata(info: Mapping[str, Any]) -> dict[str, Any]:
         strings=("uploader", "channel"),
         numbers=("timestamp",),
     )
+
+
+def _extract_x_full_text(page: str, post_id: str) -> str | None:
+    """Extract this post's untruncated text from its typed hydration records."""
+    encoded_post_id = base64.b64encode(f"Tweet:{post_id}".encode()).decode()
+    anchor = encoded_post_id.rstrip("=")
+    base64_character = r"A-Za-z0-9_+/=-"
+
+    note_pattern = re.compile(
+        rf"(?<![{base64_character}]){re.escape(anchor)}={{0,2}}"
+        rf":note_tweet(?![A-Za-z])"
+    )
+    for match in note_pattern.finditer(page):
+        note_data = _x_javascript_hydration_record(page, match.end())
+        note_results_id = _x_record_reference(note_data, "NoteTweetData")
+        note_results = _x_relay_record(page, note_results_id)
+        note_id = _x_record_reference(note_results, "NoteTweetResults")
+        note = _x_relay_record(page, note_id)
+        if _x_record_type(note) == "NoteTweet" and (
+            text := _x_string_property(note, "text")
+        ):
+            return text
+
+    details_pattern = re.compile(
+        rf"(?<![{base64_character}]){re.escape(anchor)}={{0,2}}"
+        rf":details(?![A-Za-z])"
+    )
+    for match in details_pattern.finditer(page):
+        record = _x_javascript_hydration_record(page, match.end())
+        if _x_record_type(record) == "TBirdData" and (
+            text := _x_string_property(record, "full_text")
+        ):
+            return text
+    return None
+
+
+def _x_record_reference(record: str | None, expected_type: str) -> str | None:
+    if _x_record_type(record) != expected_type:
+        return None
+    return _x_string_property(record, "__ref")
+
+
+def _x_record_type(record: str | None) -> str | None:
+    return _x_string_property(record, "__typename")
+
+
+def _x_string_property(record: str | None, property_name: str) -> str | None:
+    if record is None:
+        return None
+    field = re.search(rf"""(?:["']?{re.escape(property_name)}["']?)\s*:\s*""", record)
+    if field is None:
+        return None
+    try:
+        value, _ = json.JSONDecoder().raw_decode(record[field.end() :].lstrip())
+    except json.JSONDecodeError:
+        return None
+    return value if isinstance(value, str) and value else None
+
+
+def _x_relay_record(page: str, record_id: str | None) -> str | None:
+    if record_id is None:
+        return None
+    declaration = re.compile(
+        rf"""["']?{re.escape(record_id)}["']?\s*:\s*"""
+        rf"""(?:\$R\[\d+\]\s*=\s*)?(?P<object>\{{)"""
+    )
+    for match in declaration.finditer(page):
+        record = _x_javascript_hydration_record(page, match.start("object"))
+        if _x_string_property(record, "__id") == record_id:
+            return record
+    return None
+
+
+def _x_javascript_hydration_record(page: str, start: int) -> str | None:
+    """Return one Relay-style JavaScript object without requiring strict JSON."""
+    candidate = page[start : start + 8_000]
+    object_start = candidate.find("{")
+    if object_start < 0:
+        return None
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(object_start, len(candidate)):
+        character = candidate[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                return candidate[object_start : index + 1]
+    return None
 
 
 def _extract_x_engagement_metadata(page: str, post_id: str) -> dict[str, int]:

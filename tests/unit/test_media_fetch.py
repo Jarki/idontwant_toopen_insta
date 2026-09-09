@@ -268,6 +268,20 @@ def test_text_only_x_cache_is_reusable_without_asset_files() -> None:
     assert _is_reusable(cached)
 
 
+def test_truncated_text_only_x_cache_is_refreshed_until_marked_complete() -> None:
+    cached = make_media("unused", assets=[])
+    cached.provider = "x"
+    cached.media_kind = "post"
+    cached.description = "Open Graph preview cut off…"
+    cached.metadata = {"text_only": True}
+
+    assert not _is_reusable(cached)
+
+    cached.metadata["description_complete"] = True
+
+    assert _is_reusable(cached)
+
+
 def test_fetch_returns_download_failure_without_insert(tmp_path: Path) -> None:
     downloader = FakeDownloader(MediaDownloadResult(media=None, failure_reason="auth"))
     repository = FakeRepository(cached=None)
