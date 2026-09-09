@@ -9,10 +9,40 @@ on:
         default: "latest"
         type: string
       compose_ref:
-        description: "Git ref to curl Compose files from"
+        description: "App/Compose Git ref (blank uses workflow branch)"
         required: false
-        default: "main"
+        default: ""
         type: string
+      enable_instagram_reels:
+        description: "Enable Instagram Reels downloader"
+        required: true
+        default: true
+        type: boolean
+      enable_instagram_posts:
+        description: "Enable Instagram Posts downloader"
+        required: true
+        default: true
+        type: boolean
+      enable_tiktok:
+        description: "Enable TikTok downloader"
+        required: true
+        default: true
+        type: boolean
+      enable_reddit:
+        description: "Enable Reddit downloader"
+        required: true
+        default: true
+        type: boolean
+      enable_x:
+        description: "Enable X downloader"
+        required: true
+        default: true
+        type: boolean
+      enable_youtube:
+        description: "Enable YouTube downloader"
+        required: true
+        default: true
+        type: boolean
 
 permissions:
   contents: read
@@ -34,7 +64,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.compose_ref }}
+          ref: ${{ inputs.compose_ref || github.ref_name }}
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
@@ -75,7 +105,7 @@ jobs:
 
       - name: Fetch Compose files
         env:
-          COMPOSE_REF: ${{ inputs.compose_ref }}
+          COMPOSE_REF: ${{ inputs.compose_ref || github.ref_name }}
         run: |
           set -euo pipefail
           deploy_dir="${HOME}/deploy/ig-reel-downloader-dev"
@@ -105,6 +135,12 @@ jobs:
       - name: Start deployment
         env:
           IMAGE_TAG: ${{ inputs.image_tag }}
+          INSTAGRAM_REEL_DOWNLOADER_ENABLED: ${{ inputs.enable_instagram_reels }}
+          INSTAGRAM_POST_DOWNLOADER_ENABLED: ${{ inputs.enable_instagram_posts }}
+          TIKTOK_DOWNLOADER_ENABLED: ${{ inputs.enable_tiktok }}
+          REDDIT_DOWNLOADER_ENABLED: ${{ inputs.enable_reddit }}
+          X_DOWNLOADER_ENABLED: ${{ inputs.enable_x }}
+          YOUTUBE_DOWNLOADER_ENABLED: ${{ inputs.enable_youtube }}
         run: |
           set -euo pipefail
           deploy_dir="${HOME}/deploy/ig-reel-downloader-dev"

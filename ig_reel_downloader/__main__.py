@@ -27,6 +27,60 @@ def _get_float_env(name: str, default: float) -> float:
         raise ValueError(msg) from e
 
 
+def _get_bool_env(name: str, default: bool) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    msg = f"{name} must be a boolean"
+    raise ValueError(msg)
+
+
+def _build_downloaders(
+    cookie_filepath: Path,
+) -> list[ig_reel_downloader.downloaders.Downloader]:
+    downloaders: list[ig_reel_downloader.downloaders.Downloader] = []
+    if _get_bool_env("INSTAGRAM_REEL_DOWNLOADER_ENABLED", True):
+        downloaders.append(
+            ig_reel_downloader.downloaders.InstagramReelDownloader(
+                cookie_filepath=cookie_filepath
+            )
+        )
+    if _get_bool_env("INSTAGRAM_POST_DOWNLOADER_ENABLED", True):
+        downloaders.append(
+            ig_reel_downloader.downloaders.InstagramPostDownloader(
+                cookie_filepath=cookie_filepath
+            )
+        )
+    if _get_bool_env("TIKTOK_DOWNLOADER_ENABLED", True):
+        downloaders.append(
+            ig_reel_downloader.downloaders.TikTokDownloader(
+                cookie_filepath=cookie_filepath
+            )
+        )
+    if _get_bool_env("REDDIT_DOWNLOADER_ENABLED", True):
+        downloaders.append(
+            ig_reel_downloader.downloaders.RedditDownloader(
+                cookie_filepath=cookie_filepath
+            )
+        )
+    if _get_bool_env("X_DOWNLOADER_ENABLED", True):
+        downloaders.append(
+            ig_reel_downloader.downloaders.XDownloader(cookie_filepath=cookie_filepath)
+        )
+    if _get_bool_env("YOUTUBE_DOWNLOADER_ENABLED", True):
+        downloaders.append(
+            ig_reel_downloader.downloaders.YouTubeDownloader(
+                cookie_filepath=cookie_filepath
+            )
+        )
+    return downloaders
+
+
 def main() -> None:
     output_dir = Path(os.getenv("OUTPUT_DIR", "output"))
     cookie_filepath = Path("assets/cookies.txt")
@@ -54,25 +108,9 @@ def main() -> None:
         raise ValueError(msg)
 
     repo = ig_reel_downloader.repository.postgres.PostgreSQLRepository(database_url)
-    downloaders: list[ig_reel_downloader.downloaders.Downloader] = [
-        ig_reel_downloader.downloaders.InstagramReelDownloader(
-            cookie_filepath=cookie_filepath
-        ),
-        ig_reel_downloader.downloaders.InstagramPostDownloader(
-            cookie_filepath=cookie_filepath
-        ),
-        ig_reel_downloader.downloaders.TikTokDownloader(
-            cookie_filepath=cookie_filepath
-        ),
-        ig_reel_downloader.downloaders.RedditDownloader(
-            cookie_filepath=cookie_filepath
-        ),
-        ig_reel_downloader.downloaders.XDownloader(cookie_filepath=cookie_filepath),
-        ig_reel_downloader.downloaders.YouTubeDownloader(
-            cookie_filepath=cookie_filepath
-        ),
-    ]
-    registry = ig_reel_downloader.downloaders.DownloaderRegistry(downloaders)
+    registry = ig_reel_downloader.downloaders.DownloaderRegistry(
+        _build_downloaders(cookie_filepath)
+    )
     fetch_service = ig_reel_downloader.media_fetch.MediaFetchService(
         repo,
         output_dir=output_dir,
