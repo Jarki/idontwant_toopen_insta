@@ -15,6 +15,7 @@ from ig_reel_downloader.downloaders.x import (
     UnsupportedXMediaError,
     XDownloader,
     _download_image_file,
+    _extract_x_engagement_metadata,
     _is_allowed_x_image_url,
 )
 
@@ -129,7 +130,12 @@ def test_x_download_maps_single_video(
                 "id": "1891234567890123456",
                 "title": "Alice - post",
                 "description": "A video post",
+                "view_count": 1000,
                 "like_count": 42,
+                "repost_count": 0,
+                "comment_count": 7,
+                "uploader": "alice",
+                "timestamp": 1_700_000_000,
                 "ext": "mp4",
                 "duration": 12,
                 "filesize": 1_000_000,
@@ -163,7 +169,14 @@ def test_x_download_maps_single_video(
     assert result.media.media_kind == "post"
     assert result.media.title == "Alice - post"
     assert result.media.description == "A video post"
-    assert result.media.metadata["like_count"] == 42
+    assert result.media.metadata == {
+        "view_count": 1000,
+        "like_count": 42,
+        "repost_count": 0,
+        "comment_count": 7,
+        "uploader": "alice",
+        "timestamp": 1_700_000_000,
+    }
     assert len(result.media.assets) == 1
     assert result.media.assets[0].asset_type == "video"
 
@@ -536,7 +549,10 @@ def test_x_download_falls_back_to_post_images(
               content="https://pbs.twimg.com/media/first.jpg:large">
         <meta property="og:image"
               content="https://pbs.twimg.com/media/second.png:large">
-        client:VHdlZXQ6MTIz:counts" data favorite_count:42
+        "client:VHdlZXQ6MTIz:counts":{"__typename":"ApiCounts",
+          "reply_count":3,"favorite_count":42,"retweet_count":0}
+        "client:VHdlZXQ6MTIz:viewCount":{"__typename":"ViewCountInfo",
+          "count":"900"}
     """
 
     def fake_download_image(url: str, filepath: Path) -> None:
@@ -566,7 +582,13 @@ def test_x_download_falls_back_to_post_images(
     assert result.media is not None
     assert result.media.title == "Alice (@alice) on X"
     assert result.media.description == "Photo post"
-    assert result.media.metadata["like_count"] == 42
+    assert result.media.metadata == {
+        "like_count": 42,
+        "repost_count": 0,
+        "comment_count": 3,
+        "view_count": 900,
+        "text_only": False,
+    }
     assert [asset.asset_type for asset in result.media.assets] == ["image", "image"]
     assert [Path(asset.filepath).suffix for asset in result.media.assets] == [
         ".jpg",
@@ -601,7 +623,8 @@ def test_x_download_maps_text_only_post(
         lambda _: (
             '<meta property="og:title" content="Alice (@alice) on X">'
             '<meta property="og:description" content="Text-only post body">'
-            'client:VHdlZXQ6MTIz:counts" data favorite_count:73'
+            '"client:VHdlZXQ6MTIz:counts":{"__typename":"ApiCounts",'
+            '"favorite_count":73}'
         ),
     )
     downloader = XDownloader()
@@ -620,6 +643,66 @@ def test_x_download_maps_text_only_post(
     assert result.media.assets == []
     assert result.media.metadata["like_count"] == 73
     assert result.media.metadata["text_only"] is True
+
+
+def test_x_hydration_counts_are_optional_and_post_scoped() -> None:
+    page = r"""
+        \"client:VHdlZXQ6OTk5:counts\":{\"__typename\":\"ApiCounts\",
+          \"favorite_count\":999,\"retweet_count\":999,\"reply_count\":999}
+        \"client:VHdlZXQ6MTIz:counts\":{\"reply_count\":0,
+          \"favorite_count\":73,\"retweet_count\":12,
+          \"nested\":{\"count\":888},\"__typename\":\"ApiCounts\"}
+        \"client:VHdlZXQ6MTIz:viewCount\":{\"count\":\"1001\",
+          \"nested\":{\"count\":777},\"__typename\":\"ViewCountInfo\"}
+        \"client:VHdlZXQ6MTIz:counts\":{\"__typename\":\"ApiCounts\",
+          \"favorite_count\":500,\"retweet_count\":500,\"reply_count\":500}
+        \"client:VHdlZXQ6OTk5:viewCount\":{\"__typename\":\"ViewCountInfo\",
+          \"count\":999}
+    """
+
+    assert _extract_x_engagement_metadata(page, "123") == {
+        "like_count": 73,
+        "repost_count": 12,
+        "comment_count": 0,
+        "view_count": 1001,
+    }
+
+
+def test_x_hydration_missing_and_null_counts_stay_absent() -> None:
+    page = (
+        '"client:VHdlZXQ6MTIz:counts":{"__typename":"ApiCounts",'
+        '"favorite_count":null,"retweet_count":0,"nested":{"count":222}}'
+        '"client:VHdlZXQ6MTIz:viewCount":{"__typename":"ViewCountInfo",'
+        '"other":{"count":111},"count":null}'
+    )
+
+    assert _extract_x_engagement_metadata(page, "123") == {"repost_count": 0}
+    assert _extract_x_engagement_metadata("application shell", "123") == {}
+    assert (
+        _extract_x_engagement_metadata(
+            '"client:VHdlZXQ6MTIz:counts":{"__typename":"Other",'
+            '"nested":{"__typename":"ApiCounts","favorite_count":555}}',
+            "123",
+        )
+        == {}
+    )
+    assert (
+        _extract_x_engagement_metadata(
+            '"client:VHdlZXQ6MTIz:counts":null '
+            '"client:VHdlZXQ6OTk5:counts":{"__typename":"ApiCounts",'
+            '"favorite_count":999}',
+            "123",
+        )
+        == {}
+    )
+    assert (
+        _extract_x_engagement_metadata(
+            '"client:VHdlZXQ6MTIzNA==:counts":{"__typename":"ApiCounts",'
+            '"favorite_count":1234}',
+            "123",
+        )
+        == {}
+    )
 
 
 def test_x_download_normalizes_failure(

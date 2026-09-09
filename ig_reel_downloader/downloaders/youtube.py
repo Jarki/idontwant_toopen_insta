@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -19,6 +20,9 @@ from ig_reel_downloader.downloaders.base import (
     ResolvedMediaRequest,
     ResolveResult,
     UrlCandidate,
+)
+from ig_reel_downloader.downloaders.provider_metadata import (
+    normalize_provider_metadata,
 )
 from ig_reel_downloader.downloaders.yt_dlp_support import (
     build_download_ytdlp_options,
@@ -203,10 +207,7 @@ class YouTubeDownloader:
                     original_url=url,
                     title=str(info.get("title") or ""),
                     description=info.get("description"),
-                    metadata={
-                        "like_count": int(info.get("like_count") or 0),
-                        "comments": info.get("comments", []),
-                    },
+                    metadata=_youtube_metadata(info),
                     assets=[map_video_asset(info, filepath=filepath)],
                     created_at=now,
                     updated_at=now,
@@ -225,6 +226,15 @@ class YouTubeDownloader:
                     "Failed to download YouTube video from %s (%s)", url, error
                 )
             return MediaDownloadResult(media=None, failure_reason=failure_reason)
+
+
+def _youtube_metadata(info: Mapping[str, object]) -> dict[str, object]:
+    return normalize_provider_metadata(
+        info,
+        counters=("view_count", "like_count", "comment_count"),
+        strings=("channel", "channel_id", "channel_url", "upload_date"),
+        numbers=("timestamp", "duration"),
+    )
 
 
 def _classify_youtube_error(error: Exception) -> DownloadFailureReason:

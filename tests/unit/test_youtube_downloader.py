@@ -307,6 +307,14 @@ def test_youtube_download_maps_single_video(
                 "id": "ABC123",
                 "title": "YouTube",
                 "description": "desc",
+                "view_count": 100,
+                "like_count": 0,
+                "comment_count": 3,
+                "channel": "Example Channel",
+                "channel_id": "channel-1",
+                "channel_url": "https://www.youtube.com/channel/channel-1",
+                "upload_date": "20260908",
+                "timestamp": 1_700_000_000,
                 "ext": "mp4",
                 "duration": 59,
             }
@@ -339,6 +347,17 @@ def test_youtube_download_maps_single_video(
     assert result.media.provider_item_id == "ABC123"
     assert result.media.title == "YouTube"
     assert result.media.description == "desc"
+    assert result.media.metadata == {
+        "view_count": 100,
+        "like_count": 0,
+        "comment_count": 3,
+        "channel": "Example Channel",
+        "channel_id": "channel-1",
+        "channel_url": "https://www.youtube.com/channel/channel-1",
+        "upload_date": "20260908",
+        "timestamp": 1_700_000_000,
+        "duration": 59,
+    }
     assert len(result.media.assets) == 1
     assert result.media.assets[0].asset_type == "video"
 

@@ -17,6 +17,7 @@ from ig_reel_downloader.downloaders import (
     UrlCandidate,
 )
 from ig_reel_downloader.media_fetch import MediaFetchResult
+from ig_reel_downloader.renderers import RenderConstraints, RenderedItem
 from ig_reel_downloader.repository.models import (
     ChatLeaderboardEntry,
     ChatUserStats,
@@ -26,7 +27,7 @@ from ig_reel_downloader.repository.models import (
     MediaTypeCount,
     TelegramUser,
 )
-from ig_reel_downloader.telegram_renderer import MediaRenderResult, MediaRenderTimedOut
+from ig_reel_downloader.telegram_sender import MediaRenderResult, MediaRenderTimedOut
 
 
 class FakeApplication:
@@ -54,7 +55,7 @@ class FakeApplicationBuilder:
         return FakeApplication()
 
 
-class FakeSender:
+class FakeTelegramUser:
     id = 123
     username = "alice"
     first_name = "Alice"
@@ -135,7 +136,7 @@ class FakeUpdate:
             else None
         )
         self.effective_chat = chat
-        self.effective_user = None if userless else FakeSender()
+        self.effective_user = None if userless else FakeTelegramUser()
         self.effective_sender = self.effective_user
 
 
@@ -256,7 +257,21 @@ class FakeFetchService:
         return self.results[candidate.url]
 
 
-class FakeRenderer:
+class FakeRendererRegistry:
+    def render(
+        self,
+        media: MediaItem,
+        constraints: RenderConstraints,
+    ) -> RenderedItem:
+        del constraints
+        return RenderedItem(
+            source=media,
+            text=media.title or media.original_url,
+            attachments=tuple(media.assets),
+        )
+
+
+class FakeSender:
     def __init__(
         self,
         events: list[str],
@@ -270,13 +285,14 @@ class FakeRenderer:
         self.updates: list[FakeUpdate] = []
         self.media_items: list[list[MediaItem]] = []
 
-    async def render(
+    async def send(
         self,
         update: FakeUpdate,
-        media_items: list[MediaItem],
+        rendered_items: list[RenderedItem],
     ) -> list[MediaRenderResult]:
-        self.events.append("renderer")
+        self.events.append("sender")
         self.updates.append(update)
+        media_items = [item.source for item in rendered_items]
         self.media_items.append(media_items)
         return [
             MediaRenderResult(
@@ -289,7 +305,7 @@ class FakeRenderer:
         ]
 
 
-class PartiallyTimedOutRenderer(FakeRenderer):
+class PartiallyTimedOutSender(FakeSender):
     def __init__(
         self,
         events: list[str],
@@ -298,14 +314,27 @@ class PartiallyTimedOutRenderer(FakeRenderer):
         super().__init__(events)
         self.completed_media = completed_media
 
-    async def render(
+    async def send(
         self,
         update: FakeUpdate,
-        media_items: list[MediaItem],
+        rendered_items: list[RenderedItem],
     ) -> list[MediaRenderResult]:
-        del update, media_items
+        del update
+        media_items = [item.source for item in rendered_items]
+        partial_results = (
+            [
+                MediaRenderResult(
+                    media=media_items[1],
+                    sent=False,
+                    telegram_file_ids={0: "partial-telegram-file-id"},
+                )
+            ]
+            if len(media_items) > 1
+            else []
+        )
         raise MediaRenderTimedOut(
-            [MediaRenderResult(media=self.completed_media, sent=True)]
+            [MediaRenderResult(media=self.completed_media, sent=True)],
+            partial_results,
         )
 
 
@@ -368,14 +397,15 @@ def build_app(
     monkeypatch: pytest.MonkeyPatch,
     registry: FakeRegistry,
     fetch_service: FakeFetchService,
-    renderer: FakeRenderer,
+    sender: FakeSender,
 ) -> app_module.IgReelDownloaderApp:
     monkeypatch.setattr(app_module, "ApplicationBuilder", FakeApplicationBuilder)
     return app_module.IgReelDownloaderApp(
         "telegram-token",
         registry,
         fetch_service,
-        renderer,
+        FakeRendererRegistry(),
+        sender,
     )
 
 
@@ -388,11 +418,11 @@ def build_command_app(
         monkeypatch,
         FakeRegistry([], events),
         FakeFetchService({}, events, repository=repository),
-        FakeRenderer(events),
+        FakeSender(events),
     )
 
 
-def test_message_handler_uses_registry_fetch_service_and_renderer(
+def test_message_handler_uses_registry_fetch_service_renderer_and_sender(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     first_url = "https://www.instagram.com/reel/ABC123"
@@ -413,8 +443,8 @@ def test_message_handler_uses_registry_fetch_service_and_renderer(
         },
         events,
     )
-    renderer = FakeRenderer(events)
-    app = build_app(monkeypatch, registry, fetch_service, renderer)
+    sender = FakeSender(events)
+    app = build_app(monkeypatch, registry, fetch_service, sender)
     chat = FakeChat()
     update = FakeUpdate(f"reels: {first_url} {second_url}", chat)
 
@@ -425,8 +455,8 @@ def test_message_handler_uses_registry_fetch_service_and_renderer(
     assert len(fetch_service.candidates) == 2
     assert first_candidate in fetch_service.candidates
     assert second_candidate in fetch_service.candidates
-    assert renderer.updates == [update]
-    assert renderer.media_items == [[first_media]]
+    assert sender.updates == [update]
+    assert sender.media_items == [[first_media]]
     assert len(fetch_service.repository.upserted_users) == 1
     user = fetch_service.repository.upserted_users[0]
     requests = fetch_service.repository.inserted_requests
@@ -446,10 +476,10 @@ def test_message_handler_uses_registry_fetch_service_and_renderer(
     ]
     assert events[0] == "registry"
     assert set(events[1:-1]) == {f"fetch:{first_url}", f"fetch:{second_url}"}
-    assert events[-1] == "renderer"
+    assert events[-1] == "sender"
 
 
-def test_message_handler_persists_file_ids_returned_by_renderer(
+def test_message_handler_persists_file_ids_returned_by_sender(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     url = "https://www.instagram.com/reel/ABC123"
@@ -461,12 +491,12 @@ def test_message_handler_persists_file_ids_returned_by_renderer(
         events,
         repository=repository,
     )
-    renderer = FakeRenderer(events, telegram_file_ids={0: "telegram-video-id"})
+    sender = FakeSender(events, telegram_file_ids={0: "telegram-video-id"})
     app = build_app(
         monkeypatch,
         FakeRegistry([make_candidate(url, "ABC123")], events),
         fetch_service,
-        renderer,
+        sender,
     )
 
     asyncio.run(app._message_handler(FakeUpdate(url, FakeChat()), object()))
@@ -476,7 +506,7 @@ def test_message_handler_persists_file_ids_returned_by_renderer(
     ]
 
 
-def test_message_handler_does_not_mark_failed_render_as_delivered(
+def test_message_handler_does_not_mark_failed_send_as_delivered(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     url = "https://www.instagram.com/reel/ABC123"
@@ -491,7 +521,7 @@ def test_message_handler_does_not_mark_failed_render_as_delivered(
         monkeypatch,
         FakeRegistry([candidate], events),
         fetch_service,
-        FakeRenderer(events, sent=False),
+        FakeSender(events, sent=False),
     )
     chat = FakeChat()
 
@@ -526,7 +556,7 @@ def test_message_handler_records_deliveries_completed_before_timeout(
             events,
         ),
         fetch_service,
-        PartiallyTimedOutRenderer(events, first_media),
+        PartiallyTimedOutSender(events, first_media),
     )
     chat = FakeChat()
 
@@ -535,6 +565,9 @@ def test_message_handler_records_deliveries_completed_before_timeout(
     )
 
     assert fetch_service.repository.delivered_request_ids == [100]
+    assert fetch_service.repository.updated_media_file_ids == [
+        (second_media.id, 0, "partial-telegram-file-id")
+    ]
     assert chat.sent_messages == [
         "Timed out while uploading video(s) to Telegram. "
         "Some media may have been delivered."
@@ -650,8 +683,8 @@ def test_message_handler_records_and_processes_userless_request(
         {url: MediaFetchResult(media=media, url=url)},
         events,
     )
-    renderer = FakeRenderer(events)
-    app = build_app(monkeypatch, registry, fetch_service, renderer)
+    sender = FakeSender(events)
+    app = build_app(monkeypatch, registry, fetch_service, sender)
     update = FakeUpdate(url, FakeChat(), userless=True)
 
     asyncio.run(app._message_handler(update, object()))
@@ -660,7 +693,7 @@ def test_message_handler_records_and_processes_userless_request(
     assert len(fetch_service.repository.inserted_requests) == 1
     assert fetch_service.repository.inserted_requests[0].telegram_user_id is None
     assert fetch_service.media_request_ids == [100]
-    assert renderer.media_items == [[media]]
+    assert sender.media_items == [[media]]
 
 
 def test_message_handler_sends_auth_failure_error(
@@ -674,13 +707,13 @@ def test_message_handler_sends_auth_failure_error(
         {url: MediaFetchResult(media=None, url=url, failure_reason="auth")},
         events,
     )
-    renderer = FakeRenderer(events)
-    app = build_app(monkeypatch, registry, fetch_service, renderer)
+    sender = FakeSender(events)
+    app = build_app(monkeypatch, registry, fetch_service, sender)
     chat = FakeChat()
 
     asyncio.run(app._message_handler(FakeUpdate(url, chat), object()))
 
-    assert renderer.media_items == [[]]
+    assert sender.media_items == [[]]
     assert chat.sent_messages == [
         "Could not download (auth expired): https://www.instagram.com/reel/ABC123"
     ]
@@ -697,8 +730,8 @@ def test_message_handler_sends_temporary_block_message(
         {url: MediaFetchResult(media=None, url=url, failure_reason="blocked")},
         events,
     )
-    renderer = FakeRenderer(events)
-    app = build_app(monkeypatch, registry, fetch_service, renderer)
+    sender = FakeSender(events)
+    app = build_app(monkeypatch, registry, fetch_service, sender)
     chat = FakeChat()
 
     asyncio.run(app._message_handler(FakeUpdate(url, chat), object()))
@@ -720,14 +753,14 @@ def test_message_handler_does_not_send_error_for_skipped_fetch_result(
         {url: MediaFetchResult(media=None, url=url, skipped=True)},
         events,
     )
-    renderer = FakeRenderer(events)
-    app = build_app(monkeypatch, registry, fetch_service, renderer)
+    sender = FakeSender(events)
+    app = build_app(monkeypatch, registry, fetch_service, sender)
     chat = FakeChat()
 
     asyncio.run(app._message_handler(FakeUpdate(url, chat), object()))
 
     assert chat.sent_messages == []
-    assert renderer.media_items == []
+    assert sender.media_items == []
 
 
 def test_add_judgmental_command_stores_replied_animation_file_id(
@@ -737,8 +770,8 @@ def test_add_judgmental_command_stores_replied_animation_file_id(
     registry = FakeRegistry([], events)
     repository = FakeRepository()
     fetch_service = FakeFetchService({}, events, repository=repository)
-    renderer = FakeRenderer(events)
-    app = build_app(monkeypatch, registry, fetch_service, renderer)
+    sender = FakeSender(events)
+    app = build_app(monkeypatch, registry, fetch_service, sender)
     chat = FakeChat()
     replied_animation = FakeMessage(
         None,
@@ -762,8 +795,8 @@ def test_add_judgmental_command_requires_replied_animation(
     registry = FakeRegistry([], events)
     repository = FakeRepository()
     fetch_service = FakeFetchService({}, events, repository=repository)
-    renderer = FakeRenderer(events)
-    app = build_app(monkeypatch, registry, fetch_service, renderer)
+    sender = FakeSender(events)
+    app = build_app(monkeypatch, registry, fetch_service, sender)
     chat = FakeChat()
     update = FakeUpdate("/add-judgmental", chat)
 
@@ -785,14 +818,15 @@ def test_message_handler_prefers_stored_judgmental_file_id(
     repository = FakeRepository()
     repository.judgmental_file_ids = ["stored-file-id"]
     fetch_service = FakeFetchService({}, events, repository=repository)
-    renderer = FakeRenderer(events)
+    sender = FakeSender(events)
 
     monkeypatch.setattr(app_module, "ApplicationBuilder", FakeApplicationBuilder)
     app = app_module.IgReelDownloaderApp(
         "telegram-token",
         registry,
         fetch_service,
-        renderer,
+        FakeRendererRegistry(),
+        sender,
         judgmental_chance=0.5,
         judgmental_gifs=["https://example.com/broken.gif"],
     )
@@ -827,14 +861,15 @@ def test_message_handler_sends_judgmental_gif_when_chance_triggers(
     events: list[str] = []
     registry = FakeRegistry([candidate], events)
     fetch_service = FakeFetchService({}, events)
-    renderer = FakeRenderer(events)
+    sender = FakeSender(events)
 
     monkeypatch.setattr(app_module, "ApplicationBuilder", FakeApplicationBuilder)
     app = app_module.IgReelDownloaderApp(
         "telegram-token",
         registry,
         fetch_service,
-        renderer,
+        FakeRendererRegistry(),
+        sender,
         judgmental_chance=0.5,
         judgmental_gifs=[gif_url],
     )
@@ -854,7 +889,7 @@ def test_message_handler_sends_judgmental_gif_when_chance_triggers(
     assert anim.animation == gif_url
     assert anim.reply_to_message_id == 42  # matches FakeMessage.message_id
     assert chat.sent_messages == []  # no download error
-    # Registry is called to check/collect candidates, but fetch/renderer never run
+    # Registry is called to check/collect candidates, but fetch/sender never run
     assert events == ["registry"]
     # The file_id should have been cached
     assert app._judgmental_file_ids.get(gif_url) == f"file_id:{gif_url}"
@@ -869,14 +904,15 @@ def test_judgmental_gif_uses_cached_file_id_on_subsequent_send(
     events: list[str] = []
     registry = FakeRegistry([candidate], events)
     fetch_service = FakeFetchService({}, events)
-    renderer = FakeRenderer(events)
+    sender = FakeSender(events)
 
     monkeypatch.setattr(app_module, "ApplicationBuilder", FakeApplicationBuilder)
     app = app_module.IgReelDownloaderApp(
         "telegram-token",
         registry,
         fetch_service,
-        renderer,
+        FakeRendererRegistry(),
+        sender,
         judgmental_chance=0.5,
         judgmental_gifs=[gif_url],
     )

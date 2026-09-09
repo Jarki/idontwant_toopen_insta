@@ -8,11 +8,18 @@ import pytest
 from telegram import InputMediaVideo
 from telegram.error import BadRequest, TimedOut
 
+from ig_reel_downloader.renderers import (
+    RenderedItem,
+    UnsupportedMediaError,
+    default_renderer_registry,
+)
 from ig_reel_downloader.repository.models import MediaAsset, MediaItem
-from ig_reel_downloader.telegram_renderer import (
+from ig_reel_downloader.telegram_sender import (
+    TELEGRAM_RENDER_CONSTRAINTS,
+    MediaRenderResult,
     MediaRenderTimedOut,
-    TelegramMediaRenderer,
-    _format_caption,
+    TelegramMediaSender,
+    _validate_rendered_item,
 )
 
 
@@ -49,6 +56,7 @@ class FakeChat:
         self.sent_messages: list[dict[str, Any]] = []
         self.raise_timeout = False
         self.timeout_message_number: int | None = None
+        self.timeout_group_number: int | None = None
         self.invalid_file_ids: set[str] = set()
 
     async def send_video(self, video: str, **kwargs: Any) -> Any:
@@ -73,7 +81,8 @@ class FakeChat:
         )
 
     async def send_media_group(self, media: list[Any], **kwargs: Any) -> list[Any]:
-        if self.raise_timeout:
+        group_number = len(self.sent_groups) + 1
+        if self.raise_timeout or group_number == self.timeout_group_number:
             raise TimedOut("timeout")
         self.sent_groups.append({"media": media, **kwargs})
         if any(item.media in self.invalid_file_ids for item in media):
@@ -106,28 +115,40 @@ class FakeUpdate:
         self.effective_chat = chat
 
 
-def test_renderer_sends_single_video_with_current_caption(tmp_path: Path) -> None:
+async def _send_media(
+    sender: TelegramMediaSender,
+    update: FakeUpdate,
+    media_items: list[MediaItem],
+) -> list[MediaRenderResult]:
+    registry = default_renderer_registry()
+    rendered_items = [
+        registry.render(media, TELEGRAM_RENDER_CONSTRAINTS) for media in media_items
+    ]
+    return await sender.send(update, rendered_items)
+
+
+def test_sender_sends_single_video_with_current_caption(tmp_path: Path) -> None:
     media_file = tmp_path / "ABC123.mp4"
     media_file.write_bytes(b"video")
     chat = FakeChat()
-    renderer = TelegramMediaRenderer(
+    sender = TelegramMediaSender(
         telegram_media_write_timeout=120,
         telegram_read_timeout=30,
     )
 
     results = asyncio.run(
-        renderer.render(FakeUpdate(chat), [make_media(str(media_file))])
+        _send_media(sender, FakeUpdate(chat), [make_media(str(media_file))])
     )
 
     assert [result.sent for result in results] == [True]
     assert chat.sent_videos[0]["video"] == str(media_file)
-    assert chat.sent_videos[0]["caption"] == "Title • ❤️ 12\n\nDescription"
+    assert chat.sent_videos[0]["caption"] == "Title\n\nDescription\n\n❤️ 12"
     assert chat.sent_videos[0]["write_timeout"] == 120
     assert chat.sent_videos[0]["read_timeout"] == 30
     assert results[0].telegram_file_ids == {0: "returned-video-file-id"}
 
 
-def test_renderer_reuses_stored_telegram_file_id_without_opening_file(
+def test_sender_reuses_stored_telegram_file_id_without_opening_file(
     tmp_path: Path,
 ) -> None:
     missing_file = tmp_path / "missing.mp4"
@@ -138,11 +159,11 @@ def test_renderer_reuses_stored_telegram_file_id_without_opening_file(
         telegram_file_id="stored-video-file-id",
     )
     chat = FakeChat()
-    renderer = TelegramMediaRenderer(120, 30)
+    sender = TelegramMediaSender(120, 30)
 
     results = asyncio.run(
-        renderer.render(
-            FakeUpdate(chat), [make_media(str(missing_file), assets=[asset])]
+        _send_media(
+            sender, FakeUpdate(chat), [make_media(str(missing_file), assets=[asset])]
         )
     )
 
@@ -150,7 +171,7 @@ def test_renderer_reuses_stored_telegram_file_id_without_opening_file(
     assert results[0].telegram_file_ids == {0: "returned-video-file-id"}
 
 
-def test_renderer_reuploads_when_stored_telegram_file_id_is_invalid(
+def test_sender_reuploads_when_stored_telegram_file_id_is_invalid(
     tmp_path: Path,
 ) -> None:
     media_file = tmp_path / "video.mp4"
@@ -163,10 +184,12 @@ def test_renderer_reuploads_when_stored_telegram_file_id_is_invalid(
     )
     chat = FakeChat()
     chat.invalid_file_ids.add("invalid-video-file-id")
-    renderer = TelegramMediaRenderer(120, 30)
+    sender = TelegramMediaSender(120, 30)
 
     results = asyncio.run(
-        renderer.render(FakeUpdate(chat), [make_media(str(media_file), assets=[asset])])
+        _send_media(
+            sender, FakeUpdate(chat), [make_media(str(media_file), assets=[asset])]
+        )
     )
 
     assert [sent["video"] for sent in chat.sent_videos] == [
@@ -176,31 +199,37 @@ def test_renderer_reuploads_when_stored_telegram_file_id_is_invalid(
     assert results[0].telegram_file_ids == {0: "returned-video-file-id"}
 
 
-def test_renderer_sends_multiple_videos_as_media_group(tmp_path: Path) -> None:
+def test_sender_sends_multiple_items_independently(tmp_path: Path) -> None:
     first = tmp_path / "first.mp4"
     second = tmp_path / "second.mp4"
     first.write_bytes(b"first")
     second.write_bytes(b"second")
     chat = FakeChat()
-    renderer = TelegramMediaRenderer(
+    sender = TelegramMediaSender(
         telegram_media_write_timeout=120,
         telegram_read_timeout=30,
     )
 
     results = asyncio.run(
-        renderer.render(
-            FakeUpdate(chat), [make_media(str(first)), make_media(str(second))]
+        _send_media(
+            sender,
+            FakeUpdate(chat),
+            [make_media(str(first)), make_media(str(second))],
         )
     )
 
     assert [result.sent for result in results] == [True, True]
-    assert len(chat.sent_groups) == 1
-    assert len(chat.sent_groups[0]["media"]) == 2
-    assert results[0].telegram_file_ids == {0: "returned-video-file-id-0"}
-    assert results[1].telegram_file_ids == {0: "returned-video-file-id-1"}
+    assert chat.sent_groups == []
+    assert [sent["video"] for sent in chat.sent_videos] == [str(first), str(second)]
+    assert [sent["caption"] for sent in chat.sent_videos] == [
+        "Title\n\nDescription\n\n❤️ 12",
+        "Title\n\nDescription\n\n❤️ 12",
+    ]
+    assert results[0].telegram_file_ids == {0: "returned-video-file-id"}
+    assert results[1].telegram_file_ids == {0: "returned-video-file-id"}
 
 
-def test_renderer_media_group_reuses_stored_telegram_file_ids(
+def test_sender_media_group_reuses_stored_telegram_file_ids(
     tmp_path: Path,
 ) -> None:
     assets = [
@@ -218,10 +247,10 @@ def test_renderer_media_group_reuses_stored_telegram_file_ids(
         ),
     ]
     chat = FakeChat()
-    renderer = TelegramMediaRenderer(120, 30)
+    sender = TelegramMediaSender(120, 30)
 
     results = asyncio.run(
-        renderer.render(FakeUpdate(chat), [make_media("unused", assets=assets)])
+        _send_media(sender, FakeUpdate(chat), [make_media("unused", assets=assets)])
     )
 
     assert [item.media for item in chat.sent_groups[0]["media"]] == [
@@ -234,7 +263,7 @@ def test_renderer_media_group_reuses_stored_telegram_file_ids(
     }
 
 
-def test_renderer_reuploads_media_group_when_stored_file_id_is_invalid(
+def test_sender_reuploads_media_group_when_stored_file_id_is_invalid(
     tmp_path: Path,
 ) -> None:
     video_path = tmp_path / "video.mp4"
@@ -257,10 +286,10 @@ def test_renderer_reuploads_media_group_when_stored_file_id_is_invalid(
     ]
     chat = FakeChat()
     chat.invalid_file_ids.add("invalid-video-file-id")
-    renderer = TelegramMediaRenderer(120, 30)
+    sender = TelegramMediaSender(120, 30)
 
     results = asyncio.run(
-        renderer.render(FakeUpdate(chat), [make_media("unused", assets=assets)])
+        _send_media(sender, FakeUpdate(chat), [make_media("unused", assets=assets)])
     )
 
     assert len(chat.sent_groups) == 2
@@ -278,26 +307,28 @@ def test_renderer_reuploads_media_group_when_stored_file_id_is_invalid(
     }
 
 
-def test_renderer_sends_single_image_with_caption(tmp_path: Path) -> None:
+def test_sender_sends_single_image_with_caption(tmp_path: Path) -> None:
     image_path = tmp_path / "image.jpg"
     image_path.write_bytes(b"image")
     image = MediaAsset(asset_index=0, asset_type="image", filepath=str(image_path))
     chat = FakeChat()
-    renderer = TelegramMediaRenderer(
+    sender = TelegramMediaSender(
         telegram_media_write_timeout=120,
         telegram_read_timeout=30,
     )
 
     results = asyncio.run(
-        renderer.render(FakeUpdate(chat), [make_media(str(image_path), assets=[image])])
+        _send_media(
+            sender, FakeUpdate(chat), [make_media(str(image_path), assets=[image])]
+        )
     )
 
     assert [result.sent for result in results] == [True]
     assert chat.sent_photos[0]["photo"] == str(image_path)
-    assert chat.sent_photos[0]["caption"] == "Title • ❤️ 12\n\nDescription"
+    assert chat.sent_photos[0]["caption"] == "Title\n\nDescription\n\n❤️ 12"
 
 
-def test_renderer_sends_multi_asset_item_as_media_group(tmp_path: Path) -> None:
+def test_sender_sends_multi_asset_item_as_media_group(tmp_path: Path) -> None:
     image_path = tmp_path / "image.jpg"
     video_path = tmp_path / "video.mp4"
     image_path.write_bytes(b"image")
@@ -310,20 +341,20 @@ def test_renderer_sends_multi_asset_item_as_media_group(tmp_path: Path) -> None:
         ],
     )
     chat = FakeChat()
-    renderer = TelegramMediaRenderer(
+    sender = TelegramMediaSender(
         telegram_media_write_timeout=120,
         telegram_read_timeout=30,
     )
 
-    results = asyncio.run(renderer.render(FakeUpdate(chat), [media]))
+    results = asyncio.run(_send_media(sender, FakeUpdate(chat), [media]))
 
     assert [result.sent for result in results] == [True]
     assert len(chat.sent_groups) == 1
     assert len(chat.sent_groups[0]["media"]) == 2
-    assert chat.sent_groups[0]["media"][0].caption == "Title • ❤️ 12\n\nDescription"
+    assert chat.sent_groups[0]["media"][0].caption == "Title\n\nDescription\n\n❤️ 12"
 
 
-def test_renderer_splits_more_than_ten_assets_into_valid_media_groups(
+def test_sender_splits_more_than_ten_assets_into_valid_media_groups(
     tmp_path: Path,
 ) -> None:
     assets = []
@@ -338,22 +369,65 @@ def test_renderer_splits_more_than_ten_assets_into_valid_media_groups(
             )
         )
     chat = FakeChat()
-    renderer = TelegramMediaRenderer(
+    sender = TelegramMediaSender(
         telegram_media_write_timeout=120,
         telegram_read_timeout=30,
     )
 
     results = asyncio.run(
-        renderer.render(FakeUpdate(chat), [make_media("unused", assets=assets)])
+        _send_media(sender, FakeUpdate(chat), [make_media("unused", assets=assets)])
     )
 
     assert [result.sent for result in results] == [True]
     assert [len(group["media"]) for group in chat.sent_groups] == [9, 2]
-    assert chat.sent_groups[0]["media"][0].caption == "Title • ❤️ 12\n\nDescription"
+    assert chat.sent_groups[0]["media"][0].caption == "Title\n\nDescription\n\n❤️ 12"
     assert chat.sent_groups[1]["media"][0].caption is None
 
 
-def test_renderer_sends_reddit_text_post_without_media(tmp_path: Path) -> None:
+def test_sender_preserves_file_ids_when_later_media_group_times_out(
+    tmp_path: Path,
+) -> None:
+    assets = []
+    for index in range(11):
+        image_path = tmp_path / f"image-{index}.jpg"
+        image_path.write_bytes(b"image")
+        assets.append(
+            MediaAsset(asset_index=index, asset_type="image", filepath=str(image_path))
+        )
+    chat = FakeChat()
+    chat.timeout_group_number = 2
+    sender = TelegramMediaSender(120, 30)
+
+    with pytest.raises(MediaRenderTimedOut) as exc_info:
+        asyncio.run(
+            _send_media(sender, FakeUpdate(chat), [make_media("unused", assets=assets)])
+        )
+
+    assert exc_info.value.completed_results == []
+    assert len(exc_info.value.partial_results) == 1
+    partial = exc_info.value.partial_results[0]
+    assert partial.sent is False
+    assert partial.telegram_file_ids == {
+        index: f"returned-photo-file-id-{index}" for index in range(9)
+    }
+
+
+def test_sender_validates_rendered_attachments_against_their_source() -> None:
+    source = make_media("video.mp4")
+    unknown_asset = source.assets[0].model_copy(update={"filepath": "other.mp4"})
+
+    with pytest.raises(ValueError, match="outside its source"):
+        _validate_rendered_item(
+            RenderedItem(source=source, text="caption", attachments=(unknown_asset,))
+        )
+
+    with pytest.raises(ValueError, match="dropped all"):
+        _validate_rendered_item(
+            RenderedItem(source=source, text="text instead", attachments=())
+        )
+
+
+def test_sender_sends_reddit_text_post_without_media(tmp_path: Path) -> None:
     text_post = make_media(
         "unused",
         assets=[],
@@ -364,17 +438,17 @@ def test_renderer_sends_reddit_text_post_without_media(tmp_path: Path) -> None:
     text_post.media_kind = "post"
     text_post.metadata = {"like_count": 42, "text_only": True}
     chat = FakeChat()
-    renderer = TelegramMediaRenderer(
+    sender = TelegramMediaSender(
         telegram_media_write_timeout=120,
         telegram_read_timeout=30,
     )
 
-    results = asyncio.run(renderer.render(FakeUpdate(chat), [text_post]))
+    results = asyncio.run(_send_media(sender, FakeUpdate(chat), [text_post]))
 
     assert [result.sent for result in results] == [True]
     assert chat.sent_messages == [
         {
-            "text": "Text post • ❤️ 42\n\nPost body",
+            "text": "Text post\n\nPost body\n\n⬆️ 42",
             "write_timeout": 120,
             "read_timeout": 30,
         }
@@ -384,7 +458,7 @@ def test_renderer_sends_reddit_text_post_without_media(tmp_path: Path) -> None:
     assert chat.sent_groups == []
 
 
-def test_renderer_sends_text_only_x_post_body() -> None:
+def test_sender_sends_text_only_x_post_body() -> None:
     text_post = make_media(
         "unused",
         assets=[],
@@ -395,24 +469,24 @@ def test_renderer_sends_text_only_x_post_body() -> None:
     text_post.media_kind = "post"
     text_post.metadata = {"like_count": 73, "text_only": True}
     chat = FakeChat()
-    renderer = TelegramMediaRenderer(
+    sender = TelegramMediaSender(
         telegram_media_write_timeout=120,
         telegram_read_timeout=30,
     )
 
-    results = asyncio.run(renderer.render(FakeUpdate(chat), [text_post]))
+    results = asyncio.run(_send_media(sender, FakeUpdate(chat), [text_post]))
 
     assert [result.sent for result in results] == [True]
     assert chat.sent_messages == [
         {
-            "text": "Alice (@alice) on X • ❤️ 73\n\nText-only post body",
+            "text": "Alice (@alice) on X\n\nText-only post body\n\n❤️ 73",
             "write_timeout": 120,
             "read_timeout": 30,
         }
     ]
 
 
-def test_renderer_reports_completed_items_when_later_send_times_out() -> None:
+def test_sender_reports_completed_items_when_later_send_times_out() -> None:
     first = make_media("unused", assets=[], title="First", description="Body")
     first.metadata = {"text_only": True}
     second = first.model_copy(
@@ -421,10 +495,10 @@ def test_renderer_reports_completed_items_when_later_send_times_out() -> None:
     )
     chat = FakeChat()
     chat.timeout_message_number = 2
-    renderer = TelegramMediaRenderer(120, 30)
+    sender = TelegramMediaSender(120, 30)
 
     with pytest.raises(MediaRenderTimedOut) as exc_info:
-        asyncio.run(renderer.render(FakeUpdate(chat), [first, second]))
+        asyncio.run(_send_media(sender, FakeUpdate(chat), [first, second]))
 
     assert [result.media.id for result in exc_info.value.completed_results] == [
         first.id
@@ -432,159 +506,74 @@ def test_renderer_reports_completed_items_when_later_send_times_out() -> None:
     assert [result.sent for result in exc_info.value.completed_results] == [True]
 
 
-def test_renderer_truncates_long_text_only_x_post() -> None:
+def test_sender_truncates_long_text_only_x_post() -> None:
     text_post = make_media("unused", assets=[], description="D" * 5000)
     text_post.provider = "x"
     text_post.media_kind = "post"
     text_post.metadata = {"like_count": 73, "text_only": True}
     chat = FakeChat()
-    renderer = TelegramMediaRenderer(
+    sender = TelegramMediaSender(
         telegram_media_write_timeout=120,
         telegram_read_timeout=30,
     )
 
-    asyncio.run(renderer.render(FakeUpdate(chat), [text_post]))
+    asyncio.run(_send_media(sender, FakeUpdate(chat), [text_post]))
 
     assert len(chat.sent_messages[0]["text"]) == 4096
-    assert chat.sent_messages[0]["text"].endswith("…")
+    assert chat.sent_messages[0]["text"].endswith("…\n\n❤️ 73")
 
 
-def test_renderer_returns_unsupported_for_empty_assets(tmp_path: Path) -> None:
+def test_registry_rejects_empty_non_text_media(tmp_path: Path) -> None:
     chat = FakeChat()
-    renderer = TelegramMediaRenderer(
-        telegram_media_write_timeout=120,
-        telegram_read_timeout=30,
-    )
+    sender = TelegramMediaSender(120, 30)
 
-    results = asyncio.run(
-        renderer.render(
-            FakeUpdate(chat),
-            [make_media(str(tmp_path / "nonexistent.mp4"), assets=[])],
+    with pytest.raises(UnsupportedMediaError):
+        asyncio.run(
+            _send_media(
+                sender,
+                FakeUpdate(chat),
+                [make_media(str(tmp_path / "nonexistent.mp4"), assets=[])],
+            )
         )
-    )
 
-    assert results[0].sent is False
-    assert results[0].failure_reason == "unsupported"
     assert chat.sent_videos == []
     assert chat.sent_groups == []
 
 
-def test_renderer_propagates_timed_out_for_single_image(tmp_path: Path) -> None:
+def test_sender_propagates_timed_out_for_single_image(tmp_path: Path) -> None:
     image_path = tmp_path / "image.jpg"
     image_path.write_bytes(b"image")
     image = MediaAsset(asset_index=0, asset_type="image", filepath=str(image_path))
     chat = FakeChat()
     chat.raise_timeout = True
-    renderer = TelegramMediaRenderer(
+    sender = TelegramMediaSender(
         telegram_media_write_timeout=120,
         telegram_read_timeout=30,
     )
 
     with pytest.raises(TimedOut):
         asyncio.run(
-            renderer.render(
-                FakeUpdate(chat), [make_media(str(image_path), assets=[image])]
+            _send_media(
+                sender,
+                FakeUpdate(chat),
+                [make_media(str(image_path), assets=[image])],
             )
         )
 
 
-def test_renderer_propagates_timed_out_for_app_friendly_message(
+def test_sender_propagates_timed_out_for_app_friendly_message(
     tmp_path: Path,
 ) -> None:
     media_file = tmp_path / "ABC123.mp4"
     media_file.write_bytes(b"video")
     chat = FakeChat()
     chat.raise_timeout = True
-    renderer = TelegramMediaRenderer(
+    sender = TelegramMediaSender(
         telegram_media_write_timeout=120,
         telegram_read_timeout=30,
     )
 
     with pytest.raises(TimedOut):
-        asyncio.run(renderer.render(FakeUpdate(chat), [make_media(str(media_file))]))
-
-
-def test_format_caption_no_description() -> None:
-    media = make_media("fake.mp4", description=None)
-    assert _format_caption(media) == "Title • ❤️ 12"
-
-
-def test_format_caption_empty_description() -> None:
-    media = make_media("fake.mp4", description="")
-    assert _format_caption(media) == "Title • ❤️ 12"
-
-
-def test_format_caption_removes_repeated_x_description_from_title() -> None:
-    description = (
-        "GPT-6 Astra gives me realtime back pain physical therapy! "
-        "It connected the wearable I built."
-    )
-    media = make_media(
-        "fake.mp4",
-        title=(
-            "Rohan Kotecha - GPT-6 Astra gives me realtime back pain physical "
-            "therapy! It connect..."
-        ),
-        description=description,
-    ).model_copy(update={"provider": "x"})
-
-    assert _format_caption(media) == f"Rohan Kotecha • ❤️ 12\n\n{description}"
-
-
-def test_format_caption_preserves_non_x_title_with_description_prefix() -> None:
-    description = "Repeated description text that is long enough to identify"
-    media = make_media(
-        "fake.mp4",
-        title=f"Creator - {description}",
-        description=description,
-    )
-
-    assert _format_caption(media).startswith(f"Creator - {description} • ❤️ 12")
-
-
-def test_format_caption_long_description_truncated() -> None:
-    media = make_media("fake.mp4", description="D" * 2000)
-    caption = _format_caption(media)
-    assert len(caption) == 1024
-    assert caption.startswith("Title • ❤️ 12")
-    assert caption.endswith("…")
-
-
-def test_format_caption_exact_boundary_no_truncation() -> None:
-    # Title (5) + likes (8) + \n\n (2) + 1009-char description = 1024 exactly
-    media = make_media("fake.mp4", description="D" * 1009)
-    caption = _format_caption(media)
-    assert caption == f"Title • ❤️ 12\n\n{'D' * 1009}"
-    assert len(caption) == 1024
-
-
-def test_format_caption_just_over_boundary_truncates_description() -> None:
-    media = make_media("fake.mp4", description="D" * 1010)
-    caption = _format_caption(media)
-    assert len(caption) == 1024
-    assert caption.startswith("Title • ❤️ 12\n\n")
-    assert caption.endswith("…")
-
-
-def test_format_caption_long_title_truncates_title() -> None:
-    media = make_media("fake.mp4", title="T" * 1020, description=None)
-    caption = _format_caption(media)
-    assert len(caption) == 1024
-    assert caption.startswith("T" * 1015 + "…")
-    assert caption.endswith(" • ❤️ 12")
-
-
-def test_format_caption_long_title_drops_description() -> None:
-    media = make_media("fake.mp4", title="T" * 1017, description="D" * 100)
-    caption = _format_caption(media)
-    assert len(caption) == 1024
-    assert caption.startswith("T" * 1015 + "…")
-    assert "\n\n" not in caption
-    assert caption.endswith(" • ❤️ 12")
-
-
-def test_format_caption_title_exact_boundary_no_truncation() -> None:
-    media = make_media("fake.mp4", title="T" * 1016, description=None)
-    caption = _format_caption(media)
-    assert caption == f"{'T' * 1016} • ❤️ 12"
-    assert len(caption) == 1024
+        asyncio.run(
+            _send_media(sender, FakeUpdate(chat), [make_media(str(media_file))])
+        )

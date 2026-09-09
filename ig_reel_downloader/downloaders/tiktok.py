@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections.abc import Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
@@ -18,6 +19,9 @@ from ig_reel_downloader.downloaders.base import (
     ResolvedMediaRequest,
     ResolveResult,
     UrlCandidate,
+)
+from ig_reel_downloader.downloaders.provider_metadata import (
+    normalize_provider_metadata,
 )
 from ig_reel_downloader.downloaders.yt_dlp_support import (
     build_download_ytdlp_options,
@@ -191,10 +195,7 @@ class TikTokDownloader:
                         original_url=url,
                         title=str(info.get("title") or ""),
                         description=info.get("description"),
-                        metadata={
-                            "like_count": int(info.get("like_count") or 0),
-                            "comments": info.get("comments", []),
-                        },
+                        metadata=_tiktok_metadata(info),
                         assets=[map_video_asset(info, filepath=filepath)],
                         created_at=now,
                         updated_at=now,
@@ -224,6 +225,22 @@ class TikTokDownloader:
                 return MediaDownloadResult(media=None, failure_reason=failure_reason)
 
         raise AssertionError("TikTok download attempts exhausted without a result")
+
+
+def _tiktok_metadata(info: Mapping[str, object]) -> dict[str, object]:
+    return normalize_provider_metadata(
+        info,
+        counters=(
+            "view_count",
+            "like_count",
+            "comment_count",
+            "repost_count",
+            "save_count",
+        ),
+        strings=("uploader", "channel", "track", "album"),
+        string_lists=("artists",),
+        numbers=("timestamp",),
+    )
 
 
 def _classify_tiktok_error(error: Exception) -> DownloadFailureReason:

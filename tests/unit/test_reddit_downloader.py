@@ -167,6 +167,10 @@ def test_reddit_downloads_direct_image(
         "selftext": "description",
         "ups": 181,
         "num_comments": 24,
+        "upvote_ratio": 0.91,
+        "author": "alice",
+        "subreddit": "pics",
+        "created_utc": 1_700_000_000,
         "over_18": False,
         "post_hint": "image",
         "url": "https://i.redd.it/image.jpeg",
@@ -205,8 +209,12 @@ def test_reddit_downloads_direct_image(
     assert result.media.title == "Image post"
     assert result.media.description == "description"
     assert result.media.metadata == {
-        "like_count": 181,
+        "author": "alice",
+        "subreddit": "pics",
+        "created_utc": 1_700_000_000,
+        "upvote_count": 181,
         "comment_count": 24,
+        "upvote_ratio": 0.91,
         "over_18": False,
     }
     assert result.media.assets[0].asset_type == "image"

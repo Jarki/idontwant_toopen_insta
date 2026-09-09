@@ -25,6 +25,10 @@ from ig_reel_downloader.downloaders.base import (
     ResolveResult,
     UrlCandidate,
 )
+from ig_reel_downloader.downloaders.provider_metadata import (
+    normalize_provider_metadata,
+    optional_nonnegative_int,
+)
 from ig_reel_downloader.downloaders.yt_dlp_support import (
     build_download_ytdlp_options,
     build_metadata_ytdlp_options,
@@ -198,12 +202,7 @@ class RedditDownloader:
                     original_url=url,
                     title=str(post_data.get("title") or ""),
                     description=_optional_string(post_data.get("selftext")),
-                    metadata={
-                        "like_count": int(post_data.get("ups") or 0),
-                        "comment_count": int(post_data.get("num_comments") or 0),
-                        "over_18": bool(post_data.get("over_18")),
-                        **({"text_only": True} if not assets else {}),
-                    },
+                    metadata=_reddit_metadata(post_data, text_only=not assets),
                     assets=assets,
                     created_at=now,
                     updated_at=now,
@@ -322,6 +321,35 @@ class RedditDownloader:
                     )
                 )
         return assets
+
+
+def _reddit_metadata(
+    post_data: Mapping[str, Any], *, text_only: bool
+) -> dict[str, Any]:
+    metadata = normalize_provider_metadata(
+        post_data,
+        strings=("author", "subreddit"),
+        numbers=("created_utc",),
+    )
+    upvote_count = optional_nonnegative_int(post_data.get("ups"))
+    if upvote_count is not None:
+        metadata["upvote_count"] = upvote_count
+    comment_count = optional_nonnegative_int(post_data.get("num_comments"))
+    if comment_count is not None:
+        metadata["comment_count"] = comment_count
+    upvote_ratio = post_data.get("upvote_ratio")
+    if (
+        isinstance(upvote_ratio, int | float)
+        and not isinstance(upvote_ratio, bool)
+        and 0 <= upvote_ratio <= 1
+    ):
+        metadata["upvote_ratio"] = upvote_ratio
+    over_18 = post_data.get("over_18")
+    if isinstance(over_18, bool):
+        metadata["over_18"] = over_18
+    if text_only:
+        metadata["text_only"] = True
+    return metadata
 
 
 def _classify_reddit_error(error: Exception) -> DownloadFailureReason:

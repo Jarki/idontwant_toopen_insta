@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import json
 import logging
 import re
 import urllib.request
@@ -22,6 +23,10 @@ from ig_reel_downloader.downloaders.base import (
     ResolvedMediaRequest,
     ResolveResult,
     UrlCandidate,
+)
+from ig_reel_downloader.downloaders.provider_metadata import (
+    normalize_provider_metadata,
+    optional_nonnegative_int,
 )
 from ig_reel_downloader.downloaders.yt_dlp_support import (
     build_download_ytdlp_options,
@@ -181,10 +186,7 @@ class XDownloader:
                 original_url=url,
                 title=str(info.get("title") or ""),
                 description=info.get("description"),
-                metadata={
-                    "like_count": int(info.get("like_count") or 0),
-                    "comments": info.get("comments", []),
-                },
+                metadata=_x_metadata(info),
                 assets=[
                     map_video_asset(asset_info, filepath=filepath, asset_index=index)
                     for index, (asset_info, filepath) in enumerate(
@@ -271,9 +273,9 @@ def _download_non_video_post(
             )
         )
 
-    like_count = _extract_like_count(page, ref.provider_item_id)
-    if like_count is None:
-        logger.warning("Could not extract like count from X post %s", url)
+    engagement_metadata = _extract_x_engagement_metadata(page, ref.provider_item_id)
+    if not engagement_metadata:
+        logger.warning("Could not extract engagement counts from X post %s", url)
 
     now = datetime.now()
     return MediaDownloadResult(
@@ -286,8 +288,7 @@ def _download_non_video_post(
             title=metadata.title,
             description=metadata.description,
             metadata={
-                "like_count": like_count or 0,
-                "comments": [],
+                **engagement_metadata,
                 "text_only": not assets,
             },
             assets=assets,
@@ -311,14 +312,98 @@ def _enforce_x_video_size(progress: Mapping[str, Any]) -> None:
         raise XMediaTooLargeError(X_TOO_LARGE_MARKER)
 
 
-def _extract_like_count(page: str, post_id: str) -> int | None:
-    encoded_post_id = base64.b64encode(f"Tweet:{post_id}".encode()).decode()
-    match = re.search(
-        rf'{re.escape(encoded_post_id)}:counts".{{0,500}}?favorite_count:(\d+)',
-        page,
-        re.DOTALL,
+def _x_metadata(info: Mapping[str, Any]) -> dict[str, Any]:
+    return normalize_provider_metadata(
+        info,
+        counters=("view_count", "like_count", "repost_count", "comment_count"),
+        strings=("uploader", "channel"),
+        numbers=("timestamp",),
     )
-    return int(match.group(1)) if match is not None else None
+
+
+def _extract_x_engagement_metadata(page: str, post_id: str) -> dict[str, int]:
+    """Best-effort extraction from this post's typed hydration records."""
+    encoded_post_id = base64.b64encode(f"Tweet:{post_id}".encode()).decode()
+    # Hydration keys sometimes omit Base64 padding. Requiring the cache-key suffix
+    # prevents a shorter post ID from prefix-matching another post's Base64 ID.
+    anchor = encoded_post_id.rstrip("=")
+    base64_character = r"A-Za-z0-9_+/=-"
+    record_pattern = re.compile(
+        rf"(?<![{base64_character}]){re.escape(anchor)}={{0,2}}"
+        rf":(?P<kind>counts|viewCount)(?![A-Za-z])"
+    )
+    metadata: dict[str, int] = {}
+
+    for match in record_pattern.finditer(page):
+        record = _x_hydration_record(page, match.end())
+        if record is None:
+            continue
+        kind = match.group("kind")
+        expected_type = "ApiCounts" if kind == "counts" else "ViewCountInfo"
+        typed_record = _find_x_typed_record(record, expected_type)
+        if typed_record is None:
+            continue
+
+        fields: tuple[tuple[str, str], ...]
+        if kind == "counts":
+            fields = (
+                ("favorite_count", "like_count"),
+                ("retweet_count", "repost_count"),
+                ("reply_count", "comment_count"),
+            )
+        else:
+            fields = (("count", "view_count"),)
+        for source_key, canonical_key in fields:
+            value = optional_nonnegative_int(typed_record.get(source_key))
+            if value is not None:
+                # Hydration can repeat cache records. The first valid record wins so
+                # extraction does not depend on a later duplicate's field ordering.
+                metadata.setdefault(canonical_key, value)
+
+    return metadata
+
+
+def _x_hydration_record(page: str, start: int) -> Mapping[str, Any] | None:
+    candidate = re.sub(r'\\+"', '"', page[start : start + 8_000])
+    record_start = re.match(r"""\s*(?:["'])?\s*:\s*(?P<object>\{)""", candidate)
+    if record_start is None:
+        return None
+    object_start = record_start.start("object")
+
+    depth = 0
+    in_string = False
+    escaped = False
+    for index in range(object_start, len(candidate)):
+        character = candidate[index]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if character == '"':
+            in_string = True
+        elif character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    value = json.loads(candidate[object_start : index + 1])
+                except json.JSONDecodeError:
+                    return None
+                return value if isinstance(value, Mapping) else None
+    return None
+
+
+def _find_x_typed_record(
+    value: Mapping[str, Any], expected_type: str
+) -> Mapping[str, Any] | None:
+    # The matched cache key must point directly at the expected record type;
+    # accepting a nested type could leak unrelated data into the post metrics.
+    return value if value.get("__typename") == expected_type else None
 
 
 def _classify_x_error(error: Exception) -> DownloadFailureReason:

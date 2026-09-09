@@ -151,8 +151,13 @@ def test_download_maps_ytdlp_info_to_media_item(
                 "id": "ABC123",
                 "title": "Title",
                 "description": "Description",
+                "view_count": 120,
                 "like_count": 12,
+                "comment_count": 0,
                 "comments": [{"text": "nice"}],
+                "channel": "alice",
+                "uploader": "Alice",
+                "timestamp": 1_700_000_000,
                 "duration": 9.5,
                 "filesize": 1234,
                 "width": 1080,
@@ -183,8 +188,14 @@ def test_download_maps_ytdlp_info_to_media_item(
     assert result.media.provider == "instagram"
     assert result.media.media_kind == "reel"
     assert result.media.provider_item_id == "ABC123"
-    assert result.media.metadata["like_count"] == 12
-    assert result.media.metadata["comments"] == [{"text": "nice"}]
+    assert result.media.metadata == {
+        "view_count": 120,
+        "like_count": 12,
+        "comment_count": 0,
+        "channel": "alice",
+        "uploader": "Alice",
+        "timestamp": 1_700_000_000,
+    }
     assert calls[0] == {
         "outtmpl": str(tmp_path / "instagram" / "reel" / "ABC123" / "%(id)s.%(ext)s"),
         "format": "best",

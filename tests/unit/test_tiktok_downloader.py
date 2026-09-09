@@ -9,7 +9,7 @@ from ig_reel_downloader.downloaders.base import (
     ResolutionError,
     ResolvedMediaRequest,
 )
-from ig_reel_downloader.downloaders.tiktok import TikTokDownloader
+from ig_reel_downloader.downloaders.tiktok import TikTokDownloader, _tiktok_metadata
 
 
 def test_tiktok_extracts_canonical_video_url() -> None:
@@ -278,6 +278,17 @@ def test_tiktok_download_maps_single_video(
                 "id": "725123456789",
                 "title": "TikTok",
                 "description": "desc",
+                "view_count": 1_000,
+                "like_count": 0,
+                "comment_count": 7,
+                "repost_count": 8,
+                "save_count": 9,
+                "uploader": "alice",
+                "channel": "Alice",
+                "track": "Example Song",
+                "artists": ["First Artist", "Second Artist"],
+                "album": "Example Album",
+                "timestamp": 1_700_000_000,
                 "ext": "mp4",
                 "duration": 10,
             }
@@ -310,7 +321,25 @@ def test_tiktok_download_maps_single_video(
     assert result.media.provider_item_id == "725123456789"
     assert result.media.title == "TikTok"
     assert result.media.description == "desc"
+    assert result.media.metadata == {
+        "view_count": 1_000,
+        "like_count": 0,
+        "comment_count": 7,
+        "repost_count": 8,
+        "save_count": 9,
+        "uploader": "alice",
+        "channel": "Alice",
+        "track": "Example Song",
+        "artists": ["First Artist", "Second Artist"],
+        "album": "Example Album",
+        "timestamp": 1_700_000_000,
+    }
     assert result.media.assets[0].asset_type == "video"
+
+
+def test_tiktok_metadata_omits_invalid_artist_lists() -> None:
+    assert _tiktok_metadata({"artists": ["artist", 3]}) == {}
+    assert _tiktok_metadata({"artists": "artist"}) == {}
 
 
 def test_tiktok_download_normalizes_bot_detection_failure(
