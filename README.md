@@ -58,6 +58,23 @@ Usage totals are available through Telegram commands:
 
 Chat-scoped statistics begin after the migration that adds chat IDs; older requests cannot be assigned to their original chats retroactively.
 
+### Enabling and disabling downloaders
+
+Each downloader is enabled by default and can be disabled with its corresponding
+boolean environment variable:
+
+- `INSTAGRAM_REEL_DOWNLOADER_ENABLED`
+- `INSTAGRAM_POST_DOWNLOADER_ENABLED`
+- `TIKTOK_DOWNLOADER_ENABLED`
+- `REDDIT_DOWNLOADER_ENABLED`
+- `X_DOWNLOADER_ENABLED`
+- `YOUTUBE_DOWNLOADER_ENABLED`
+
+Accepted values are `true`/`false`, `1`/`0`, `yes`/`no`, and `on`/`off`. When a
+downloader is disabled, the bot ignores its URLs without replying. The manually
+triggered **Deploy Prod** GitHub Actions workflow exposes an enabled-by-default
+checkbox for each downloader and passes those choices to the deployed bot.
+
 ### TikTok extractor smoke test
 
 TikTok may return bot-detection responses depending on the machine's public IP and

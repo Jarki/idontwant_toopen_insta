@@ -101,9 +101,10 @@ Startup responsibilities:
    - `OUTPUT_DIR` defaults to `output`.
    - `TELEGRAM_MEDIA_WRITE_TIMEOUT` defaults to `120` seconds.
    - `TELEGRAM_READ_TIMEOUT` defaults to `30` seconds.
+   - Each `*_DOWNLOADER_ENABLED` flag defaults to `true`.
 4. Create the output directory.
 5. Instantiate `PostgreSQLRepository` from `DATABASE_URL`.
-6. Instantiate all provider downloaders, `DownloaderRegistry`, `MediaFetchService`, the provider `RendererRegistry`, and `TelegramMediaSender`.
+6. Instantiate enabled provider downloaders, `DownloaderRegistry`, `MediaFetchService`, the provider `RendererRegistry`, and `TelegramMediaSender`.
 7. Instantiate `IgReelDownloaderApp` with those collaborators.
 8. Run Telegram polling.
 
@@ -362,6 +363,14 @@ The documented environment variables are:
 | `TELEGRAM_MEDIA_WRITE_TIMEOUT` | no | `120` | Telegram media upload write timeout. |
 | `TELEGRAM_READ_TIMEOUT` | no | `30` | Telegram API read timeout. |
 | `JUDGMENTAL_CHANCE` | no | `0.0` | Probability (0.0-1.0) of a judgmental GIF reply instead of downloading. |
+| `INSTAGRAM_REEL_DOWNLOADER_ENABLED` | no | `true` | Register the Instagram Reels downloader. |
+| `INSTAGRAM_POST_DOWNLOADER_ENABLED` | no | `true` | Register the Instagram Posts downloader. |
+| `TIKTOK_DOWNLOADER_ENABLED` | no | `true` | Register the TikTok downloader. |
+| `REDDIT_DOWNLOADER_ENABLED` | no | `true` | Register the Reddit downloader. |
+| `X_DOWNLOADER_ENABLED` | no | `true` | Register the X downloader. |
+| `YOUTUBE_DOWNLOADER_ENABLED` | no | `true` | Register the YouTube downloader. |
+
+A disabled downloader is omitted from URL detection, so matching links receive no bot response. The production deployment workflow exposes these flags as checkbox inputs.
 
 \* Required by the Compose bootstrap and migration services, not by the downloader runtime.
 

@@ -4,6 +4,15 @@ import pytest
 
 from ig_reel_downloader import __main__ as main_module
 
+DOWNLOADER_ENV_NAMES = (
+    "INSTAGRAM_REEL_DOWNLOADER_ENABLED",
+    "INSTAGRAM_POST_DOWNLOADER_ENABLED",
+    "TIKTOK_DOWNLOADER_ENABLED",
+    "REDDIT_DOWNLOADER_ENABLED",
+    "X_DOWNLOADER_ENABLED",
+    "YOUTUBE_DOWNLOADER_ENABLED",
+)
+
 
 def test_main_does_not_run_migrations(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.chdir(tmp_path)
@@ -184,3 +193,60 @@ def test_main_rejects_non_psycopg_database_url(
 
     with pytest.raises(ValueError, match=r"postgresql\+psycopg"):
         main_module.main()
+
+
+def test_build_downloaders_enables_all_by_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in DOWNLOADER_ENV_NAMES:
+        monkeypatch.delenv(name, raising=False)
+
+    downloaders = main_module._build_downloaders(Path("assets/cookies.txt"))
+
+    assert [downloader.__class__.__name__ for downloader in downloaders] == [
+        "InstagramReelDownloader",
+        "InstagramPostDownloader",
+        "TikTokDownloader",
+        "RedditDownloader",
+        "XDownloader",
+        "YouTubeDownloader",
+    ]
+
+
+def test_build_downloaders_omits_disabled_downloaders(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("INSTAGRAM_REEL_DOWNLOADER_ENABLED", "false")
+    monkeypatch.setenv("INSTAGRAM_POST_DOWNLOADER_ENABLED", "0")
+    monkeypatch.setenv("TIKTOK_DOWNLOADER_ENABLED", "off")
+    monkeypatch.setenv("REDDIT_DOWNLOADER_ENABLED", "no")
+    monkeypatch.setenv("X_DOWNLOADER_ENABLED", "true")
+    monkeypatch.setenv("YOUTUBE_DOWNLOADER_ENABLED", "1")
+
+    downloaders = main_module._build_downloaders(Path("assets/cookies.txt"))
+
+    assert [downloader.__class__.__name__ for downloader in downloaders] == [
+        "XDownloader",
+        "YouTubeDownloader",
+    ]
+
+
+def test_build_downloaders_can_disable_every_downloader(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    for name in DOWNLOADER_ENV_NAMES:
+        monkeypatch.setenv(name, "false")
+
+    assert main_module._build_downloaders(Path("assets/cookies.txt")) == []
+
+
+def test_build_downloaders_rejects_invalid_boolean(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("TIKTOK_DOWNLOADER_ENABLED", "sometimes")
+
+    with pytest.raises(
+        ValueError,
+        match="TIKTOK_DOWNLOADER_ENABLED must be a boolean",
+    ):
+        main_module._build_downloaders(Path("assets/cookies.txt"))
