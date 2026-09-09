@@ -74,7 +74,8 @@ Accepted values are `true`/`false`, `1`/`0`, `yes`/`no`, and `on`/`off`. When a
 downloader is disabled, the bot ignores its URLs without replying. The manually
 triggered **Deploy Dev** and **Deploy Prod** GitHub Actions workflows expose an
 enabled-by-default checkbox for each downloader and pass those choices to the
-deployed bot.
+deployed bot. Deployments build the branch selected in **Use workflow from**;
+`compose_ref` can explicitly override that ref when needed.
 
 ### TikTok extractor smoke test
 

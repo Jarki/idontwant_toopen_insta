@@ -9,9 +9,9 @@ on:
         default: "prod"
         type: string
       compose_ref:
-        description: "Git ref to curl Compose files from"
+        description: "App/Compose Git ref (blank uses workflow branch)"
         required: false
-        default: "main"
+        default: ""
         type: string
       enable_instagram_reels:
         description: "Enable Instagram Reels downloader"
@@ -64,7 +64,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.compose_ref }}
+          ref: ${{ inputs.compose_ref || github.ref_name }}
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -107,7 +107,7 @@ jobs:
 
       - name: Fetch Compose files
         env:
-          COMPOSE_REF: ${{ inputs.compose_ref }}
+          COMPOSE_REF: ${{ inputs.compose_ref || github.ref_name }}
         run: |
           set -euo pipefail
           deploy_dir="${HOME}/deploy/ig-reel-downloader-prod"
