@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 import yt_dlp
 from yt_dlp.utils import DownloadError
 
+from ig_reel_downloader.constants import X_PAGE_METADATA_VERSION
 from ig_reel_downloader.downloaders.base import (
     DownloadContext,
     DownloadFailureReason,
@@ -292,6 +293,7 @@ def _download_non_video_post(
             metadata={
                 **engagement_metadata,
                 "text_only": not assets,
+                "x_page_metadata_version": X_PAGE_METADATA_VERSION,
                 **({"description_complete": True} if full_text is not None else {}),
             },
             assets=assets,
@@ -326,6 +328,13 @@ def _x_metadata(info: Mapping[str, Any]) -> dict[str, Any]:
 
 def _extract_x_full_text(page: str, post_id: str) -> str | None:
     """Extract this post's untruncated text from its typed hydration records."""
+    for source_page in _x_relay_page_variants(page):
+        if text := _extract_x_full_text_from_page(source_page, post_id):
+            return text
+    return None
+
+
+def _extract_x_full_text_from_page(page: str, post_id: str) -> str | None:
     encoded_post_id = base64.b64encode(f"Tweet:{post_id}".encode()).decode()
     anchor = encoded_post_id.rstrip("=")
     base64_character = r"A-Za-z0-9_+/=-"
@@ -358,20 +367,28 @@ def _extract_x_full_text(page: str, post_id: str) -> str | None:
     return None
 
 
+def _x_relay_page_variants(page: str) -> tuple[str, ...]:
+    variants = [page]
+    json_string = re.compile(r'"(?:\\.|[^"\\])*"', re.DOTALL)
+    for match in json_string.finditer(page):
+        try:
+            decoded = json.loads(match.group())
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(decoded, str)
+            and "client:" in decoded
+            and "__typename" in decoded
+            and decoded not in variants
+        ):
+            variants.append(decoded)
+    return tuple(variants)
+
+
 def _x_record_reference(record: str | None, expected_type: str) -> str | None:
-    if _x_record_type(record) != expected_type:
+    if _x_record_type(record) != expected_type or record is None:
         return None
-    return _x_string_property(record, "__ref")
-
-
-def _x_record_type(record: str | None) -> str | None:
-    return _x_string_property(record, "__typename")
-
-
-def _x_string_property(record: str | None, property_name: str) -> str | None:
-    if record is None:
-        return None
-    field = re.search(rf"""(?:["']?{re.escape(property_name)}["']?)\s*:\s*""", record)
+    field = re.search(r"""(?:["']?__ref["']?)\s*:\s*""", record)
     if field is None:
         return None
     try:
@@ -379,6 +396,49 @@ def _x_string_property(record: str | None, property_name: str) -> str | None:
     except json.JSONDecodeError:
         return None
     return value if isinstance(value, str) and value else None
+
+
+def _x_record_type(record: str | None) -> str | None:
+    return _x_string_property(record, "__typename")
+
+
+def _x_string_property(record: str | None, property_name: str) -> str | None:
+    value = _x_scalar_property(record, property_name)
+    return value if isinstance(value, str) and value else None
+
+
+def _x_scalar_property(record: str | None, property_name: str) -> Any:
+    if record is None:
+        return None
+    field_pattern = re.compile(
+        rf"""(?:["']{re.escape(property_name)}["']|{re.escape(property_name)})"""
+        r"\s*:\s*"
+    )
+    depth = 0
+    in_string = False
+    escaped = False
+    for index, character in enumerate(record):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif character == "\\":
+                escaped = True
+            elif character == '"':
+                in_string = False
+            continue
+        if depth == 1 and (field := field_pattern.match(record, index)) is not None:
+            try:
+                value, _ = json.JSONDecoder().raw_decode(record[field.end() :])
+            except json.JSONDecodeError:
+                return None
+            return value
+        if character == '"':
+            in_string = True
+        elif character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+    return None
 
 
 def _x_relay_record(page: str, record_id: str | None) -> str | None:
@@ -397,7 +457,7 @@ def _x_relay_record(page: str, record_id: str | None) -> str | None:
 
 def _x_javascript_hydration_record(page: str, start: int) -> str | None:
     """Return one Relay-style JavaScript object without requiring strict JSON."""
-    candidate = page[start : start + 8_000]
+    candidate = page[start : start + MAX_X_PAGE_BYTES]
     object_start = candidate.find("{")
     if object_start < 0:
         return None
@@ -427,88 +487,36 @@ def _x_javascript_hydration_record(page: str, start: int) -> str | None:
 
 
 def _extract_x_engagement_metadata(page: str, post_id: str) -> dict[str, int]:
-    """Best-effort extraction from this post's typed hydration records."""
+    """Best-effort extraction from this post's typed Relay records."""
     encoded_post_id = base64.b64encode(f"Tweet:{post_id}".encode()).decode()
-    # Hydration keys sometimes omit Base64 padding. Requiring the cache-key suffix
-    # prevents a shorter post ID from prefix-matching another post's Base64 ID.
-    anchor = encoded_post_id.rstrip("=")
-    base64_character = r"A-Za-z0-9_+/=-"
-    record_pattern = re.compile(
-        rf"(?<![{base64_character}]){re.escape(anchor)}={{0,2}}"
-        rf":(?P<kind>counts|viewCount)(?![A-Za-z])"
-    )
     metadata: dict[str, int] = {}
-
-    for match in record_pattern.finditer(page):
-        record = _x_hydration_record(page, match.end())
-        if record is None:
-            continue
-        kind = match.group("kind")
-        expected_type = "ApiCounts" if kind == "counts" else "ViewCountInfo"
-        typed_record = _find_x_typed_record(record, expected_type)
-        if typed_record is None:
-            continue
-
-        fields: tuple[tuple[str, str], ...]
-        if kind == "counts":
-            fields = (
+    record_definitions = (
+        (
+            "counts",
+            "ApiCounts",
+            (
                 ("favorite_count", "like_count"),
                 ("retweet_count", "repost_count"),
                 ("reply_count", "comment_count"),
-            )
-        else:
-            fields = (("count", "view_count"),)
-        for source_key, canonical_key in fields:
-            value = optional_nonnegative_int(typed_record.get(source_key))
-            if value is not None:
-                # Hydration can repeat cache records. The first valid record wins so
-                # extraction does not depend on a later duplicate's field ordering.
-                metadata.setdefault(canonical_key, value)
+            ),
+        ),
+        ("views", "ViewCountInfo", (("count", "view_count"),)),
+        # Retain compatibility with X page snapshots using the older key.
+        ("viewCount", "ViewCountInfo", (("count", "view_count"),)),
+    )
+
+    for source_page in _x_relay_page_variants(page):
+        for suffix, expected_type, fields in record_definitions:
+            record_id = f"client:{encoded_post_id}:{suffix}"
+            record = _x_relay_record(source_page, record_id)
+            if _x_record_type(record) != expected_type:
+                continue
+            for source_key, canonical_key in fields:
+                value = optional_nonnegative_int(_x_scalar_property(record, source_key))
+                if value is not None:
+                    metadata.setdefault(canonical_key, value)
 
     return metadata
-
-
-def _x_hydration_record(page: str, start: int) -> Mapping[str, Any] | None:
-    candidate = re.sub(r'\\+"', '"', page[start : start + 8_000])
-    record_start = re.match(r"""\s*(?:["'])?\s*:\s*(?P<object>\{)""", candidate)
-    if record_start is None:
-        return None
-    object_start = record_start.start("object")
-
-    depth = 0
-    in_string = False
-    escaped = False
-    for index in range(object_start, len(candidate)):
-        character = candidate[index]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == '"':
-                in_string = False
-            continue
-        if character == '"':
-            in_string = True
-        elif character == "{":
-            depth += 1
-        elif character == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    value = json.loads(candidate[object_start : index + 1])
-                except json.JSONDecodeError:
-                    return None
-                return value if isinstance(value, Mapping) else None
-    return None
-
-
-def _find_x_typed_record(
-    value: Mapping[str, Any], expected_type: str
-) -> Mapping[str, Any] | None:
-    # The matched cache key must point directly at the expected record type;
-    # accepting a nested type could leak unrelated data into the post metrics.
-    return value if value.get("__typename") == expected_type else None
 
 
 def _classify_x_error(error: Exception) -> DownloadFailureReason:
@@ -607,6 +615,10 @@ def _is_allowed_x_image_url(url: str) -> bool:
     )
 
 
+def _is_x_post_image_url(url: str) -> bool:
+    return _is_allowed_x_image_url(url) and urlparse(url).path.startswith("/media/")
+
+
 def _image_extension(url: str) -> str:
     match = re.search(
         r"\.(jpg|jpeg|png|webp)(?::[^/?]+)?(?:[?#]|$)", url, re.IGNORECASE
@@ -639,7 +651,7 @@ class _XPageMetadataParser(HTMLParser):
             self.description = content
         elif (
             property_name == "og:image"
-            and _is_allowed_x_image_url(content)
+            and _is_x_post_image_url(content)
             and content not in self.image_urls
         ):
             self.image_urls.append(content)

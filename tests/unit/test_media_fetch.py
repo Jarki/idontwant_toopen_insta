@@ -1,6 +1,7 @@
 import datetime
 from pathlib import Path
 
+from ig_reel_downloader.constants import X_PAGE_METADATA_VERSION
 from ig_reel_downloader.downloaders.base import (
     DownloadContext,
     MediaDownloadResult,
@@ -263,21 +264,31 @@ def test_text_only_x_cache_is_reusable_without_asset_files() -> None:
     cached.provider = "x"
     cached.media_kind = "post"
     cached.description = "Text-only post body"
-    cached.metadata = {"text_only": True}
+    cached.metadata = {
+        "text_only": True,
+        "x_page_metadata_version": X_PAGE_METADATA_VERSION,
+    }
 
     assert _is_reusable(cached)
 
 
-def test_truncated_text_only_x_cache_is_refreshed_until_marked_complete() -> None:
-    cached = make_media("unused", assets=[])
+def test_legacy_x_page_cache_is_refreshed_even_when_it_has_an_asset(
+    tmp_path: Path,
+) -> None:
+    avatar = tmp_path / "profile-image.jpg"
+    avatar.write_bytes(b"legacy avatar")
+    cached = make_media(
+        str(avatar),
+        assets=[MediaAsset(asset_index=0, asset_type="image", filepath=str(avatar))],
+    )
     cached.provider = "x"
     cached.media_kind = "post"
     cached.description = "Open Graph preview cut off…"
-    cached.metadata = {"text_only": True}
+    cached.metadata = {"text_only": False, "description_complete": True}
 
     assert not _is_reusable(cached)
 
-    cached.metadata["description_complete"] = True
+    cached.metadata["x_page_metadata_version"] = X_PAGE_METADATA_VERSION
 
     assert _is_reusable(cached)
 

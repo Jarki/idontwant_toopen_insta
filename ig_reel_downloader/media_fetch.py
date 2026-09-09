@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from ig_reel_downloader.constants import X_PAGE_METADATA_VERSION
 from ig_reel_downloader.downloaders.base import (
     DownloadContext,
     DownloadFailureReason,
@@ -237,15 +238,14 @@ def _format_size(size_bytes: int) -> str:
 
 
 def _is_reusable(media: MediaItem) -> bool:
+    if (
+        media.provider == "x"
+        and "text_only" in media.metadata
+        and media.metadata.get("x_page_metadata_version") != X_PAGE_METADATA_VERSION
+    ):
+        return False
     if not media.assets:
-        if media.metadata.get("text_only") is not True:
-            return False
-        return not (
-            media.provider == "x"
-            and media.description is not None
-            and media.description.endswith("…")
-            and media.metadata.get("description_complete") is not True
-        )
+        return media.metadata.get("text_only") is True
     return all(Path(asset.filepath).is_file() for asset in media.assets)
 
 
