@@ -26,6 +26,9 @@ from ig_reel_downloader.downloaders.base import (
     UrlCandidate,
     UrlMatch,
 )
+from ig_reel_downloader.downloaders.provider_metadata import (
+    normalize_provider_metadata,
+)
 from ig_reel_downloader.downloaders.yt_dlp_support import (
     build_download_ytdlp_options,
     map_image_asset,
@@ -152,10 +155,7 @@ class InstagramReelDownloader:
                     original_url=url,
                     title=str(info.get("title") or ""),
                     description=info.get("description"),
-                    metadata={
-                        "like_count": int(info.get("like_count") or 0),
-                        "comments": info.get("comments", []),
-                    },
+                    metadata=_instagram_metadata(info),
                     assets=[map_video_asset(info, filepath=filepath)],
                     created_at=now,
                     updated_at=now,
@@ -284,10 +284,7 @@ class InstagramPostDownloader:
                 original_url=url,
                 title=str(info.get("title") or ""),
                 description=info.get("description"),
-                metadata={
-                    "like_count": int(info.get("like_count") or 0),
-                    "comments": info.get("comments", []),
-                },
+                metadata=_instagram_metadata(info),
                 assets=assets,
                 created_at=now,
                 updated_at=now,
@@ -304,6 +301,15 @@ class InstagramPostDownloader:
             else:
                 logger.exception("Failed to download post from %s (%s)", url, error)
             return MediaDownloadResult(media=None, failure_reason=failure_reason)
+
+
+def _instagram_metadata(info: Mapping[str, Any]) -> dict[str, Any]:
+    return normalize_provider_metadata(
+        info,
+        counters=("view_count", "like_count", "comment_count"),
+        strings=("channel", "uploader"),
+        numbers=("timestamp",),
+    )
 
 
 def _build_post_extract_ytdlp_options(download_ydl_opts: _Params) -> _Params:

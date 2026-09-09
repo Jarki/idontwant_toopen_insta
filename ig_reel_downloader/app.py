@@ -18,11 +18,13 @@ from telegram.ext import (
 from . import judgmental as judgmental_module
 from .downloaders import DownloaderRegistry, DownloadFailureReason, UrlCandidate
 from .media_fetch import MediaFetchResult, MediaFetchService
+from .renderers import RendererRegistry, UnsupportedMediaError
 from .repository import models
-from .telegram_renderer import (
+from .telegram_sender import (
+    TELEGRAM_RENDER_CONSTRAINTS,
     MediaRenderResult,
     MediaRenderTimedOut,
-    TelegramMediaRenderer,
+    TelegramMediaSender,
 )
 
 logger = logging.getLogger(__name__)
@@ -66,7 +68,8 @@ class IgReelDownloaderApp:
         bot_token: str,
         registry: DownloaderRegistry,
         fetch_service: MediaFetchService,
-        renderer: TelegramMediaRenderer,
+        renderer_registry: RendererRegistry,
+        sender: TelegramMediaSender,
         telegram_media_write_timeout: float = DEFAULT_TELEGRAM_MEDIA_WRITE_TIMEOUT,
         telegram_read_timeout: float = DEFAULT_TELEGRAM_READ_TIMEOUT,
         judgmental_chance: float = 0.0,
@@ -76,7 +79,8 @@ class IgReelDownloaderApp:
         self.telegram_read_timeout = telegram_read_timeout
         self.registry = registry
         self.fetch_service = fetch_service
-        self.renderer = renderer
+        self.renderer_registry = renderer_registry
+        self.sender = sender
         self.judgmental_chance = judgmental_chance
         self.judgmental_gifs = list(judgmental_gifs) if judgmental_gifs else []
         # In-memory cache of Telegram file_ids for judgmental animations.
@@ -467,11 +471,22 @@ class IgReelDownloaderApp:
                 summaries,
             )
 
+        rendered_items = []
+        for media in media_items:
+            try:
+                rendered_items.append(
+                    self.renderer_registry.render(media, TELEGRAM_RENDER_CONSTRAINTS)
+                )
+            except UnsupportedMediaError:
+                errors.append(
+                    self._format_download_error(media.original_url, "unsupported")
+                )
+
         try:
-            render_results = await self.renderer.render(update, media_items)
+            render_results = await self.sender.send(update, rendered_items)
         except MediaRenderTimedOut as exc:
             await self._record_deliveries(
-                exc.completed_results,
+                [*exc.completed_results, *exc.partial_results],
                 request_ids_by_media_object,
             )
             logger.exception(

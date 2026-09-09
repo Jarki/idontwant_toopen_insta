@@ -1,6 +1,6 @@
 # Architecture
 
-_Last reviewed: 2026-07-15_
+_Last reviewed: 2026-09-08_
 
 ## Overview
 
@@ -37,7 +37,9 @@ MediaFetchService
     └── writes refreshed MediaItem/MediaAsset rows
     │
     ▼
-TelegramMediaRenderer
+TelegramMediaSender
+    ├── selects a pure provider renderer by provider/media kind
+    ├── validates Telegram text and attachment constraints
     ├── reuses persisted Telegram file IDs when available
     └── otherwise uploads media and returns new file IDs for persistence
 ```
@@ -51,7 +53,8 @@ TelegramMediaRenderer
 │   ├── app.py                   # Telegram bot application orchestration
 │   ├── constants.py             # Shared constants, currently cache TTL
 │   ├── media_fetch.py           # Cache lookup, file-existence validation, download refresh
-│   ├── telegram_renderer.py     # Telegram video/media-group rendering
+│   ├── telegram_sender.py       # Telegram validation, grouping, upload, and retry
+│   ├── renderers/               # Pure base/provider presentation and dispatch
 │   ├── downloaders/
 │   │   ├── base.py              # Downloader Protocol and shared download models
 │   │   ├── instagram.py         # Instagram Reel and Post URL matching and yt-dlp downloader
@@ -100,7 +103,7 @@ Startup responsibilities:
    - `TELEGRAM_READ_TIMEOUT` defaults to `30` seconds.
 4. Create the output directory.
 5. Instantiate `PostgreSQLRepository` from `DATABASE_URL`.
-6. Instantiate the Instagram Reel downloader, `DownloaderRegistry`, `MediaFetchService`, and `TelegramMediaRenderer`.
+6. Instantiate all provider downloaders, `DownloaderRegistry`, `MediaFetchService`, the provider `RendererRegistry`, and `TelegramMediaSender`.
 7. Instantiate `IgReelDownloaderApp` with those collaborators.
 8. Run Telegram polling.
 
@@ -123,12 +126,14 @@ For each text message:
    - Verifies the downloader returned the expected provider/media/item identity.
    - Persists a new successful download and links its originating request atomically with `repository.insert_media_for_request(media_request_id, media)`; cache hits link through `mark_media_request_succeeded(...)`.
    - Marks resolution failures, downloader-reported failures, identity mismatches, and intentional unsupported skips directly on the originating `media_requests` row.
-6. Successful media items are passed to `TelegramMediaRenderer`:
-   - Text-only posts: `chat.send_message(...)` with the post text.
-   - Assets with a stored Telegram `file_id` are sent by ID, avoiding another upload.
-   - Assets without an ID are uploaded from their local path. The returned IDs are persisted on their `media_assets` rows for later cache hits.
+6. Successful media items are rendered and sent:
+   - `IgReelDownloaderApp` asks `RendererRegistry` to select a pure renderer by `(provider, media_kind)`. Renderers produce bounded text and ordered attachments without importing or calling Telegram.
+   - Provider renderers conditionally format the normalized metadata available for Instagram, TikTok, Reddit, X, and YouTube. Reddit uses the `⬆️` indicator, while Instagram views are shown only for items containing video.
+   - The app passes rendered items to `TelegramMediaSender`; the sender has no renderer dependency. It enforces the Telegram library's message, caption, and media-group limits and validates attachment output before making API calls.
+   - Text-only posts use `chat.send_message(...)`; one photo or video uses its matching single-media method; each multi-asset post is independently split into valid media groups of at most ten.
+   - Assets with a stored Telegram `file_id` are sent by ID, avoiding another upload. Assets without an ID are uploaded from their local path and returned IDs are persisted for later cache hits.
    - An invalid stored ID falls back to uploading the local file and refreshes the stored ID.
-   - One supported photo or video uses the matching single-media Telegram method with a caption; multiple assets use `chat.send_media_group(...)`.
+   - Each post retains its own caption rather than being flattened into a media group with unrelated posts.
    - Requests are marked delivered only after Telegram confirms the send.
 7. Failed downloads or unsupported rendered items are summarized as chat messages.
 8. Telegram upload `TimedOut` errors are logged and reported to the user with a friendly timeout message.
@@ -382,7 +387,7 @@ The current test suite includes unit tests for downloader registry, provider-spe
 - Downloads are performed with blocking `yt-dlp` calls and are offloaded from the async Telegram handler with `asyncio.to_thread()`.
 - Database access goes through SQLAlchemy sessions; blocking repository work is still called from worker threads via the app's existing `asyncio.to_thread()` boundaries.
 - Schema migrations are separate from bot startup; Docker Compose runs them through the one-shot `migrate` service before `downloader` starts.
-- Multiple-video responses use a Telegram media group without per-item captions; single-video responses include the formatted caption.
+- Delivery is grouped per media item: unrelated posts are never flattened together, and multi-asset items are split into Telegram media groups of at most ten while retaining the first-group caption.
 - Cache invalidation is time-based (`24h`) and file-existence-based.
 - Cleanup only removes media files; it does not prune stale database rows.
 - URL matching targets Instagram Reels, Instagram Posts, TikTok canonical/share links, Reddit post/share links, X/Twitter status links, YouTube Shorts, and YouTube Short/standard video links specifically.
@@ -394,6 +399,6 @@ Likely future extension points are:
 
 - Add provider support by implementing `downloaders.base.Downloader` and registering it in `DownloaderRegistry`.
 - Add repository implementations by satisfying `repository.base.Repository`.
-- Add richer rendering behavior in `TelegramMediaRenderer` if Telegram API constraints and UX allow it.
+- Add provider presentation by subclassing `BaseMediaRenderer` and registering it by provider/media kind; keep Telegram limits and delivery mechanics in `TelegramMediaSender`.
 - Add future DB schema changes as Alembic revisions under `migrations/versions/`.
 - Broaden Instagram URL extraction inside `InstagramReelDownloader` if broader URL support is explicitly requested.

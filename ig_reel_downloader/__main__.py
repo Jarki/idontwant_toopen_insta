@@ -77,7 +77,8 @@ def main() -> None:
         repo,
         output_dir=output_dir,
     )
-    renderer = ig_reel_downloader.telegram_renderer.TelegramMediaRenderer(
+    renderer_registry = ig_reel_downloader.renderers.default_renderer_registry()
+    sender = ig_reel_downloader.telegram_sender.TelegramMediaSender(
         telegram_media_write_timeout=telegram_media_write_timeout,
         telegram_read_timeout=telegram_read_timeout,
     )
@@ -86,7 +87,8 @@ def main() -> None:
         bot_token,
         registry,
         fetch_service,
-        renderer,
+        renderer_registry,
+        sender,
         telegram_media_write_timeout=telegram_media_write_timeout,
         telegram_read_timeout=telegram_read_timeout,
         judgmental_chance=judgmental_chance,

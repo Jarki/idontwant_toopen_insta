@@ -1,8 +1,10 @@
+import json
 from pathlib import Path
 
 import pytest
 from yt_dlp.utils import DownloadError
 
+from ig_reel_downloader.constants import X_PAGE_METADATA_VERSION
 from ig_reel_downloader.downloaders.base import (
     DownloadContext,
     ProviderItemRef,
@@ -15,6 +17,8 @@ from ig_reel_downloader.downloaders.x import (
     UnsupportedXMediaError,
     XDownloader,
     _download_image_file,
+    _extract_x_engagement_metadata,
+    _extract_x_full_text,
     _is_allowed_x_image_url,
 )
 
@@ -129,7 +133,12 @@ def test_x_download_maps_single_video(
                 "id": "1891234567890123456",
                 "title": "Alice - post",
                 "description": "A video post",
+                "view_count": 1000,
                 "like_count": 42,
+                "repost_count": 0,
+                "comment_count": 7,
+                "uploader": "alice",
+                "timestamp": 1_700_000_000,
                 "ext": "mp4",
                 "duration": 12,
                 "filesize": 1_000_000,
@@ -163,7 +172,14 @@ def test_x_download_maps_single_video(
     assert result.media.media_kind == "post"
     assert result.media.title == "Alice - post"
     assert result.media.description == "A video post"
-    assert result.media.metadata["like_count"] == 42
+    assert result.media.metadata == {
+        "view_count": 1000,
+        "like_count": 42,
+        "repost_count": 0,
+        "comment_count": 7,
+        "uploader": "alice",
+        "timestamp": 1_700_000_000,
+    }
     assert len(result.media.assets) == 1
     assert result.media.assets[0].asset_type == "video"
 
@@ -536,7 +552,12 @@ def test_x_download_falls_back_to_post_images(
               content="https://pbs.twimg.com/media/first.jpg:large">
         <meta property="og:image"
               content="https://pbs.twimg.com/media/second.png:large">
-        client:VHdlZXQ6MTIz:counts" data favorite_count:42
+        "client:VHdlZXQ6MTIz:counts":$R[1]={
+          __id:"client:VHdlZXQ6MTIz:counts",__typename:"ApiCounts",
+          reply_count:3,favorite_count:42,retweet_count:0}
+        "client:VHdlZXQ6MTIz:views":$R[2]={
+          __id:"client:VHdlZXQ6MTIz:views",__typename:"ViewCountInfo",
+          count:"900"}
     """
 
     def fake_download_image(url: str, filepath: Path) -> None:
@@ -566,7 +587,14 @@ def test_x_download_falls_back_to_post_images(
     assert result.media is not None
     assert result.media.title == "Alice (@alice) on X"
     assert result.media.description == "Photo post"
-    assert result.media.metadata["like_count"] == 42
+    assert result.media.metadata == {
+        "like_count": 42,
+        "repost_count": 0,
+        "comment_count": 3,
+        "view_count": 900,
+        "text_only": False,
+        "x_page_metadata_version": X_PAGE_METADATA_VERSION,
+    }
     assert [asset.asset_type for asset in result.media.assets] == ["image", "image"]
     assert [Path(asset.filepath).suffix for asset in result.media.assets] == [
         ".jpg",
@@ -575,7 +603,7 @@ def test_x_download_falls_back_to_post_images(
     assert all(Path(asset.filepath).is_file() for asset in result.media.assets)
 
 
-def test_x_download_maps_text_only_post(
+def test_x_download_maps_text_only_post_with_full_hydration_text(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
@@ -596,12 +624,38 @@ def test_x_download_maps_text_only_post(
         "ig_reel_downloader.downloaders.x.yt_dlp.YoutubeDL",
         FakeYoutubeDL,
     )
+    full_text = (
+        "The people building AI earnestly believe that it could kill us all by the "
+        "end of the decade. This is not a marketing stunt. If anything, many "
+        "executives and senior researchers will couch their phrasing in the press "
+        "to sound sensible - but I hear the same people express fear privately. "
+        "No other human activity poses this level of danger."
+    )
+    truncated_open_graph_text = full_text[:299] + "…"
     monkeypatch.setattr(
         "ig_reel_downloader.downloaders.x._fetch_x_page",
         lambda _: (
             '<meta property="og:title" content="Alice (@alice) on X">'
-            '<meta property="og:description" content="Text-only post body">'
-            'client:VHdlZXQ6MTIz:counts" data favorite_count:73'
+            f'<meta property="og:description" content="{truncated_open_graph_text}">'
+            '<meta property="og:image" content="https://pbs.twimg.com/'
+            'profile_images/123/avatar_400x400.jpg">'
+            '"client:VHdlZXQ6MTIz:details":$R[61]={'
+            '__id:"client:VHdlZXQ6MTIz:details",__typename:"TBirdData",'
+            "display_text_range:[0,274],full_text:"
+            f"{json.dumps(full_text[:274])}}}"
+            '"client:VHdlZXQ6MTIz:note_tweet":$R[62]={'
+            '__id:"client:VHdlZXQ6MTIz:note_tweet",'
+            '__typename:"NoteTweetData",note_tweet_results:{'
+            '__ref:"NoteTweetResults:123"}}'
+            '"NoteTweetResults:123":$R[63]={'
+            '__id:"NoteTweetResults:123",__typename:"NoteTweetResults",'
+            'result:{__ref:"NoteTweet:123"}}'
+            '"NoteTweet:123":$R[64]={'
+            '__id:"NoteTweet:123",__typename:"NoteTweet",'
+            f"text:{json.dumps(full_text)}}}"
+            '"client:VHdlZXQ6MTIz:counts":$R[65]={'
+            '__id:"client:VHdlZXQ6MTIz:counts",__typename:"ApiCounts",'
+            "favorite_count:73}"
         ),
     )
     downloader = XDownloader()
@@ -616,10 +670,107 @@ def test_x_download_maps_text_only_post(
     assert result.failure_reason is None
     assert result.media is not None
     assert result.media.title == "Alice (@alice) on X"
-    assert result.media.description == "Text-only post body"
+    assert result.media.description == full_text
     assert result.media.assets == []
     assert result.media.metadata["like_count"] == 73
     assert result.media.metadata["text_only"] is True
+    assert result.media.metadata["description_complete"] is True
+    assert result.media.metadata["x_page_metadata_version"] == X_PAGE_METADATA_VERSION
+
+
+def test_x_full_text_supports_escaped_relay_payload() -> None:
+    text = 'Complete "quoted" NoteTweet.\nTabbed:\tPath: C:\\media'
+    relay_payload = (
+        '"client:VHdlZXQ6OTk5:note_tweet":{}'
+        '"client:VHdlZXQ6MTIz:note_tweet":{'
+        '"__id":"client:VHdlZXQ6MTIz:note_tweet",'
+        '"__typename":"NoteTweetData",'
+        '"note_tweet_results":{"__ref":"NoteTweetResults:123"}}'
+        '"NoteTweetResults:123":{'
+        '"__id":"NoteTweetResults:123","__typename":"NoteTweetResults",'
+        '"result":{"__ref":"NoteTweet:123"}}'
+        '"NoteTweet:123":{'
+        '"__id":"NoteTweet:123","__typename":"NoteTweet",'
+        f'"text":{json.dumps(text)}}}'
+    )
+    page = f"<script>queue.push({json.dumps(relay_payload)})</script>"
+
+    assert _extract_x_full_text(page, "123") == text
+
+
+def test_x_full_text_supports_relay_records_longer_than_8000_characters() -> None:
+    text = "T" * 9_000
+    page = (
+        '"client:VHdlZXQ6MTIz:details":{'
+        '"__id":"client:VHdlZXQ6MTIz:details",'
+        '"__typename":"TBirdData",'
+        f'"full_text":{json.dumps(text)}}}'
+    )
+
+    assert _extract_x_full_text(page, "123") == text
+
+
+def test_x_hydration_counts_are_optional_and_post_scoped() -> None:
+    page = r"""
+        "client:VHdlZXQ6OTk5:counts":$R[1]={
+          __id:"client:VHdlZXQ6OTk5:counts",__typename:"ApiCounts",
+          favorite_count:999,retweet_count:999,reply_count:999}
+        "client:VHdlZXQ6MTIz:counts":$R[2]={
+          __id:"client:VHdlZXQ6MTIz:counts",__typename:"ApiCounts",
+          reply_count:0,favorite_count:73,retweet_count:12,
+          nested:{count:888}}
+        "client:VHdlZXQ6MTIz:views":$R[3]={
+          __id:"client:VHdlZXQ6MTIz:views",__typename:"ViewCountInfo",
+          count:"1001",nested:{count:777}}
+        "client:VHdlZXQ6OTk5:views":$R[4]={
+          __id:"client:VHdlZXQ6OTk5:views",__typename:"ViewCountInfo",count:999}
+    """
+
+    assert _extract_x_engagement_metadata(page, "123") == {
+        "like_count": 73,
+        "repost_count": 12,
+        "comment_count": 0,
+        "view_count": 1001,
+    }
+
+
+def test_x_hydration_missing_and_null_counts_stay_absent() -> None:
+    page = (
+        '"client:VHdlZXQ6MTIz:counts":{'
+        '"__id":"client:VHdlZXQ6MTIz:counts","__typename":"ApiCounts",'
+        '"favorite_count":null,"retweet_count":0,"nested":{"count":222}}'
+        '"client:VHdlZXQ6MTIz:viewCount":{'
+        '"__id":"client:VHdlZXQ6MTIz:viewCount",'
+        '"__typename":"ViewCountInfo","other":{"count":111},"count":null}'
+    )
+
+    assert _extract_x_engagement_metadata(page, "123") == {"repost_count": 0}
+    assert _extract_x_engagement_metadata("application shell", "123") == {}
+    assert (
+        _extract_x_engagement_metadata(
+            '"client:VHdlZXQ6MTIz:counts":{"__typename":"Other",'
+            '"nested":{"__typename":"ApiCounts","favorite_count":555}}',
+            "123",
+        )
+        == {}
+    )
+    assert (
+        _extract_x_engagement_metadata(
+            '"client:VHdlZXQ6MTIz:counts":null '
+            '"client:VHdlZXQ6OTk5:counts":{"__typename":"ApiCounts",'
+            '"favorite_count":999}',
+            "123",
+        )
+        == {}
+    )
+    assert (
+        _extract_x_engagement_metadata(
+            '"client:VHdlZXQ6MTIzNA==:counts":{"__typename":"ApiCounts",'
+            '"favorite_count":1234}',
+            "123",
+        )
+        == {}
+    )
 
 
 def test_x_download_normalizes_failure(

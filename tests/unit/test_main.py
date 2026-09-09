@@ -35,7 +35,9 @@ def test_main_does_not_run_migrations(monkeypatch, tmp_path: Path) -> None:
             self.repository = repository
             self.output_dir = output_dir
 
-    class FakeRenderer:
+    fake_renderer_registry = object()
+
+    class FakeSender:
         def __init__(
             self,
             telegram_media_write_timeout: float,
@@ -50,7 +52,8 @@ def test_main_does_not_run_migrations(monkeypatch, tmp_path: Path) -> None:
             bot_token: str,
             registry: FakeRegistry,
             fetch_service: FakeFetchService,
-            renderer: FakeRenderer,
+            renderer_registry: object,
+            sender: FakeSender,
             *,
             telegram_media_write_timeout: float,
             telegram_read_timeout: float,
@@ -60,7 +63,8 @@ def test_main_does_not_run_migrations(monkeypatch, tmp_path: Path) -> None:
             self.bot_token = bot_token
             self.registry = registry
             self.fetch_service = fetch_service
-            self.renderer = renderer
+            self.renderer_registry = renderer_registry
+            self.sender = sender
             self.telegram_media_write_timeout = telegram_media_write_timeout
             self.telegram_read_timeout = telegram_read_timeout
             self.judgmental_chance = judgmental_chance
@@ -117,9 +121,14 @@ def test_main_does_not_run_migrations(monkeypatch, tmp_path: Path) -> None:
         FakeFetchService,
     )
     monkeypatch.setattr(
-        main_module.ig_reel_downloader.telegram_renderer,
-        "TelegramMediaRenderer",
-        FakeRenderer,
+        main_module.ig_reel_downloader.renderers,
+        "default_renderer_registry",
+        lambda: fake_renderer_registry,
+    )
+    monkeypatch.setattr(
+        main_module.ig_reel_downloader.telegram_sender,
+        "TelegramMediaSender",
+        FakeSender,
     )
     monkeypatch.setattr(
         main_module.ig_reel_downloader.app,
@@ -145,8 +154,9 @@ def test_main_does_not_run_migrations(monkeypatch, tmp_path: Path) -> None:
         "FakeDownloader",
     ]
     assert app.registry.downloaders[0].cookie_filepath == Path("assets/cookies.txt")
-    assert app.renderer.telegram_media_write_timeout == 120.0
-    assert app.renderer.telegram_read_timeout == 30.0
+    assert app.renderer_registry is fake_renderer_registry
+    assert app.sender.telegram_media_write_timeout == 120.0
+    assert app.sender.telegram_read_timeout == 30.0
     assert app.judgmental_chance == 0.0  # default when env var absent
     assert app.judgmental_gifs is not None
     assert Path("output").is_dir()
