@@ -514,6 +514,34 @@ def test_format_caption_empty_description() -> None:
     assert _format_caption(media) == "Title • ❤️ 12"
 
 
+def test_format_caption_removes_repeated_x_description_from_title() -> None:
+    description = (
+        "GPT-6 Astra gives me realtime back pain physical therapy! "
+        "It connected the wearable I built."
+    )
+    media = make_media(
+        "fake.mp4",
+        title=(
+            "Rohan Kotecha - GPT-6 Astra gives me realtime back pain physical "
+            "therapy! It connect..."
+        ),
+        description=description,
+    ).model_copy(update={"provider": "x"})
+
+    assert _format_caption(media) == f"Rohan Kotecha • ❤️ 12\n\n{description}"
+
+
+def test_format_caption_preserves_non_x_title_with_description_prefix() -> None:
+    description = "Repeated description text that is long enough to identify"
+    media = make_media(
+        "fake.mp4",
+        title=f"Creator - {description}",
+        description=description,
+    )
+
+    assert _format_caption(media).startswith(f"Creator - {description} • ❤️ 12")
+
+
 def test_format_caption_long_description_truncated() -> None:
     media = make_media("fake.mp4", description="D" * 2000)
     caption = _format_caption(media)
