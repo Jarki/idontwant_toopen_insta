@@ -11,6 +11,7 @@ Expected environment variables:
   POSTGRES_USER, POSTGRES_PASSWORD          — bootstrap/owner credentials
   DB_MIGRATION_USER, DB_MIGRATION_PASSWORD   — migration role (DDL-capable, schema owner)
   DB_APP_USER, DB_APP_PASSWORD               — application (DML-only) role
+  DB_ERROR_API_USER, DB_ERROR_API_PASSWORD   — Error API (curated access only) role
 """
 
 import os
@@ -30,6 +31,8 @@ def main() -> None:
     migration_password = os.environ.get("DB_MIGRATION_PASSWORD", "")
     app_user = os.environ.get("DB_APP_USER", "")
     app_password = os.environ.get("DB_APP_PASSWORD", "")
+    error_api_user = os.environ.get("DB_ERROR_API_USER", "")
+    error_api_password = os.environ.get("DB_ERROR_API_PASSWORD", "")
 
     _require("POSTGRES_DB", pg_db)
     _require("POSTGRES_USER", pg_user)
@@ -38,6 +41,9 @@ def main() -> None:
     _require("DB_MIGRATION_PASSWORD", migration_password)
     _require("DB_APP_USER", app_user)
     _require("DB_APP_PASSWORD", app_password)
+    _require("DB_ERROR_API_USER", error_api_user)
+    _require("DB_ERROR_API_PASSWORD", error_api_password)
+    _require_distinct_roles(pg_user, migration_user, app_user, error_api_user)
 
     import psycopg
 
@@ -63,6 +69,13 @@ def main() -> None:
             cur, migration_user, migration_password, host=pg_host, port=pg_port
         )
         _ensure_role(cur, app_user, app_password, host=pg_host, port=pg_port)
+        _ensure_role(
+            cur,
+            error_api_user,
+            error_api_password,
+            host=pg_host,
+            port=pg_port,
+        )
         _ensure_database(cur, pg_db, migration_user)
     finally:
         conn.close()
@@ -79,7 +92,9 @@ def main() -> None:
     try:
         cur = conn.cursor()
 
-        # Public schema — restrict PUBLIC, grant to roles
+        # Public schema — restrict PUBLIC, grant only application roles that
+        # need it. The Error API reaches application data solely through a
+        # migration-owned observability view.
         cur.execute("REVOKE ALL ON SCHEMA public FROM PUBLIC")
         cur.execute(f"GRANT USAGE, CREATE ON SCHEMA public TO {_q(migration_user)}")
         cur.execute(f"GRANT USAGE ON SCHEMA public TO {_q(app_user)}")
@@ -123,6 +138,19 @@ def main() -> None:
 
         # Revoke CREATE on schema from app role (no DDL)
         cur.execute(f"REVOKE CREATE ON SCHEMA public FROM {_q(app_user)}")
+        cur.execute(f"REVOKE ALL ON SCHEMA public FROM {_q(error_api_user)}")
+
+        # Alembic requires the independent schema to exist before it can place
+        # its version table there. Fail closed if an existing schema has an
+        # unexpected owner.
+        _ensure_schema(cur, "observability", migration_user)
+        cur.execute("REVOKE ALL ON SCHEMA observability FROM PUBLIC")
+        cur.execute(
+            f"GRANT USAGE ON SCHEMA observability "
+            f"TO {_q(app_user)}, {_q(error_api_user)}"
+        )
+        cur.execute(f"REVOKE CREATE ON SCHEMA observability FROM {_q(app_user)}")
+        cur.execute(f"REVOKE CREATE ON SCHEMA observability FROM {_q(error_api_user)}")
 
         print("Privileges configured successfully")
     finally:
@@ -133,6 +161,14 @@ def main() -> None:
         pg_host, pg_port, pg_db, migration_user, migration_password, expect_ddl=True
     )
     _validate(pg_host, pg_port, pg_db, app_user, app_password, expect_ddl=False)
+    _validate(
+        pg_host,
+        pg_port,
+        pg_db,
+        error_api_user,
+        error_api_password,
+        expect_ddl=False,
+    )
 
     print("Bootstrap completed successfully")
 
@@ -147,9 +183,32 @@ def _relation_exists(cur: Any, relation: str) -> bool:
     return cur.fetchone()[0] is not None
 
 
+def _ensure_schema(cur: Any, schema: str, owner: str) -> None:
+    cur.execute(
+        "SELECT pg_catalog.pg_get_userbyid(nspowner) "
+        "FROM pg_catalog.pg_namespace WHERE nspname = %s",
+        (schema,),
+    )
+    row = cur.fetchone()
+    if row is None:
+        cur.execute(f"CREATE SCHEMA {_q(schema)} AUTHORIZATION {_q(owner)}")
+        print(f"Created schema '{schema}' with owner '{owner}'")
+        return
+    if str(row[0]) != owner:
+        _die(f"Schema '{schema}' exists with owner {str(row[0])!r}, expected {owner!r}")
+    print(f"Schema '{schema}': exists, correct owner '{owner}'")
+
+
 def _require(name: str, value: str) -> None:
     if not value:
         _die(f"Missing required environment variable: {name}")
+
+
+def _require_distinct_roles(*roles: str) -> None:
+    if len(roles) != len(set(roles)):
+        _die(
+            "PostgreSQL bootstrap, migration, application, and Error API roles must be distinct"
+        )
 
 
 def _die(msg: str) -> None:
@@ -171,8 +230,11 @@ def _ensure_role(
 ) -> None:
     """Create a least-privilege login role or fail closed on role drift."""
     cur.execute(
-        "SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole "
-        "FROM pg_catalog.pg_authid WHERE rolname = %s",
+        "SELECT r.rolcanlogin, r.rolsuper, r.rolcreatedb, r.rolcreaterole, "
+        "r.rolreplication, r.rolbypassrls, "
+        "EXISTS (SELECT 1 FROM pg_catalog.pg_auth_members m "
+        "WHERE m.member = r.oid) "
+        "FROM pg_catalog.pg_authid r WHERE r.rolname = %s",
         (username,),
     )
     attributes = cur.fetchone()
@@ -191,11 +253,28 @@ def _ensure_role(
         return
 
     assert attributes is not None
-    can_login, is_superuser, can_create_db, can_create_role = attributes
-    if not can_login or is_superuser or can_create_db or can_create_role:
+    (
+        can_login,
+        is_superuser,
+        can_create_db,
+        can_create_role,
+        can_replicate,
+        can_bypass_rls,
+        has_membership,
+    ) = attributes
+    if (
+        not can_login
+        or is_superuser
+        or can_create_db
+        or can_create_role
+        or can_replicate
+        or can_bypass_rls
+        or has_membership
+    ):
         _die(
             f"Role '{username}' has unexpected privileges; expected LOGIN, "
-            "NOSUPERUSER, NOCREATEDB, and NOCREATEROLE"
+            "NOSUPERUSER, NOCREATEDB, NOCREATEROLE, NOREPLICATION, "
+            "NOBYPASSRLS, and no inherited role memberships"
         )
 
     # Role exists — validate password before continuing

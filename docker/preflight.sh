@@ -43,6 +43,8 @@ check_var "DB_MIGRATION_USER"    "Database migration user"
 check_var "DB_MIGRATION_PASSWORD" "Database migration password"
 check_var "DB_APP_USER"          "Database application user"
 check_var "DB_APP_PASSWORD"      "Database application password"
+check_var "DB_ERROR_API_USER"    "Error API database user"
+check_var "DB_ERROR_API_PASSWORD" "Error API database password"
 check_var "DB_MIGRATION_URL"     "Migration database URL" "postgresql+psycopg://*"
 check_var "DATABASE_URL"         "Application database URL" "postgresql+psycopg://*"
 
@@ -87,6 +89,21 @@ validate_url() {
 
 validate_url "DB_MIGRATION_URL" "${DB_MIGRATION_USER:-}" "${DB_MIGRATION_PASSWORD:-}"
 validate_url "DATABASE_URL" "${DB_APP_USER:-}" "${DB_APP_PASSWORD:-}"
+
+roles=(
+    "${POSTGRES_USER:-}"
+    "${DB_MIGRATION_USER:-}"
+    "${DB_APP_USER:-}"
+    "${DB_ERROR_API_USER:-}"
+)
+for ((i = 0; i < ${#roles[@]}; i++)); do
+    for ((j = i + 1; j < ${#roles[@]}; j++)); do
+        if [ -n "${roles[i]}" ] && [ "${roles[i]}" = "${roles[j]}" ]; then
+            echo "::error::FATAL: PostgreSQL bootstrap, migration, application, and Error API roles must be distinct"
+            errors=$((errors + 1))
+        fi
+    done
+done
 
 if [ $errors -gt 0 ]; then
     echo "::error::Preflight FAILED with ${errors} error(s)"
