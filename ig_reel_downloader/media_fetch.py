@@ -41,6 +41,17 @@ class MediaFetchService:
         try:
             resolve_result = candidate.downloader.resolve(candidate)
         except ResolutionError as error:
+            if error.failure_reason == "unknown":
+                with error_reporter.bind_context(
+                    media_request_ids=(media_request_id,),
+                    provider=candidate.provider,
+                    media_kind=candidate.link_type,
+                    stage="resolve",
+                ):
+                    logger.exception(
+                        "Unexpected normalized media resolution failure",
+                        extra={"event_code": "media.resolve_normalized_unknown"},
+                    )
             self._record_failure(
                 media_request_id,
                 candidate,

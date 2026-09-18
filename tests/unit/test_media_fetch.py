@@ -1,9 +1,13 @@
 import datetime
 from pathlib import Path
 
+import pytest
+
+from ig_reel_downloader import media_fetch as media_fetch_module
 from ig_reel_downloader.constants import X_PAGE_METADATA_VERSION
 from ig_reel_downloader.downloaders.base import (
     DownloadContext,
+    DownloadFailureReason,
     MediaDownloadResult,
     ProviderItemRef,
     ResolutionError,
@@ -364,6 +368,51 @@ def test_fetch_handles_resolution_error_without_cache_lookup_or_download(
         "auth",
         "https://example.com/bad",
     )
+
+
+def test_fetch_reports_normalized_unknown_resolution_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    downloader = FakeDownloader(
+        MediaDownloadResult(media=None),
+        resolution_error=ResolutionError("https://example.com/bad", "unknown"),
+    )
+    service = MediaFetchService(FakeRepository(cached=None), output_dir=tmp_path)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        media_fetch_module.logger,
+        "exception",
+        lambda _message, **kwargs: calls.append(kwargs),
+    )
+
+    result = service.fetch(make_candidate(downloader), media_request_id=99)
+
+    assert result.failure_reason == "unknown"
+    assert calls == [{"extra": {"event_code": "media.resolve_normalized_unknown"}}]
+
+
+@pytest.mark.parametrize("failure_reason", ["auth", "blocked", "unsupported"])
+def test_fetch_excludes_recognized_resolution_errors_from_error_reporting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_reason: DownloadFailureReason,
+) -> None:
+    downloader = FakeDownloader(
+        MediaDownloadResult(media=None),
+        resolution_error=ResolutionError(
+            "https://example.com/recognized",
+            failure_reason,
+        ),
+    )
+    service = MediaFetchService(FakeRepository(cached=None), output_dir=tmp_path)
+    monkeypatch.setattr(
+        media_fetch_module.logger,
+        "exception",
+        lambda *_args, **_kwargs: pytest.fail("recognized outcome was reported"),
+    )
+
+    service.fetch(make_candidate(downloader), media_request_id=99)
 
 
 def test_fetch_records_unexpected_resolution_exception_as_unknown(

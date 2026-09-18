@@ -35,11 +35,18 @@ TRUNCATION_MARKER = "\n... [traceback truncated]"
 _URL_RE = re.compile(r"(?i)\b(?:https?|ftp)://[^\s<>'\"]+")
 _AUTH_RE = re.compile(
     r"(?i)\b(authorization|proxy-authorization|cookie|set-cookie)\s*[:=]\s*"
-    r"(?:(?:bearer|basic)\s+)?[^\s,;]+"
+    r"(?:\"[^\"]*\"|'[^']*'|(?:(?:bearer|basic)\s+)?[^\s,;]+)"
 )
 _BEARER_RE = re.compile(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+")
 _PATH_RE = re.compile(r"(?<![\w.-])/(?:home|root|app|workspace|srv|opt|tmp)/[^\s:'\"]+")
 _CREDENTIAL_RE = re.compile(r"(?i)(postgresql(?:\+\w+)?://)[^\s/@:]+(?::[^\s/@]*)?@")
+_TELEGRAM_IDENTITY_RE = re.compile(
+    r"(?i)\btelegram\s+(?:user|sender|chat)\b[^,\n;]*(?:,\s*id\s*=\s*\d+)?"
+)
+_USERNAME_RE = re.compile(r"(?<!\w)@[A-Za-z0-9_]{2,}")
+_LABELED_ID_RE = re.compile(
+    r"(?i)\b(?:user|sender|chat|telegram)[_-]?id\s*[:=]\s*-?\d+"
+)
 _APP_PACKAGE = "ig_reel_downloader"
 
 
@@ -127,9 +134,12 @@ def _known_secrets() -> tuple[str, ...]:
 
 
 def sanitize(value: str, *, secrets: Sequence[str] = ()) -> str:
-    sanitized = _CREDENTIAL_RE.sub(r"\1[redacted]@", value)
-    sanitized = _URL_RE.sub("[url]", sanitized)
+    sanitized = _TELEGRAM_IDENTITY_RE.sub("[telegram identity]", value)
+    sanitized = _LABELED_ID_RE.sub("[telegram identity]", sanitized)
+    sanitized = _USERNAME_RE.sub("[telegram username]", sanitized)
+    sanitized = _CREDENTIAL_RE.sub(r"\1[redacted]@", sanitized)
     sanitized = _AUTH_RE.sub(lambda match: f"{match.group(1)}=[redacted]", sanitized)
+    sanitized = _URL_RE.sub("[url]", sanitized)
     sanitized = _BEARER_RE.sub("[authorization]", sanitized)
     sanitized = _PATH_RE.sub("[path]", sanitized)
     for secret in (*_known_secrets(), *secrets):
@@ -157,13 +167,70 @@ def _application_frames(tb: TracebackType | None) -> tuple[str, ...]:
     return tuple(frames[-MAX_TRACE_FRAMES:])
 
 
+def _chain_frames(exc: BaseException) -> tuple[str, ...]:
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(current)
+        current = (
+            current.__cause__
+            if current.__cause__ is not None
+            else current.__context__
+            if not current.__suppress_context__
+            else None
+        )
+    shape: list[str] = []
+    for chained in reversed(chain):
+        shape.append(f"chain:{_qualified_exception_type(type(chained))}")
+        shape.extend(_application_frames(chained.__traceback__))
+    return tuple(shape[-MAX_TRACE_FRAMES:])
+
+
+def _message_free_trace(exc: BaseException) -> str:
+    chain: list[BaseException] = []
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(current)
+        current = (
+            current.__cause__
+            if current.__cause__ is not None
+            else current.__context__
+            if not current.__suppress_context__
+            else None
+        )
+    sections: list[str] = []
+    for chained in reversed(chain):
+        if sections:
+            sections.append("\nThe above exception caused the following exception:\n\n")
+        sections.append("Traceback (most recent call last):\n")
+        sections.extend(
+            traceback_module.format_list(
+                traceback_module.extract_tb(chained.__traceback__)
+            )
+        )
+        sections.append(
+            f"{_qualified_exception_type(type(chained))}: [message redacted]\n"
+        )
+    return "".join(sections)
+
+
 def _traceback_text(
     exc_info: tuple[type[BaseException], BaseException, TracebackType | None] | None,
+    *,
+    redact_exception_message: bool = False,
 ) -> str | None:
     if exc_info is None:
         return None
     exc_type, exc, tb = exc_info
-    trace = "".join(traceback_module.format_exception(exc_type, exc, tb))
+    trace = (
+        _message_free_trace(exc)
+        if redact_exception_message
+        else "".join(traceback_module.format_exception(exc_type, exc, tb))
+    )
     trace = sanitize(trace)
     if len(trace) > MAX_TRACE_SIZE:
         trace = trace[: MAX_TRACE_SIZE - len(TRUNCATION_MARKER)] + TRUNCATION_MARKER
@@ -183,7 +250,7 @@ def snapshot_from_record(record: logging.LogRecord) -> ErrorSnapshot:
     event_code = str(raw_code or f"{record.name}.{record.funcName}")[:128]
     exc_info = record.exc_info if record.exc_info and record.exc_info[0] else None
     exception_type = _qualified_exception_type(exc_info[0] if exc_info else None)
-    frames = _application_frames(exc_info[2] if exc_info else None)
+    frames = _chain_frames(exc_info[1]) if exc_info else ()
     message = sanitize(record.getMessage())[:MAX_MESSAGE_SIZE] or event_code
     display_name = sanitize(str(getattr(record, "display_name", event_code)))[:256]
     component = context.stage or getattr(record, "component", None)
@@ -199,7 +266,12 @@ def snapshot_from_record(record: logging.LogRecord) -> ErrorSnapshot:
         component=str(component)[:255] if component else None,
         exception_type=exception_type,
         message=message,
-        traceback=_traceback_text(exc_info),
+        traceback=_traceback_text(
+            exc_info,
+            redact_exception_message=bool(
+                getattr(record, "redact_exception_message", False)
+            ),
+        ),
         provider=context.provider,
         media_kind=context.media_kind,
         release=context.release,
@@ -212,20 +284,15 @@ class SnapshotWriter(Protocol):
 
 
 class ErrorReporterHandler(logging.Handler):
-    def __init__(
-        self, target: queue.Queue[ErrorSnapshot], fallback: Callable[[str], None]
-    ) -> None:
+    def __init__(self, target: queue.Queue[ErrorSnapshot]) -> None:
         super().__init__(logging.ERROR)
         self._target = target
-        self._fallback = fallback
 
     def emit(self, record: logging.LogRecord) -> None:
-        try:
+        # Caller-path overload and snapshot failures are deliberately silent:
+        # even stderr can block on a pipe. The original logging handlers still run.
+        with contextlib.suppress(Exception):
             self._target.put_nowait(snapshot_from_record(record))
-        except queue.Full:
-            self._fallback("error reporter queue is full; dropping event")
-        except Exception:
-            self._fallback("error reporter failed to snapshot event")
 
 
 _RECORD_SQL = text(
@@ -296,7 +363,7 @@ class ErrorReporter:
         self._retries = max(0, min(retries, MAX_RETRIES))
         self._retry_backoff = max(0.0, min(retry_backoff, RETRY_BACKOFF_SECONDS))
         self._fallback = fallback or _Fallback()
-        self.handler = ErrorReporterHandler(self._queue, self._fallback)
+        self.handler = ErrorReporterHandler(self._queue)
         self._installed_logger: logging.Logger | None = None
         self._stopping = threading.Event()
         self._thread = threading.Thread(

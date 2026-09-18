@@ -44,7 +44,8 @@ def test_snapshot_sanitizes_secrets_urls_credentials_authorization_and_paths(
     monkeypatch.setenv("BOT_TOKEN", "bot-secret")
     exc_info = _captured_exception(
         "raise RuntimeError('https://user:pass@example.com/a?token=x '"
-        "+ 'Authorization: Bearer abc.def bot-secret /home/alice/project/file.py')"
+        "+ 'Authorization: \"Bearer TOPSECRET\" Authorization: Bearer abc.def '"
+        "+ 'bot-secret /home/alice/project/file.py')"
     )
     record = _record(
         message=(
@@ -63,6 +64,7 @@ def test_snapshot_sanitizes_secrets_urls_credentials_authorization_and_paths(
         "example.com",
         "token",
         "abc.def",
+        "TOPSECRET",
         "bot-secret",
         "/home/alice",
         "/workspace/repo",
@@ -136,6 +138,63 @@ def test_fingerprint_ignores_dynamic_messages_but_distinguishes_shape_and_code()
     assert first.fingerprint != other_shape.fingerprint
 
 
+def test_fingerprint_includes_each_chained_exception_stack() -> None:
+    first = error_reporter.snapshot_from_record(
+        _record(
+            exc_info=_captured_exception(
+                "def inner_a():\n    raise ValueError('dynamic one')\n"
+                "def wrapper():\n"
+                "    try:\n        inner_a()\n"
+                "    except ValueError as exc:\n        raise RuntimeError('outer') from exc\n"
+                "wrapper()"
+            )
+        )
+    )
+    second = error_reporter.snapshot_from_record(
+        _record(
+            exc_info=_captured_exception(
+                "def inner_b():\n    raise ValueError('dynamic two')\n"
+                "def wrapper():\n"
+                "    try:\n        inner_b()\n"
+                "    except ValueError as exc:\n        raise RuntimeError('outer') from exc\n"
+                "wrapper()"
+            )
+        )
+    )
+
+    assert first.fingerprint != second.fingerprint
+
+
+def test_telegram_identity_is_removed_from_message_and_trace() -> None:
+    exc_info = _captured_exception(
+        "raise RuntimeError('telegram user Alice (@alice), id=123456 failed')"
+    )
+    snapshot = error_reporter.snapshot_from_record(
+        _record(
+            message="telegram user Alice (@alice), id=123456 failed",
+            exc_info=exc_info,
+        )
+    )
+    persisted = f"{snapshot.message}\n{snapshot.traceback}"
+
+    for identity in ("Alice", "@alice", "123456"):
+        assert identity not in persisted
+
+
+def test_identity_free_trace_redacts_arbitrary_global_handler_message() -> None:
+    exc_info = _captured_exception("raise RuntimeError('Alice 123456 @alice')")
+    record = _record(exc_info=exc_info)
+    record.redact_exception_message = True
+
+    snapshot = error_reporter.snapshot_from_record(record)
+
+    assert snapshot.traceback is not None
+    assert "RuntimeError" in snapshot.traceback
+    assert "Alice" not in snapshot.traceback
+    assert "123456" not in snapshot.traceback
+    assert "@alice" not in snapshot.traceback
+
+
 def test_context_is_immutable_bounded_and_copied_before_enqueue() -> None:
     target: list[error_reporter.ErrorSnapshot] = []
     reporter = error_reporter.ErrorReporter(target.append)
@@ -166,15 +225,20 @@ def test_context_is_immutable_bounded_and_copied_before_enqueue() -> None:
 def test_blocked_writer_and_full_queue_never_block_emit() -> None:
     entered = threading.Event()
     release = threading.Event()
-    fallbacks: list[str] = []
+    fallback_entered = threading.Event()
 
     def blocked_writer(snapshot: error_reporter.ErrorSnapshot) -> None:
         del snapshot
         entered.set()
         release.wait()
 
+    def blocking_fallback(message: str) -> None:
+        del message
+        fallback_entered.set()
+        release.wait()
+
     reporter = error_reporter.ErrorReporter(
-        blocked_writer, queue_size=1, fallback=fallbacks.append
+        blocked_writer, queue_size=1, fallback=blocking_fallback
     )
     try:
         reporter.handler.emit(_record(message="first"))
@@ -184,7 +248,7 @@ def test_blocked_writer_and_full_queue_never_block_emit() -> None:
         reporter.handler.emit(_record(message="dropped"))
         elapsed = time.monotonic() - started
         assert elapsed < 0.05
-        assert fallbacks == ["error reporter queue is full; dropping event"]
+        assert not fallback_entered.is_set()
         started = time.monotonic()
         reporter.stop(timeout=0.02)
         assert time.monotonic() - started < 0.1
@@ -235,5 +299,8 @@ def test_global_error_handler_logs_exception_with_stable_event(monkeypatch) -> N
 
     asyncio.run(instance._unexpected_error_handler(object(), context))
 
-    assert calls[0][1]["extra"] == {"event_code": "telegram.unexpected_handler"}
+    assert calls[0][1]["extra"] == {
+        "event_code": "telegram.unexpected_handler",
+        "redact_exception_message": True,
+    }
     assert calls[0][1]["exc_info"][1] is error

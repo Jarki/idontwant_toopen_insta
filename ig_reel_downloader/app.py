@@ -129,7 +129,10 @@ class IgReelDownloaderApp:
             logger.error(
                 "Unhandled Telegram update error",
                 exc_info=(type(error), error, error.__traceback__),
-                extra={"event_code": "telegram.unexpected_handler"},
+                extra={
+                    "event_code": "telegram.unexpected_handler",
+                    "redact_exception_message": True,
+                },
             )
         else:
             logger.error(
