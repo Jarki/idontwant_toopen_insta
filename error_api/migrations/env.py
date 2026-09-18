@@ -64,6 +64,13 @@ def _restrict_runtime_roles(connection: Connection) -> None:
     if getattr(dialect, "name", None) != "postgresql":
         return
     app_user, error_api_user = _runtime_roles()
+    if (
+        connection.exec_driver_sql(
+            "SELECT to_regclass('observability.error_groups')"
+        ).scalar()
+        is None
+    ):
+        return
     apply_runtime_privileges(connection, app_user, error_api_user)
 
 
