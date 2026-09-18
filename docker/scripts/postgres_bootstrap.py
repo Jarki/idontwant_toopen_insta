@@ -105,8 +105,9 @@ def main() -> None:
         cur.execute(f"GRANT USAGE ON SCHEMA public TO {_q(app_user)}")
 
         _ensure_schema(cur, "observability", migration_user)
-        _configure_error_api_isolation(cur, migration_user, error_api_user)
-        _remove_error_api_memberships(cur, error_api_user)
+        _configure_runtime_isolation(cur, migration_user, app_user, error_api_user)
+        _remove_runtime_memberships(cur, app_user, "bot")
+        _remove_runtime_memberships(cur, error_api_user, "Error API")
         denied_relation = _representative_public_relation(cur)
 
         cur.execute("REVOKE ALL ON SCHEMA observability FROM PUBLIC")
@@ -221,38 +222,39 @@ def _require_distinct_role_names(roles: dict[str, str]) -> None:
     )
 
 
-def _configure_error_api_isolation(
-    cur: Any, migration_user: str, error_api_user: str
+def _configure_runtime_isolation(
+    cur: Any, migration_user: str, app_user: str, error_api_user: str
 ) -> None:
-    error_api = _q(error_api_user)
     migration = _q(migration_user)
+    app = _q(app_user)
+    error_api = _q(error_api_user)
     statements = (
         f"REVOKE ALL PRIVILEGES ON SCHEMA public FROM {error_api}",
         f"REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM {error_api}",
         f"REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM {error_api}",
         f"REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public FROM {error_api}",
-        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration} IN SCHEMA public "
-        f"REVOKE ALL PRIVILEGES ON TABLES FROM {error_api}",
-        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration} IN SCHEMA public "
-        f"REVOKE ALL PRIVILEGES ON SEQUENCES FROM {error_api}",
-        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration} IN SCHEMA public "
-        f"REVOKE ALL PRIVILEGES ON FUNCTIONS FROM {error_api}",
         f"REVOKE ALL PRIVILEGES ON SCHEMA observability FROM {error_api}",
         f"REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA observability FROM {error_api}",
         f"REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA observability FROM {error_api}",
         f"REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA observability FROM {error_api}",
-        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration} IN SCHEMA observability "
-        f"REVOKE ALL PRIVILEGES ON TABLES FROM {error_api}",
-        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration} IN SCHEMA observability "
-        f"REVOKE ALL PRIVILEGES ON SEQUENCES FROM {error_api}",
-        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration} IN SCHEMA observability "
-        f"REVOKE ALL PRIVILEGES ON FUNCTIONS FROM {error_api}",
     )
     for statement in statements:
         cur.execute(statement)
 
+    for grantee in ("PUBLIC", app, error_api):
+        for object_type in ("TABLES", "SEQUENCES", "FUNCTIONS"):
+            cur.execute(
+                f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration} "
+                f"REVOKE ALL PRIVILEGES ON {object_type} FROM {grantee}"
+            )
+            for schema in ("public", "observability"):
+                cur.execute(
+                    f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration} IN SCHEMA {schema} "
+                    f"REVOKE ALL PRIVILEGES ON {object_type} FROM {grantee}"
+                )
 
-def _remove_error_api_memberships(cur: Any, error_api_user: str) -> None:
+
+def _remove_runtime_memberships(cur: Any, user: str, role_label: str) -> None:
     membership_query = """
 SELECT roles.rolname
 FROM pg_catalog.pg_auth_members AS memberships
@@ -262,16 +264,16 @@ WHERE memberships.member = (
 )
 ORDER BY roles.rolname
     """
-    cur.execute(membership_query, (error_api_user,))
+    cur.execute(membership_query, (user,))
     memberships = [str(row[0]) for row in cur.fetchall()]
     for role in memberships:
-        cur.execute(f"REVOKE {_q(role)} FROM {_q(error_api_user)}")
+        cur.execute(f"REVOKE {_q(role)} FROM {_q(user)}")
 
-    cur.execute(membership_query, (error_api_user,))
+    cur.execute(membership_query, (user,))
     remaining_memberships = [str(row[0]) for row in cur.fetchall()]
     if remaining_memberships:
         _die(
-            f"Error API role '{error_api_user}' retains role membership(s) after "
+            f"{role_label.capitalize()} role '{user}' retains role membership(s) after "
             f"repair: {', '.join(remaining_memberships)}"
         )
 

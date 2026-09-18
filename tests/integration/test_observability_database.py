@@ -87,6 +87,25 @@ def _upgrade(config_name: str, url: str) -> None:
     command.upgrade(config, "head")
 
 
+def _run_error_api_upgrade(url: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "alembic",
+            "-c",
+            "error_api_alembic.ini",
+            "upgrade",
+            "head",
+        ],
+        cwd=PROJECT_ROOT,
+        env={**os.environ, "DB_MIGRATION_URL": url},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def _downgrade_error_api(url: str) -> None:
     config = Config(str(PROJECT_ROOT / "error_api_alembic.ini"))
     config.attributes["database_url"] = url
@@ -460,7 +479,8 @@ def test_error_api_migration_rerun_repairs_stale_direct_grants(
             )
         ).scalar_one()
 
-    _upgrade("error_api_alembic.ini", database_urls["migration"])
+    result = _run_error_api_upgrade(database_urls["migration"])
+    assert result.returncode == 0, result.stdout + result.stderr
 
     _denied(engines["error_api"], "SELECT * FROM observability.error_occurrences")
     _denied(
@@ -490,12 +510,14 @@ def test_error_api_migration_rerun_repairs_stale_direct_grants(
         )
 
 
-def test_bootstrap_rerun_removes_assumable_error_api_memberships(
+def test_bootstrap_rerun_removes_assumable_runtime_memberships(
     engines: dict[str, Engine],
     database_urls: dict[str, str],
     bootstrap_environment: dict[str, str],
 ) -> None:
+    bot_user = bootstrap_environment["DB_APP_USER"].replace('"', '""')
     error_api_user = bootstrap_environment["DB_ERROR_API_USER"].replace('"', '""')
+    nested_role = "observability_test_runtime_group"
     with psycopg.connect(
         host=bootstrap_environment["POSTGRES_HOST"],
         port=bootstrap_environment["POSTGRES_PORT"],
@@ -504,23 +526,133 @@ def test_bootstrap_rerun_removes_assumable_error_api_memberships(
         password=bootstrap_environment["POSTGRES_PASSWORD"],
         autocommit=True,
     ) as connection:
+        connection.execute(f'CREATE ROLE "{nested_role}" NOLOGIN')
+        connection.execute(f'GRANT pg_read_all_data TO "{nested_role}"')
+        connection.execute(f'GRANT "{nested_role}" TO "{bot_user}"')
         connection.execute(f'GRANT pg_read_all_data TO "{error_api_user}"')
 
+    with engines["bot"].connect() as connection:
+        connection.execute(text(f'SET ROLE "{nested_role}"'))
+        connection.execute(text("SELECT count(*) FROM observability.error_occurrences"))
     with engines["error_api"].connect() as connection:
         connection.execute(text("SET ROLE pg_read_all_data"))
         connection.execute(text("SELECT count(*) FROM public.telegram_users"))
 
     _rerun_bootstrap(bootstrap_environment)
-    _upgrade("error_api_alembic.ini", database_urls["migration"])
+    result = _run_error_api_upgrade(database_urls["migration"])
+    assert result.returncode == 0, result.stdout + result.stderr
 
+    _denied(engines["bot"], f'SET ROLE "{nested_role}"')
     _denied(engines["error_api"], "SET ROLE pg_read_all_data")
-    with engines["error_api"].connect() as connection:
-        assert (
-            connection.execute(
-                text("SELECT count(*) FROM observability.api_error_groups")
-            ).scalar_one()
-            == 0
+    with psycopg.connect(
+        host=bootstrap_environment["POSTGRES_HOST"],
+        port=bootstrap_environment["POSTGRES_PORT"],
+        dbname=bootstrap_environment["POSTGRES_DB"],
+        user=bootstrap_environment["POSTGRES_USER"],
+        password=bootstrap_environment["POSTGRES_PASSWORD"],
+        autocommit=True,
+    ) as connection:
+        connection.execute(f'REVOKE pg_read_all_data FROM "{nested_role}"')
+        connection.execute(f'DROP ROLE "{nested_role}"')
+
+
+def test_error_api_migration_repair_removes_global_default_privileges(
+    engines: dict[str, Engine],
+    database_urls: dict[str, str],
+    bootstrap_environment: dict[str, str],
+) -> None:
+    bot_user = bootstrap_environment["DB_APP_USER"].replace('"', '""')
+    error_api_user = bootstrap_environment["DB_ERROR_API_USER"].replace('"', '""')
+    with engines["migration"].begin() as connection:
+        connection.execute(
+            text(
+                f'ALTER DEFAULT PRIVILEGES GRANT SELECT ON TABLES TO "{error_api_user}"'
+            )
         )
+        connection.execute(
+            text(
+                f"ALTER DEFAULT PRIVILEGES GRANT USAGE ON SEQUENCES TO "
+                f'"{error_api_user}"'
+            )
+        )
+        connection.execute(
+            text(
+                f"ALTER DEFAULT PRIVILEGES GRANT EXECUTE ON FUNCTIONS TO "
+                f'"{error_api_user}"'
+            )
+        )
+
+    _rerun_bootstrap(bootstrap_environment)
+    result = _run_error_api_upgrade(database_urls["migration"])
+    assert result.returncode == 0, result.stdout + result.stderr
+
+    with engines["migration"].begin() as connection:
+        connection.execute(
+            text(
+                "CREATE TABLE observability.future_default_privilege_test "
+                "(id bigint GENERATED BY DEFAULT AS IDENTITY)"
+            )
+        )
+        connection.execute(
+            text(
+                "CREATE FUNCTION observability.future_default_privilege_test_function() "
+                "RETURNS integer LANGUAGE sql AS 'SELECT 1'"
+            )
+        )
+        for grantee in (bot_user, error_api_user):
+            assert not connection.execute(
+                text(
+                    "SELECT has_table_privilege(:grantee, "
+                    "'observability.future_default_privilege_test', 'SELECT')"
+                ),
+                {"grantee": grantee},
+            ).scalar_one()
+            assert not connection.execute(
+                text(
+                    "SELECT has_sequence_privilege(:grantee, "
+                    "'observability.future_default_privilege_test_id_seq', 'USAGE')"
+                ),
+                {"grantee": grantee},
+            ).scalar_one()
+            assert not connection.execute(
+                text(
+                    "SELECT has_function_privilege(:grantee, "
+                    "'observability.future_default_privilege_test_function()', 'EXECUTE')"
+                ),
+                {"grantee": grantee},
+            ).scalar_one()
+
+    for engine in (engines["bot"], engines["error_api"]):
+        _denied(
+            engine,
+            "SELECT observability.future_default_privilege_test_function()",
+        )
+    with engines["migration"].begin() as connection:
+        connection.execute(
+            text("DROP FUNCTION observability.future_default_privilege_test_function()")
+        )
+        connection.execute(
+            text("DROP TABLE observability.future_default_privilege_test")
+        )
+
+
+def test_error_api_migration_rejects_colliding_runtime_roles(
+    engines: dict[str, Engine],
+    database_urls: dict[str, str],
+    bootstrap_environment: dict[str, str],
+) -> None:
+    error_api_user = bootstrap_environment["DB_ERROR_API_USER"]
+    with _environment(DB_APP_USER=error_api_user, DB_ERROR_API_USER=error_api_user):
+        result = _run_error_api_upgrade(database_urls["migration"])
+
+    assert result.returncode != 0
+    assert "must name distinct roles" in result.stderr
+    _denied(
+        engines["error_api"],
+        "SELECT observability.record_error("
+        "'x', 'x', 'x', CURRENT_TIMESTAMP, 'ERROR', 'x', NULL, NULL, "
+        "'x', NULL, NULL, NULL, NULL, ARRAY[]::bigint[])",
+    )
 
 
 def test_error_api_downgrade_preserves_public_data(

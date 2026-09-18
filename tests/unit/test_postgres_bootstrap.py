@@ -32,45 +32,39 @@ def test_bootstrap_rejects_colliding_security_boundary_roles() -> None:
         )
 
 
-def test_bootstrap_removes_direct_error_api_public_privileges() -> None:
+def test_bootstrap_removes_unsafe_runtime_default_privileges() -> None:
     cursor = _RecordingCursor()
 
-    postgres_bootstrap._configure_error_api_isolation(
-        cursor, "db_migration", "db_error_api"
+    postgres_bootstrap._configure_runtime_isolation(
+        cursor, "db_migration", "db_app", "db_error_api"
     )
 
-    assert cursor.statements == [
-        'REVOKE ALL PRIVILEGES ON SCHEMA public FROM "db_error_api"',
-        'REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM "db_error_api"',
-        'REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM "db_error_api"',
-        'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public FROM "db_error_api"',
-        'ALTER DEFAULT PRIVILEGES FOR ROLE "db_migration" IN SCHEMA public '
-        'REVOKE ALL PRIVILEGES ON TABLES FROM "db_error_api"',
-        'ALTER DEFAULT PRIVILEGES FOR ROLE "db_migration" IN SCHEMA public '
-        'REVOKE ALL PRIVILEGES ON SEQUENCES FROM "db_error_api"',
-        'ALTER DEFAULT PRIVILEGES FOR ROLE "db_migration" IN SCHEMA public '
-        'REVOKE ALL PRIVILEGES ON FUNCTIONS FROM "db_error_api"',
-        'REVOKE ALL PRIVILEGES ON SCHEMA observability FROM "db_error_api"',
-        'REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA observability FROM "db_error_api"',
-        'REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA observability FROM "db_error_api"',
-        'REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA observability FROM "db_error_api"',
-        'ALTER DEFAULT PRIVILEGES FOR ROLE "db_migration" IN SCHEMA observability '
-        'REVOKE ALL PRIVILEGES ON TABLES FROM "db_error_api"',
-        'ALTER DEFAULT PRIVILEGES FOR ROLE "db_migration" IN SCHEMA observability '
-        'REVOKE ALL PRIVILEGES ON SEQUENCES FROM "db_error_api"',
-        'ALTER DEFAULT PRIVILEGES FOR ROLE "db_migration" IN SCHEMA observability '
-        'REVOKE ALL PRIVILEGES ON FUNCTIONS FROM "db_error_api"',
-    ]
+    assert (
+        'REVOKE ALL PRIVILEGES ON SCHEMA public FROM "db_error_api"'
+        in cursor.statements
+    )
+    for grantee in ("PUBLIC", '"db_app"', '"db_error_api"'):
+        for object_type in ("TABLES", "SEQUENCES", "FUNCTIONS"):
+            assert (
+                f'ALTER DEFAULT PRIVILEGES FOR ROLE "db_migration" '
+                f"REVOKE ALL PRIVILEGES ON {object_type} FROM {grantee}"
+            ) in cursor.statements
+            for schema in ("public", "observability"):
+                assert (
+                    f'ALTER DEFAULT PRIVILEGES FOR ROLE "db_migration" '
+                    f"IN SCHEMA {schema} REVOKE ALL PRIVILEGES ON {object_type} "
+                    f"FROM {grantee}"
+                ) in cursor.statements
 
 
-def test_bootstrap_removes_every_error_api_role_membership() -> None:
+def test_bootstrap_removes_every_runtime_role_membership() -> None:
     cursor = _RecordingCursor([[("pg_read_all_data",), ("runtime_group",)], []])
 
-    postgres_bootstrap._remove_error_api_memberships(cursor, "db_error_api")
+    postgres_bootstrap._remove_runtime_memberships(cursor, "db_app", "bot")
 
     assert cursor.statements[1:3] == [
-        'REVOKE "pg_read_all_data" FROM "db_error_api"',
-        'REVOKE "runtime_group" FROM "db_error_api"',
+        'REVOKE "pg_read_all_data" FROM "db_app"',
+        'REVOKE "runtime_group" FROM "db_app"',
     ]
 
 
@@ -78,4 +72,6 @@ def test_bootstrap_fails_closed_when_membership_repair_does_not_converge() -> No
     cursor = _RecordingCursor([[("pg_read_all_data",)], [("pg_read_all_data",)]])
 
     with pytest.raises(SystemExit):
-        postgres_bootstrap._remove_error_api_memberships(cursor, "db_error_api")
+        postgres_bootstrap._remove_runtime_memberships(
+            cursor, "db_error_api", "Error API"
+        )

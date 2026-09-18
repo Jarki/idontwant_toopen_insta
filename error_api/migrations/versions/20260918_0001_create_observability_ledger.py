@@ -13,7 +13,10 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
-from error_api.migrations.runtime_privileges import apply_runtime_privileges
+from error_api.migrations.runtime_privileges import (
+    apply_runtime_privileges,
+    validate_runtime_roles,
+)
 
 revision: str = "20260918_0001"
 down_revision: str | None = None
@@ -28,7 +31,7 @@ def upgrade() -> None:
     if bind.dialect.name != "postgresql":
         msg = "The observability ledger requires PostgreSQL"
         raise RuntimeError(msg)
-    if (
+    if not op.get_context().as_sql and (
         bind.execute(sa.text("SELECT to_regclass('public.media_requests')")).scalar()
         is None
     ):
@@ -415,6 +418,7 @@ def _runtime_roles() -> tuple[str, str]:
     if not app_user or not error_api_user:
         msg = "DB_APP_USER and DB_ERROR_API_USER are required for Error API migrations"
         raise RuntimeError(msg)
+    validate_runtime_roles(app_user, error_api_user)
     return app_user, error_api_user
 
 

@@ -1,5 +1,8 @@
+from io import StringIO
 from pathlib import Path
 
+import pytest
+from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
@@ -29,3 +32,20 @@ def test_error_api_alembic_migrations_have_single_head() -> None:
         PROJECT_ROOT / "error_api_alembic.ini",
         PROJECT_ROOT / "error_api/migrations",
     )
+
+
+def test_error_api_offline_upgrade_generates_deployable_sql(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("DB_APP_USER", "db_app")
+    monkeypatch.setenv("DB_ERROR_API_USER", "db_error_api")
+    config = Config(str(PROJECT_ROOT / "error_api_alembic.ini"))
+    config.attributes["database_url"] = "postgresql+psycopg://db_migration@localhost/db"
+    output = StringIO()
+    config.output_buffer = output
+
+    command.upgrade(config, "head", sql=True)
+
+    generated_sql = output.getvalue()
+    assert "CREATE TABLE observability.error_groups" in generated_sql
+    assert "INSERT INTO observability.alembic_version_error_api" in generated_sql

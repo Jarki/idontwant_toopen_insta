@@ -6,7 +6,10 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import Connection, engine_from_config, pool
 
-from error_api.migrations.runtime_privileges import apply_runtime_privileges
+from error_api.migrations.runtime_privileges import (
+    apply_runtime_privileges,
+    validate_runtime_roles,
+)
 from error_api.repository.schema import metadata
 
 config = context.config
@@ -49,23 +52,19 @@ def _required_role(name: str) -> str:
     raise RuntimeError(msg)
 
 
+def _runtime_roles() -> tuple[str, str]:
+    app_user = _required_role("DB_APP_USER")
+    error_api_user = _required_role("DB_ERROR_API_USER")
+    validate_runtime_roles(app_user, error_api_user)
+    return app_user, error_api_user
+
+
 def _restrict_runtime_roles(connection: Connection) -> None:
     dialect = getattr(connection, "dialect", None)
     if getattr(dialect, "name", None) != "postgresql":
         return
-    if (
-        connection.exec_driver_sql(
-            "SELECT to_regclass('observability.error_groups')"
-        ).scalar()
-        is None
-    ):
-        return
-
-    apply_runtime_privileges(
-        connection,
-        _required_role("DB_APP_USER"),
-        _required_role("DB_ERROR_API_USER"),
-    )
+    app_user, error_api_user = _runtime_roles()
+    apply_runtime_privileges(connection, app_user, error_api_user)
 
 
 def _configure(connection: object | None = None) -> None:
@@ -115,6 +114,7 @@ def run_migrations_online() -> None:
         _configure(connection)
         with context.begin_transaction():
             context.run_migrations()
+        with connection.begin():
             _restrict_runtime_roles(connection)
 
 
