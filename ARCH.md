@@ -329,11 +329,12 @@ Port `5432` is not published to the host by default. Administrative access uses 
 
 ### Database roles
 
-Three separate PostgreSQL roles enforce least privilege:
+Four separate PostgreSQL roles enforce least privilege:
 
 - **Bootstrap/owner**: created from `POSTGRES_USER`/`POSTGRES_PASSWORD`; used only for role grants, maintenance, and backups.
 - **Migration** (`DB_MIGRATION_URL`): owns the application schema and runs DDL for Alembic migrations.
 - **Application** (`DATABASE_URL`): restricted to DML on runtime tables and usage of their required sequences; it cannot access Alembic metadata or legacy rows and is never a superuser or schema owner.
+- **Error API** (`ERROR_API_DATABASE_URL`): restricted to curated observability reads and approved triage writes; it cannot access public application data or run DDL.
 
 ### Cleanup loop
 
@@ -354,7 +355,8 @@ The documented environment variables are:
 | --- | --- | --- | --- |
 | `BOT_TOKEN` | yes | none | Telegram bot token. |
 | `DATABASE_URL` | yes | none | PostgreSQL application connection URL (`postgresql+psycopg://` scheme). |
-| `DB_MIGRATION_URL` | yes* | none | PostgreSQL migration connection URL. Required for bootstrap/migrate services. |
+| `DB_MIGRATION_URL` | yes* | none | PostgreSQL migration connection URL. Required for main and Error API migrations. |
+| `ERROR_API_DATABASE_URL` | yes* | none | Restricted Error API database connection URL; never used for migrations. |
 | `POSTGRES_DB` | yes* | none | PostgreSQL database name. Required for bootstrap service. |
 | `POSTGRES_USER` | yes* | none | PostgreSQL bootstrap/owner role. Required for bootstrap service. |
 | `POSTGRES_PASSWORD` | yes* | none | PostgreSQL bootstrap/owner password. Required for bootstrap service. |

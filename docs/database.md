@@ -16,7 +16,7 @@ DATABASE_URL=postgresql+psycopg://app:password@postgres:5432/ig_reel_downloader
 
 Connection URLs must use the `postgresql+psycopg` dialect. Plain `postgres://` URLs are rejected. Each URL must contain its corresponding configured role and password; percent-encode reserved characters in credentials and database names.
 
-A separate `DB_MIGRATION_URL` variable is used by the bootstrap and migrate services with a migration role that owns the schema. The application role (in `DATABASE_URL`) receives DML access to runtime tables and usage access to their generated sequences through schema-wide existing/default privileges; explicit revocations prevent access to Alembic metadata and legacy rows.
+A separate `DB_MIGRATION_URL` variable is used by the bootstrap and migration services with a migration role that owns the schema. The application role (in `DATABASE_URL`) receives DML access to runtime tables and usage access to their generated sequences through schema-wide existing/default privileges; explicit revocations prevent access to Alembic metadata and legacy rows. `ERROR_API_DATABASE_URL` is reserved for the restricted Error API runtime and is never used by migration tooling.
 
 ## Compose service ordering
 
@@ -59,6 +59,15 @@ its metadata:
 DB_APP_USER=db_app \
 DATABASE_URL=postgresql+psycopg://db_migration:pass@localhost:5432/db \
   uv run poe db-upgrade
+```
+
+Error API schema tasks use the same migration-only URL and require both runtime role names:
+
+```bash
+DB_MIGRATION_URL=postgresql+psycopg://db_migration:pass@localhost:5432/db \
+DB_APP_USER=db_app \
+DB_ERROR_API_USER=db_error_api \
+  uv run poe error-db-upgrade
 ```
 
 ## Creating a migration

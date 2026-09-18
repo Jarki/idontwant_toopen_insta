@@ -12,6 +12,7 @@ import os
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from io import StringIO
 from pathlib import Path
 
 import pytest
@@ -163,6 +164,20 @@ def test_streams_apply_independently_and_report_current(
     assert error_revision == "20260918_0001"
 
 
+def test_error_api_migrations_use_the_migration_url(
+    database_urls: dict[str, str],
+) -> None:
+    output = StringIO()
+    config = Config(str(PROJECT_ROOT / "error_api_alembic.ini"), stdout=output)
+    with _environment(
+        DB_MIGRATION_URL=database_urls["migration"],
+        ERROR_API_DATABASE_URL=database_urls["error_api"],
+    ):
+        command.current(config)
+
+    assert "20260918_0001" in output.getvalue()
+
+
 def test_recording_reuses_group_and_keeps_occurrences_immutable(
     engines: dict[str, Engine],
 ) -> None:
@@ -185,8 +200,8 @@ def test_recording_reuses_group_and_keeps_occurrences_immutable(
         ).scalar_one()
         reproduction = connection.execute(
             text(
-                "SELECT url, normalized_url FROM observability.api_reproduction_cases "
-                "WHERE occurrence_id = :id"
+                "SELECT url, normalized_url, provider, media_kind "
+                "FROM observability.api_reproduction_cases WHERE occurrence_id = :id"
             ),
             {"id": first},
         ).one()
@@ -194,7 +209,7 @@ def test_recording_reuses_group_and_keeps_occurrences_immutable(
     assert group == 2
     assert occurrences == 2
     assert links == 2
-    assert reproduction == (None, None)
+    assert reproduction == (None, None, "instagram", "reel")
 
 
 def test_recording_rolls_back_group_when_occurrence_insert_fails(

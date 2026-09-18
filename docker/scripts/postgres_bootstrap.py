@@ -43,7 +43,14 @@ def main() -> None:
     _require("DB_APP_PASSWORD", app_password)
     _require("DB_ERROR_API_USER", error_api_user)
     _require("DB_ERROR_API_PASSWORD", error_api_password)
-
+    _require_distinct_role_names(
+        {
+            "POSTGRES_USER": pg_user,
+            "DB_MIGRATION_USER": migration_user,
+            "DB_APP_USER": app_user,
+            "DB_ERROR_API_USER": error_api_user,
+        }
+    )
     import psycopg
 
     # Phase 1 — connect to the maintenance database, create roles and database
@@ -74,6 +81,7 @@ def main() -> None:
             error_api_password,
             host=pg_host,
             port=pg_port,
+            inherit=False,
         )
         _ensure_database(cur, pg_db, migration_user)
     finally:
@@ -97,6 +105,10 @@ def main() -> None:
         cur.execute(f"GRANT USAGE ON SCHEMA public TO {_q(app_user)}")
 
         _ensure_schema(cur, "observability", migration_user)
+        _configure_error_api_isolation(cur, migration_user, error_api_user)
+        _reject_unsafe_error_api_memberships(cur, error_api_user)
+        denied_relation = _representative_public_relation(cur)
+
         cur.execute("REVOKE ALL ON SCHEMA observability FROM PUBLIC")
 
         # Migration role — full DDL on existing objects
@@ -155,6 +167,7 @@ def main() -> None:
         error_api_user,
         error_api_password,
         expect_ddl=False,
+        denied_relation=denied_relation,
     )
 
     print("Bootstrap completed successfully")
@@ -195,6 +208,141 @@ def _require(name: str, value: str) -> None:
         _die(f"Missing required environment variable: {name}")
 
 
+def _require_distinct_role_names(roles: dict[str, str]) -> None:
+    names = list(roles.values())
+    if len(set(names)) == len(names):
+        return
+    collisions = sorted(
+        name for name in set(names) if sum(value == name for value in names) > 1
+    )
+    _die(
+        "Security-boundary role names must be distinct; duplicated role name(s): "
+        + ", ".join(repr(name) for name in collisions)
+    )
+
+
+def _configure_error_api_isolation(
+    cur: Any, migration_user: str, error_api_user: str
+) -> None:
+    error_api = _q(error_api_user)
+    migration = _q(migration_user)
+    statements = (
+        f"REVOKE ALL PRIVILEGES ON SCHEMA public FROM {error_api}",
+        f"REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA public FROM {error_api}",
+        f"REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public FROM {error_api}",
+        f"REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA public FROM {error_api}",
+        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration} IN SCHEMA public "
+        f"REVOKE ALL PRIVILEGES ON TABLES FROM {error_api}",
+        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration} IN SCHEMA public "
+        f"REVOKE ALL PRIVILEGES ON SEQUENCES FROM {error_api}",
+        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration} IN SCHEMA public "
+        f"REVOKE ALL PRIVILEGES ON FUNCTIONS FROM {error_api}",
+    )
+    for statement in statements:
+        cur.execute(statement)
+
+
+def _reject_unsafe_error_api_memberships(cur: Any, error_api_user: str) -> None:
+    cur.execute(
+        """
+WITH RECURSIVE inherited_roles(role_oid) AS (
+    SELECT roleid
+    FROM pg_catalog.pg_auth_members
+    WHERE member = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = %s)
+    UNION
+    SELECT memberships.roleid
+    FROM pg_catalog.pg_auth_members AS memberships
+    JOIN inherited_roles ON memberships.member = inherited_roles.role_oid
+),
+unsafe_roles AS (
+    SELECT roles.rolname
+    FROM inherited_roles
+    JOIN pg_catalog.pg_roles AS roles ON roles.oid = inherited_roles.role_oid
+    WHERE roles.rolsuper
+       OR roles.rolcreatedb
+       OR roles.rolcreaterole
+       OR roles.oid = (
+           SELECT datdba FROM pg_catalog.pg_database
+           WHERE datname = current_database()
+       )
+       OR EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_namespace AS schemas
+           WHERE schemas.nspname IN ('public', 'observability')
+             AND (
+                 schemas.nspowner = roles.oid
+                 OR EXISTS (
+                     SELECT 1
+                     FROM pg_catalog.aclexplode(
+                         COALESCE(
+                             schemas.nspacl,
+                             pg_catalog.acldefault('n', schemas.nspowner)
+                         )
+                     ) AS acl
+                     WHERE acl.grantee = roles.oid
+                 )
+             )
+       )
+       OR EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_class AS relations
+           JOIN pg_catalog.pg_namespace AS schemas
+             ON schemas.oid = relations.relnamespace
+           WHERE schemas.nspname IN ('public', 'observability')
+             AND (
+                 relations.relowner = roles.oid
+                 OR EXISTS (
+                     SELECT 1
+                     FROM pg_catalog.aclexplode(
+                         COALESCE(
+                             relations.relacl,
+                             pg_catalog.acldefault('r', relations.relowner)
+                         )
+                     ) AS acl
+                     WHERE acl.grantee = roles.oid
+                 )
+             )
+       )
+       OR EXISTS (
+           SELECT 1
+           FROM pg_catalog.pg_proc AS functions
+           JOIN pg_catalog.pg_namespace AS schemas
+             ON schemas.oid = functions.pronamespace
+           WHERE schemas.nspname IN ('public', 'observability')
+             AND (
+                 functions.proowner = roles.oid
+                 OR EXISTS (
+                     SELECT 1
+                     FROM pg_catalog.aclexplode(
+                         COALESCE(
+                             functions.proacl,
+                             pg_catalog.acldefault('f', functions.proowner)
+                         )
+                     ) AS acl
+                     WHERE acl.grantee = roles.oid
+                 )
+             )
+       )
+)
+SELECT rolname FROM unsafe_roles ORDER BY rolname
+        """,
+        (error_api_user,),
+    )
+    unsafe_roles = [str(row[0]) for row in cur.fetchall()]
+    if unsafe_roles:
+        _die(
+            f"Error API role '{error_api_user}' inherits unsafe privileges "
+            f"through role membership(s): {', '.join(unsafe_roles)}"
+        )
+
+
+def _representative_public_relation(cur: Any) -> str | None:
+    for relation in ("telegram_users", "media_requests", "media_items"):
+        if _relation_exists(cur, relation):
+            return relation
+    return None
+
+
 def _die(msg: str) -> None:
     print(f"FATAL: {msg}", file=sys.stderr)
     sys.exit(1)
@@ -211,10 +359,11 @@ def _ensure_role(
     password: str,
     host: str,
     port: str,
+    inherit: bool = True,
 ) -> None:
     """Create a least-privilege login role or fail closed on role drift."""
     cur.execute(
-        "SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole "
+        "SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolinherit "
         "FROM pg_catalog.pg_authid WHERE rolname = %s",
         (username,),
     )
@@ -224,9 +373,11 @@ def _ensure_role(
     if not exists:
         from psycopg import sql
 
+        role_options = "LOGIN" if inherit else "LOGIN NOINHERIT"
         cur.execute(
-            sql.SQL("CREATE ROLE {} WITH LOGIN PASSWORD {}").format(
+            sql.SQL("CREATE ROLE {} WITH {} PASSWORD {}").format(
                 sql.Identifier(username),
+                sql.SQL(role_options),
                 sql.Literal(password),
             ),
         )
@@ -234,12 +385,14 @@ def _ensure_role(
         return
 
     assert attributes is not None
-    can_login, is_superuser, can_create_db, can_create_role = attributes
+    can_login, is_superuser, can_create_db, can_create_role, role_inherits = attributes
     if not can_login or is_superuser or can_create_db or can_create_role:
         _die(
             f"Role '{username}' has unexpected privileges; expected LOGIN, "
             "NOSUPERUSER, NOCREATEDB, and NOCREATEROLE"
         )
+    if not inherit and role_inherits:
+        cur.execute(f"ALTER ROLE {_q(username)} NOINHERIT")
 
     # Role exists — validate password before continuing
     import psycopg
@@ -298,6 +451,7 @@ def _validate(
     user: str,
     password: str,
     expect_ddl: bool,
+    denied_relation: str | None = None,
 ) -> None:
     """Verify the role can connect and (for migration role) execute DDL."""
     import psycopg
@@ -340,6 +494,16 @@ def _validate(
             _die(f"Application role '{user}' unexpectedly has DDL privilege")
         except Exception:
             print(f"  '{user}': DDL correctly denied")
+
+    if denied_relation is not None:
+        try:
+            conn = psycopg.connect(**connect_kwargs)
+            cur = conn.cursor()
+            cur.execute(f"SELECT 1 FROM public.{_q(denied_relation)} LIMIT 1")
+            conn.close()
+            _die(f"Error API role '{user}' unexpectedly read public.{denied_relation}")
+        except Exception:
+            print(f"  '{user}': public application reads correctly denied")
 
 
 if __name__ == "__main__":

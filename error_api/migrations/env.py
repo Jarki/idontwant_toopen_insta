@@ -32,11 +32,11 @@ def _database_url() -> str:
     if isinstance(configured_url, str) and configured_url:
         return configured_url
 
-    env_url = os.getenv("ERROR_API_DATABASE_URL") or os.getenv("DATABASE_URL")
+    env_url = os.getenv("DB_MIGRATION_URL")
     if env_url:
         return env_url
 
-    msg = "ERROR_API_DATABASE_URL or DATABASE_URL is required for migrations"
+    msg = "DB_MIGRATION_URL is required for Error API migrations"
     raise RuntimeError(msg)
 
 

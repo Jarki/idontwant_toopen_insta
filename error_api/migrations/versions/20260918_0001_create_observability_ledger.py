@@ -343,8 +343,8 @@ SELECT
     occurrences.occurred_at,
     requests.url,
     requests.normalized_url,
-    requests.provider,
-    requests.media_kind,
+    occurrences.provider,
+    occurrences.media_kind,
     occurrences.component,
     occurrences.release
 FROM observability.error_request_links AS links
