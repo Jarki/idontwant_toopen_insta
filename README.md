@@ -22,8 +22,10 @@ cp .env.example .env
 ### 3. (Optional) Create a cookies.txt file
 
 If you want to download account-restricted media, create a Netscape-format
-`cookies.txt` file and put it in the `assets` directory. The same file is used for
-all providers. Refer to https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp
+`cookies.txt` file and put it in the `assets` directory. This file is used for
+providers other than Instagram. Instagram Reels and posts are temporarily
+anonymous-only: supplied cookies are ignored, and media requiring login cannot
+be downloaded. Existing cached media remains reusable. Refer to https://github.com/yt-dlp/yt-dlp/wiki/FAQ#how-do-i-pass-cookies-to-yt-dlp
 
 Reddit normally allows public and age-marked posts without an account. Private or
 quarantined communities require cookies exported from a browser that is logged in
