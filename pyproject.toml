@@ -47,6 +47,11 @@ db-downgrade = "alembic downgrade -1"
 db-current = "alembic current"
 db-history = "alembic history"
 db-revision = "alembic revision --autogenerate -m"
+error-db-upgrade = "alembic -c error_api_alembic.ini upgrade head"
+error-db-downgrade = "alembic -c error_api_alembic.ini downgrade -1"
+error-db-current = "alembic -c error_api_alembic.ini current"
+error-db-history = "alembic -c error_api_alembic.ini history"
+error-db-revision = "alembic -c error_api_alembic.ini revision --autogenerate -m"
 
 # Run the bot
 bot = "python -m ig_reel_downloader"

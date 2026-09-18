@@ -29,20 +29,22 @@ def _database_url() -> str:
     raise RuntimeError(msg)
 
 
-def _restrict_app_role(connection: object) -> None:
+def _restrict_runtime_roles(connection: object) -> None:
     dialect = getattr(connection, "dialect", None)
     if getattr(dialect, "name", None) != "postgresql":
         return
 
     app_user = os.getenv("DB_APP_USER")
-    if not app_user:
-        msg = "DB_APP_USER is required for PostgreSQL migrations"
+    error_api_user = os.getenv("DB_ERROR_API_USER")
+    if not app_user or not error_api_user:
+        msg = "DB_APP_USER and DB_ERROR_API_USER are required for PostgreSQL migrations"
         raise RuntimeError(msg)
-    quoted_user = dialect.identifier_preparer.quote(app_user)
+    quote = dialect.identifier_preparer.quote
     for table in ("alembic_version", "reels"):
-        connection.exec_driver_sql(
-            f"REVOKE ALL PRIVILEGES ON TABLE {table} FROM {quoted_user}"
-        )
+        for user in (app_user, error_api_user):
+            connection.exec_driver_sql(
+                f"REVOKE ALL PRIVILEGES ON TABLE public.{table} FROM {quote(user)}"
+            )
 
 
 def run_migrations_offline() -> None:
@@ -65,7 +67,7 @@ def run_migrations_online() -> None:
         )
         with context.begin_transaction():
             context.run_migrations()
-            _restrict_app_role(existing_connection)
+            _restrict_runtime_roles(existing_connection)
         return
 
     database_url = _database_url()
@@ -82,7 +84,7 @@ def run_migrations_online() -> None:
 
         with context.begin_transaction():
             context.run_migrations()
-            _restrict_app_role(connection)
+            _restrict_runtime_roles(connection)
 
 
 if context.is_offline_mode():

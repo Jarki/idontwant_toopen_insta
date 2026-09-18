@@ -10,7 +10,8 @@ Expected environment variables:
   POSTGRES_HOST, POSTGRES_PORT, POSTGRES_DB,
   POSTGRES_USER, POSTGRES_PASSWORD          — bootstrap/owner credentials
   DB_MIGRATION_USER, DB_MIGRATION_PASSWORD   — migration role (DDL-capable, schema owner)
-  DB_APP_USER, DB_APP_PASSWORD               — application (DML-only) role
+  DB_APP_USER, DB_APP_PASSWORD               — bot application (DML-only) role
+  DB_ERROR_API_USER, DB_ERROR_API_PASSWORD   — Error API (restricted) role
 """
 
 import os
@@ -30,6 +31,8 @@ def main() -> None:
     migration_password = os.environ.get("DB_MIGRATION_PASSWORD", "")
     app_user = os.environ.get("DB_APP_USER", "")
     app_password = os.environ.get("DB_APP_PASSWORD", "")
+    error_api_user = os.environ.get("DB_ERROR_API_USER", "")
+    error_api_password = os.environ.get("DB_ERROR_API_PASSWORD", "")
 
     _require("POSTGRES_DB", pg_db)
     _require("POSTGRES_USER", pg_user)
@@ -38,6 +41,8 @@ def main() -> None:
     _require("DB_MIGRATION_PASSWORD", migration_password)
     _require("DB_APP_USER", app_user)
     _require("DB_APP_PASSWORD", app_password)
+    _require("DB_ERROR_API_USER", error_api_user)
+    _require("DB_ERROR_API_PASSWORD", error_api_password)
 
     import psycopg
 
@@ -63,6 +68,13 @@ def main() -> None:
             cur, migration_user, migration_password, host=pg_host, port=pg_port
         )
         _ensure_role(cur, app_user, app_password, host=pg_host, port=pg_port)
+        _ensure_role(
+            cur,
+            error_api_user,
+            error_api_password,
+            host=pg_host,
+            port=pg_port,
+        )
         _ensure_database(cur, pg_db, migration_user)
     finally:
         conn.close()
@@ -83,6 +95,9 @@ def main() -> None:
         cur.execute("REVOKE ALL ON SCHEMA public FROM PUBLIC")
         cur.execute(f"GRANT USAGE, CREATE ON SCHEMA public TO {_q(migration_user)}")
         cur.execute(f"GRANT USAGE ON SCHEMA public TO {_q(app_user)}")
+
+        _ensure_schema(cur, "observability", migration_user)
+        cur.execute("REVOKE ALL ON SCHEMA observability FROM PUBLIC")
 
         # Migration role — full DDL on existing objects
         cur.execute(
@@ -133,6 +148,14 @@ def main() -> None:
         pg_host, pg_port, pg_db, migration_user, migration_password, expect_ddl=True
     )
     _validate(pg_host, pg_port, pg_db, app_user, app_password, expect_ddl=False)
+    _validate(
+        pg_host,
+        pg_port,
+        pg_db,
+        error_api_user,
+        error_api_password,
+        expect_ddl=False,
+    )
 
     print("Bootstrap completed successfully")
 
@@ -145,6 +168,26 @@ def main() -> None:
 def _relation_exists(cur: Any, relation: str) -> bool:
     cur.execute("SELECT to_regclass(%s)", (f"public.{relation}",))
     return cur.fetchone()[0] is not None
+
+
+def _ensure_schema(cur: Any, schema: str, owner: str) -> None:
+    cur.execute(
+        "SELECT pg_catalog.pg_get_userbyid(nspowner) "
+        "FROM pg_catalog.pg_namespace WHERE nspname = %s",
+        (schema,),
+    )
+    row = cur.fetchone()
+    if row is None:
+        cur.execute(f"CREATE SCHEMA {_q(schema)} AUTHORIZATION {_q(owner)}")
+        print(f"Created schema '{schema}' owned by '{owner}'")
+        return
+
+    actual_owner = str(row[0])
+    if actual_owner != owner:
+        _die(
+            f"Schema '{schema}' exists with owner '{actual_owner}', "
+            f"expected migration owner '{owner}'"
+        )
 
 
 def _require(name: str, value: str) -> None:

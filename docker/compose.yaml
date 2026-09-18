@@ -37,6 +37,8 @@ services:
       DB_MIGRATION_PASSWORD: ${DB_MIGRATION_PASSWORD}
       DB_APP_USER: ${DB_APP_USER}
       DB_APP_PASSWORD: ${DB_APP_PASSWORD}
+      DB_ERROR_API_USER: ${DB_ERROR_API_USER}
+      DB_ERROR_API_PASSWORD: ${DB_ERROR_API_PASSWORD}
     restart: "no"
 
 
@@ -52,6 +54,7 @@ services:
     environment:
       DATABASE_URL: ${DB_MIGRATION_URL}
       DB_APP_USER: ${DB_APP_USER}
+      DB_ERROR_API_USER: ${DB_ERROR_API_USER}
     restart: "no"
 
   downloader:
