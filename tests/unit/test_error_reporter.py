@@ -74,6 +74,20 @@ def test_snapshot_sanitizes_secrets_urls_credentials_authorization_and_paths(
     assert "[redacted]" in persisted
 
 
+def test_parameterized_authorization_header_is_fully_redacted() -> None:
+    value = "Authorization: Digest username=alice, response=TOPSECRET"
+    exc_info = _captured_exception(f"raise RuntimeError({value!r})")
+
+    snapshot = error_reporter.snapshot_from_record(
+        _record(message=value, exc_info=exc_info)
+    )
+    persisted = f"{snapshot.message}\n{snapshot.traceback}"
+
+    assert error_reporter.sanitize(value) == "Authorization=[redacted]"
+    for secret in ("Digest", "username=alice", "response=TOPSECRET"):
+        assert secret not in persisted
+
+
 def test_trace_preserves_chaining_without_locals() -> None:
     exc_info = _captured_exception(
         "secret_local = 'must-not-leak'\n"
@@ -181,6 +195,43 @@ def test_telegram_identity_is_removed_from_message_and_trace() -> None:
         assert identity not in persisted
 
 
+def test_structured_telegram_identity_is_fully_redacted() -> None:
+    identity = "Telegram User(id=123456, first_name=Alice, username=alice)"
+    exc_info = _captured_exception(f"raise RuntimeError({identity!r})")
+
+    snapshot = error_reporter.snapshot_from_record(
+        _record(message=identity, exc_info=exc_info)
+    )
+    persisted = f"{snapshot.message}\n{snapshot.traceback}"
+
+    for value in ("123456", "Alice", "alice"):
+        assert value not in persisted
+
+
+def test_large_inputs_are_bounded_without_stringifying_arbitrary_values() -> None:
+    class BlockingValue:
+        def __str__(self) -> str:
+            raise AssertionError("unbounded value was stringified")
+
+    error = RuntimeError(BlockingValue())
+    record = logging.LogRecord(
+        "test.logger",
+        logging.ERROR,
+        __file__,
+        1,
+        BlockingValue(),
+        (),
+        (RuntimeError, error, None),
+    )
+
+    snapshot = error_reporter.snapshot_from_record(record)
+    huge = error_reporter.snapshot_from_record(_record(message="x" * 20_000_000))
+
+    assert snapshot.message == "[BlockingValue log message]"
+    assert "[BlockingValue value]" in (snapshot.traceback or "")
+    assert len(huge.message) == error_reporter.MAX_MESSAGE_SIZE
+
+
 def test_identity_free_trace_redacts_arbitrary_global_handler_message() -> None:
     exc_info = _captured_exception("raise RuntimeError('Alice 123456 @alice')")
     record = _record(exc_info=exc_info)
@@ -222,7 +273,9 @@ def test_context_is_immutable_bounded_and_copied_before_enqueue() -> None:
     assert target[0].release == "abc"
 
 
-def test_blocked_writer_and_full_queue_never_block_emit() -> None:
+def test_blocked_writer_and_full_queue_never_builds_dropped_snapshot(
+    monkeypatch,
+) -> None:
     entered = threading.Event()
     release = threading.Event()
     fallback_entered = threading.Event()
@@ -244,10 +297,17 @@ def test_blocked_writer_and_full_queue_never_block_emit() -> None:
         reporter.handler.emit(_record(message="first"))
         assert entered.wait(1)
         reporter.handler.emit(_record(message="queued"))
-        started = time.monotonic()
-        reporter.handler.emit(_record(message="dropped"))
-        elapsed = time.monotonic() - started
-        assert elapsed < 0.05
+        original_snapshot = error_reporter.snapshot_from_record
+        snapshot_calls = 0
+
+        def counted_snapshot(record: logging.LogRecord) -> error_reporter.ErrorSnapshot:
+            nonlocal snapshot_calls
+            snapshot_calls += 1
+            return original_snapshot(record)
+
+        monkeypatch.setattr(error_reporter, "snapshot_from_record", counted_snapshot)
+        reporter.handler.emit(_record(message="x" * 20_000_000))
+        assert snapshot_calls == 0
         assert not fallback_entered.is_set()
         started = time.monotonic()
         reporter.stop(timeout=0.02)

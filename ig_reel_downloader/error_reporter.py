@@ -12,7 +12,6 @@ import re
 import sys
 import threading
 import time
-import traceback as traceback_module
 from collections.abc import Callable, Iterator, Sequence
 from pathlib import Path
 from types import TracebackType
@@ -26,6 +25,8 @@ MAX_REQUEST_LINKS = 100
 MAX_MESSAGE_SIZE = 8192
 MAX_TRACE_SIZE = 65536
 MAX_TRACE_FRAMES = 80
+MAX_EXCEPTION_CHAIN = 8
+MAX_INPUT_TEXT = MAX_TRACE_SIZE
 MAX_RETRIES = 2
 RETRY_BACKOFF_SECONDS = 0.05
 SHUTDOWN_BUDGET_SECONDS = 1.0
@@ -34,15 +35,16 @@ TRUNCATION_MARKER = "\n... [traceback truncated]"
 
 _URL_RE = re.compile(r"(?i)\b(?:https?|ftp)://[^\s<>'\"]+")
 _AUTH_RE = re.compile(
-    r"(?i)\b(authorization|proxy-authorization|cookie|set-cookie)\s*[:=]\s*"
-    r"(?:\"[^\"]*\"|'[^']*'|(?:(?:bearer|basic)\s+)?[^\s,;]+)"
+    r"(?im)\b(authorization|proxy-authorization|cookie|set-cookie)\s*[:=]\s*"
+    r"(?:\"[^\r\n\"]*\"|'[^\r\n']*'|[^\r\n]+)"
 )
 _BEARER_RE = re.compile(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+")
 _PATH_RE = re.compile(r"(?<![\w.-])/(?:home|root|app|workspace|srv|opt|tmp)/[^\s:'\"]+")
 _CREDENTIAL_RE = re.compile(r"(?i)(postgresql(?:\+\w+)?://)[^\s/@:]+(?::[^\s/@]*)?@")
-_TELEGRAM_IDENTITY_RE = re.compile(
-    r"(?i)\btelegram\s+(?:user|sender|chat)\b[^,\n;]*(?:,\s*id\s*=\s*\d+)?"
+_TELEGRAM_STRUCTURED_IDENTITY_RE = re.compile(
+    r"(?is)\btelegram\s+(?:user|sender|chat)\s*\([^)]*\)"
 )
+_TELEGRAM_IDENTITY_RE = re.compile(r"(?i)\btelegram\s+(?:user|sender|chat)\b[^\n;]*")
 _USERNAME_RE = re.compile(r"(?<!\w)@[A-Za-z0-9_]{2,}")
 _LABELED_ID_RE = re.compile(
     r"(?i)\b(?:user|sender|chat|telegram)[_-]?id\s*[:=]\s*-?\d+"
@@ -134,7 +136,8 @@ def _known_secrets() -> tuple[str, ...]:
 
 
 def sanitize(value: str, *, secrets: Sequence[str] = ()) -> str:
-    sanitized = _TELEGRAM_IDENTITY_RE.sub("[telegram identity]", value)
+    sanitized = _TELEGRAM_STRUCTURED_IDENTITY_RE.sub("[telegram identity]", value)
+    sanitized = _TELEGRAM_IDENTITY_RE.sub("[telegram identity]", sanitized)
     sanitized = _LABELED_ID_RE.sub("[telegram identity]", sanitized)
     sanitized = _USERNAME_RE.sub("[telegram username]", sanitized)
     sanitized = _CREDENTIAL_RE.sub(r"\1[redacted]@", sanitized)
@@ -167,11 +170,15 @@ def _application_frames(tb: TracebackType | None) -> tuple[str, ...]:
     return tuple(frames[-MAX_TRACE_FRAMES:])
 
 
-def _chain_frames(exc: BaseException) -> tuple[str, ...]:
+def _exception_chain(exc: BaseException) -> tuple[BaseException, ...]:
     chain: list[BaseException] = []
     seen: set[int] = set()
     current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
+    while (
+        current is not None
+        and id(current) not in seen
+        and len(chain) < MAX_EXCEPTION_CHAIN
+    ):
         seen.add(id(current))
         chain.append(current)
         current = (
@@ -181,40 +188,53 @@ def _chain_frames(exc: BaseException) -> tuple[str, ...]:
             if not current.__suppress_context__
             else None
         )
+    return tuple(reversed(chain))
+
+
+def _chain_frames(exc: BaseException) -> tuple[str, ...]:
     shape: list[str] = []
-    for chained in reversed(chain):
+    for chained in _exception_chain(exc):
         shape.append(f"chain:{_qualified_exception_type(type(chained))}")
         shape.extend(_application_frames(chained.__traceback__))
     return tuple(shape[-MAX_TRACE_FRAMES:])
 
 
-def _message_free_trace(exc: BaseException) -> str:
-    chain: list[BaseException] = []
-    seen: set[int] = set()
-    current: BaseException | None = exc
-    while current is not None and id(current) not in seen:
-        seen.add(id(current))
-        chain.append(current)
-        current = (
-            current.__cause__
-            if current.__cause__ is not None
-            else current.__context__
-            if not current.__suppress_context__
-            else None
-        )
+def _bounded_exception_message(exc: BaseException) -> str:
+    if not exc.args:
+        return ""
+    first = exc.args[0]
+    if isinstance(first, str):
+        return first[:MAX_INPUT_TEXT]
+    return f"[{type(first).__name__} value]"
+
+
+def _bounded_trace(exc: BaseException, *, redact_exception_message: bool) -> str:
     sections: list[str] = []
-    for chained in reversed(chain):
+    remaining_frames = MAX_TRACE_FRAMES
+    for chained in _exception_chain(exc):
         if sections:
-            sections.append("\nThe above exception caused the following exception:\n\n")
-        sections.append("Traceback (most recent call last):\n")
-        sections.extend(
-            traceback_module.format_list(
-                traceback_module.extract_tb(chained.__traceback__)
+            sections.append(
+                "\nThe above exception was the direct cause of the following "
+                "exception:\n\n"
             )
+        sections.append("Traceback (most recent call last):\n")
+        frames: list[str] = []
+        tb = chained.__traceback__
+        while tb is not None and len(frames) < remaining_frames:
+            frame = tb.tb_frame
+            frames.append(
+                f'  File "{frame.f_code.co_filename}", line {tb.tb_lineno}, '
+                f"in {frame.f_code.co_name}\n"
+            )
+            tb = tb.tb_next
+        sections.extend(frames)
+        remaining_frames -= len(frames)
+        message = (
+            "[message redacted]"
+            if redact_exception_message
+            else _bounded_exception_message(chained)
         )
-        sections.append(
-            f"{_qualified_exception_type(type(chained))}: [message redacted]\n"
-        )
+        sections.append(f"{_qualified_exception_type(type(chained))}: {message}\n")
     return "".join(sections)
 
 
@@ -225,11 +245,10 @@ def _traceback_text(
 ) -> str | None:
     if exc_info is None:
         return None
-    exc_type, exc, tb = exc_info
-    trace = (
-        _message_free_trace(exc)
-        if redact_exception_message
-        else "".join(traceback_module.format_exception(exc_type, exc, tb))
+    _, exc, _ = exc_info
+    trace = _bounded_trace(
+        exc,
+        redact_exception_message=redact_exception_message,
     )
     trace = sanitize(trace)
     if len(trace) > MAX_TRACE_SIZE:
@@ -244,16 +263,35 @@ def _fingerprint(
     return hashlib.sha256(shape.encode()).hexdigest()
 
 
+def _bounded_record_message(record: logging.LogRecord) -> str:
+    if not isinstance(record.msg, str):
+        return f"[{type(record.msg).__name__} log message]"
+    # Interpolated arguments can contain unbounded or expensive values.
+    return record.msg[:MAX_INPUT_TEXT]
+
+
+def _bounded_record_text(value: object, fallback: str, limit: int) -> str:
+    return value[:limit] if isinstance(value, str) else fallback
+
+
 def snapshot_from_record(record: logging.LogRecord) -> ErrorSnapshot:
     context = _get_context()
     raw_code = getattr(record, "event_code", None)
-    event_code = str(raw_code or f"{record.name}.{record.funcName}")[:128]
+    event_code = _bounded_record_text(
+        raw_code,
+        f"{record.name}.{record.funcName}",
+        128,
+    )
     exc_info = record.exc_info if record.exc_info and record.exc_info[0] else None
     exception_type = _qualified_exception_type(exc_info[0] if exc_info else None)
     frames = _chain_frames(exc_info[1]) if exc_info else ()
-    message = sanitize(record.getMessage())[:MAX_MESSAGE_SIZE] or event_code
-    display_name = sanitize(str(getattr(record, "display_name", event_code)))[:256]
-    component = context.stage or getattr(record, "component", None)
+    message = sanitize(_bounded_record_message(record))[:MAX_MESSAGE_SIZE] or event_code
+    display_name = sanitize(
+        _bounded_record_text(getattr(record, "display_name", None), event_code, 256)
+    )[:256]
+    component = context.stage or _bounded_record_text(
+        getattr(record, "component", None), "", 255
+    )
     return ErrorSnapshot(
         fingerprint=_fingerprint(event_code, exception_type, frames),
         display_name=display_name,
@@ -263,7 +301,7 @@ def snapshot_from_record(record: logging.LogRecord) -> ErrorSnapshot:
         if record.levelname in {"ERROR", "CRITICAL"}
         else "ERROR",
         logger_name=record.name[:255],
-        component=str(component)[:255] if component else None,
+        component=component or None,
         exception_type=exception_type,
         message=message,
         traceback=_traceback_text(
@@ -292,7 +330,10 @@ class ErrorReporterHandler(logging.Handler):
         # Caller-path overload and snapshot failures are deliberately silent:
         # even stderr can block on a pipe. The original logging handlers still run.
         with contextlib.suppress(Exception):
-            self._target.put_nowait(snapshot_from_record(record))
+            if self._target.full():
+                return
+            snapshot = snapshot_from_record(record)
+            self._target.put_nowait(snapshot)
 
 
 _RECORD_SQL = text(
