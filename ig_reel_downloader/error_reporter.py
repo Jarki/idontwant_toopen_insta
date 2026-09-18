@@ -29,6 +29,10 @@ MAX_EXCEPTION_CHAIN = 8
 MAX_INPUT_TEXT = MAX_TRACE_SIZE
 MAX_FILENAME_SIZE = 1024
 MAX_FUNCTION_NAME_SIZE = 256
+MAX_PROVIDER_SIZE = 64
+MAX_MEDIA_KIND_SIZE = 64
+MAX_COMPONENT_SIZE = 255
+MAX_RELEASE_SIZE = 128
 MAX_RETRIES = 2
 RETRY_BACKOFF_SECONDS = 0.05
 SHUTDOWN_BUDGET_SECONDS = 1.0
@@ -42,13 +46,15 @@ _AUTH_RE = re.compile(
 )
 _AUTH_MAPPING_RE = re.compile(
     r"(?im)(?P<prefix>['\"](?:authorization|proxy-authorization|cookie|set-cookie)"
-    r"['\"]\s*:\s*)(?P<value>\"[^\r\n\"]*\"|'[^\r\n']*')"
+    r"['\"]\s*:\s*)(?P<value>\"(?:\\.|[^\"\\\r\n])*\"|"
+    r"'(?:\\.|[^'\\\r\n])*')"
 )
 _BEARER_RE = re.compile(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+")
 _PATH_RE = re.compile(r"(?<![\w.-])/(?:home|root|app|workspace|srv|opt|tmp)/[^\s:'\"]+")
 _CREDENTIAL_RE = re.compile(r"(?i)(postgresql(?:\+\w+)?://)[^\s/@:]+(?::[^\s/@]*)?@")
 _TELEGRAM_STRUCTURED_IDENTITY_RE = re.compile(
-    r"(?is)(?<![\w.])(?:telegram\s+)?(?:user|sender|chat)\s*\([^)]*\)"
+    r"(?is)(?<![\w.])(?:telegram\s+)?(?:user|sender|chat)\s*"
+    r"\((?:\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|[^)'\"\\])*\)"
 )
 _TELEGRAM_IDENTITY_RE = re.compile(r"(?i)\btelegram\s+(?:user|sender|chat)\b[^\n;]*")
 _USERNAME_RE = re.compile(r"(?<!\w)@[A-Za-z0-9_]{2,}")
@@ -113,10 +119,16 @@ def bind_context(
     )
     updated = ErrorContext(
         media_request_ids=ids,
-        provider=provider if provider is not None else current.provider,
-        media_kind=media_kind if media_kind is not None else current.media_kind,
-        stage=stage if stage is not None else current.stage,
-        release=release if release is not None else current.release,
+        provider=(
+            provider[:MAX_PROVIDER_SIZE] if provider is not None else current.provider
+        ),
+        media_kind=(
+            media_kind[:MAX_MEDIA_KIND_SIZE]
+            if media_kind is not None
+            else current.media_kind
+        ),
+        stage=stage[:MAX_COMPONENT_SIZE] if stage is not None else current.stage,
+        release=release[:MAX_RELEASE_SIZE] if release is not None else current.release,
     )
     token = _context.set(updated)
     try:
@@ -174,7 +186,7 @@ def _application_frames(tb: TracebackType | None) -> tuple[tuple[str, ...], bool
     frames: list[str] = []
     visited = 0
     while tb is not None and visited < MAX_TRACE_FRAMES:
-        filename = Path(tb.tb_frame.f_code.co_filename[:MAX_FILENAME_SIZE])
+        filename = Path(tb.tb_frame.f_code.co_filename[-MAX_FILENAME_SIZE:])
         parts = filename.parts
         if _APP_PACKAGE in parts:
             package_index = parts.index(_APP_PACKAGE)
@@ -245,7 +257,7 @@ def _bounded_trace(exc: BaseException, *, redact_exception_message: bool) -> str
         tb = chained.__traceback__
         while tb is not None and len(frames) < remaining_frames:
             frame = tb.tb_frame
-            filename = frame.f_code.co_filename[:MAX_FILENAME_SIZE]
+            filename = frame.f_code.co_filename[-MAX_FILENAME_SIZE:]
             function = frame.f_code.co_name[:MAX_FUNCTION_NAME_SIZE]
             frames.append(f'  File "{filename}", line {tb.tb_lineno}, in {function}\n')
             tb = tb.tb_next
@@ -297,17 +309,19 @@ def _bounded_record_message(record: logging.LogRecord) -> str:
 
 
 def _bounded_record_text(value: object, fallback: str, limit: int) -> str:
-    return value[:limit] if isinstance(value, str) else fallback
+    selected = value if isinstance(value, str) else fallback
+    return selected[:limit]
 
 
 def snapshot_from_record(record: logging.LogRecord) -> ErrorSnapshot:
     context = _get_context()
     raw_code = getattr(record, "event_code", None)
-    event_code = _bounded_record_text(
-        raw_code,
-        f"{record.name}.{record.funcName}",
-        128,
-    )
+    if isinstance(raw_code, str) and raw_code:
+        event_code = raw_code[:128]
+    else:
+        logger_name = _bounded_record_text(record.name, "logger", 64)
+        function_name = _bounded_record_text(record.funcName, "unknown", 63)
+        event_code = f"{logger_name}.{function_name}"[:128]
     exc_info = record.exc_info if record.exc_info and record.exc_info[0] else None
     exception_type = _qualified_exception_type(exc_info[0] if exc_info else None)
     frames = _chain_frames(exc_info[1]) if exc_info else ()

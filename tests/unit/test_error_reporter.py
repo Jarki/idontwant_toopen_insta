@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import threading
 import time
@@ -92,8 +93,10 @@ def test_authorization_mapping_values_are_fully_redacted() -> None:
     values = (
         "{'Authorization': 'Digest username=alice, response=TOPSECRET'}",
         '{"Authorization": "Digest username=alice, response=TOPSECRET"}',
+        json.dumps(
+            {"Authorization": ('Digest username="alice", response="TOPSECRET"')}
+        ),
     )
-
     for value in values:
         sanitized = error_reporter.sanitize(value)
         assert "TOPSECRET" not in sanitized
@@ -225,6 +228,8 @@ def test_native_telegram_identity_representations_are_fully_redacted() -> None:
     identities = (
         "User(first_name='Alice', id=123456, username='alice')",
         "Chat(id=-987654, title='Secret Group', username='secretchat')",
+        "User(id=123, is_bot=False, first_name='Alice (admin)', username='alice')",
+        "Chat(id=-987, type='supergroup', title='Secret (Ops)', username='secretchat')",
     )
 
     for identity in identities:
@@ -298,6 +303,57 @@ def test_large_inputs_are_bounded_without_stringifying_arbitrary_values() -> Non
     assert snapshot.message == "[BlockingValue log message]"
     assert "[BlockingValue value]" in (snapshot.traceback or "")
     assert len(huge.message) == error_reporter.MAX_MESSAGE_SIZE
+
+
+def test_event_metadata_is_bounded_before_fallback_concatenation() -> None:
+    record = _record()
+    record.name = "n" * 20_000_000
+    record.funcName = "f" * 20_000_000
+    record.event_code = None
+
+    snapshot = error_reporter.snapshot_from_record(record)
+
+    assert len(snapshot.event_code) == 128
+    assert snapshot.event_code == ("n" * 64 + "." + "f" * 63)
+
+
+def test_long_filename_prefix_preserves_distinct_package_tail_fingerprints() -> None:
+    prefix = "/" + "x" * 2_000_000
+    first = error_reporter.snapshot_from_record(
+        _record(
+            exc_info=_captured_exception(
+                "raise RuntimeError('same')",
+                prefix + "/ig_reel_downloader/a.py",
+            )
+        )
+    )
+    second = error_reporter.snapshot_from_record(
+        _record(
+            exc_info=_captured_exception(
+                "raise RuntimeError('same')",
+                prefix + "/ig_reel_downloader/b.py",
+            )
+        )
+    )
+
+    assert first.fingerprint != second.fingerprint
+
+
+def test_error_context_fields_are_bounded_before_snapshot() -> None:
+    huge = "x" * 20_000_000
+
+    with error_reporter.bind_context(
+        provider=huge,
+        media_kind=huge,
+        stage=huge,
+        release=huge,
+    ):
+        snapshot = error_reporter.snapshot_from_record(_record())
+
+    assert len(snapshot.provider or "") == error_reporter.MAX_PROVIDER_SIZE
+    assert len(snapshot.media_kind or "") == error_reporter.MAX_MEDIA_KIND_SIZE
+    assert len(snapshot.component or "") == error_reporter.MAX_COMPONENT_SIZE
+    assert len(snapshot.release or "") == error_reporter.MAX_RELEASE_SIZE
 
 
 def test_identity_free_trace_redacts_arbitrary_global_handler_message() -> None:
