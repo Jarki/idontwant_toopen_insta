@@ -96,6 +96,11 @@ def test_authorization_mapping_values_are_fully_redacted() -> None:
         json.dumps(
             {"Authorization": ('Digest username="alice", response="TOPSECRET"')}
         ),
+        repr(
+            json.dumps(
+                {"Authorization": 'Digest username="alice", response="TOPSECRET"'}
+            )
+        ),
     )
     for value in values:
         sanitized = error_reporter.sanitize(value)

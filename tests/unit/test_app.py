@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import datetime
 from dataclasses import dataclass
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -481,6 +483,102 @@ def test_message_handler_uses_registry_fetch_service_renderer_and_sender(
     assert events[0] == "registry"
     assert set(events[1:-1]) == {f"fetch:{first_url}", f"fetch:{second_url}"}
     assert events[-1] == "sender"
+
+
+def test_unexpected_render_failure_reports_bound_context_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = "https://www.instagram.com/reel/ABC123"
+    media = make_media(url, "ABC123")
+    events: list[str] = []
+    app = build_app(
+        monkeypatch,
+        FakeRegistry([make_candidate(url, "ABC123")], events),
+        FakeFetchService({url: MediaFetchResult(media=media, url=url)}, events),
+        FakeSender(events),
+    )
+
+    class RaisingRenderer:
+        def render(
+            self, media: MediaItem, constraints: RenderConstraints
+        ) -> RenderedItem:
+            del media, constraints
+            raise RuntimeError("unexpected render failure")
+
+    app.renderer_registry = RaisingRenderer()  # type: ignore[assignment]
+    reports: list[tuple[dict[str, object], object]] = []
+
+    def capture_report(message: str, **kwargs: object) -> None:
+        del message
+        reports.append((kwargs, app_module.error_reporter.current_context()))
+
+    monkeypatch.setattr(app_module.logger, "error", capture_report)
+    update = FakeUpdate(url, FakeChat())
+    with pytest.raises(RuntimeError) as raised:
+        asyncio.run(app._message_handler(update, object()))  # type: ignore[arg-type]
+
+    asyncio.run(
+        app._unexpected_error_handler(
+            update,
+            SimpleNamespace(error=raised.value),  # type: ignore[arg-type]
+        )
+    )
+
+    assert len(reports) == 1
+    kwargs, context = reports[0]
+    assert kwargs["extra"] == {
+        "event_code": "telegram.render_unexpected",
+        "redact_exception_message": True,
+    }
+    assert context.media_request_ids == (100,)
+    assert context.provider == "instagram"
+    assert context.media_kind == "reel"
+    assert context.stage == "render"
+
+
+def test_file_id_persistence_failure_reports_request_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    repository = FakeRepository()
+    fetch_service = FakeFetchService({}, events, repository=repository)
+    app = build_app(
+        monkeypatch,
+        FakeRegistry([], events),
+        fetch_service,
+        FakeSender(events),
+    )
+    media = make_media("https://www.instagram.com/reel/ABC123", "ABC123")
+    result = MediaRenderResult(
+        media=media,
+        sent=True,
+        telegram_file_ids={0: "telegram-video-id"},
+    )
+    request_ids = {id(media): collections.deque([321])}
+    contexts = []
+
+    def fail_update(*args: object) -> None:
+        del args
+        raise RuntimeError("persistence failed")
+
+    def capture_exception(message: str, **kwargs: object) -> None:
+        del message, kwargs
+        contexts.append(app_module.error_reporter.current_context())
+
+    monkeypatch.setattr(
+        repository,
+        "update_media_asset_telegram_file_id",
+        fail_update,
+    )
+    monkeypatch.setattr(app_module.logger, "exception", capture_exception)
+
+    asyncio.run(app._record_deliveries([result], request_ids))
+
+    assert len(contexts) == 1
+    assert contexts[0].media_request_ids == (321,)
+    assert contexts[0].provider == "instagram"
+    assert contexts[0].media_kind == "reel"
+    assert contexts[0].stage == "persist_telegram_file_id"
 
 
 def test_message_handler_persists_file_ids_returned_by_sender(

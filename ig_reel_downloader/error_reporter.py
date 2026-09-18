@@ -46,8 +46,7 @@ _AUTH_RE = re.compile(
 )
 _AUTH_MAPPING_RE = re.compile(
     r"(?im)(?P<prefix>['\"](?:authorization|proxy-authorization|cookie|set-cookie)"
-    r"['\"]\s*:\s*)(?P<value>\"(?:\\.|[^\"\\\r\n])*\"|"
-    r"'(?:\\.|[^'\\\r\n])*')"
+    r"['\"]\s*:\s*)(?P<value>\"[^\r\n]*\"|'[^\r\n]*')(?=\s*[,}])"
 )
 _BEARER_RE = re.compile(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+")
 _PATH_RE = re.compile(r"(?<![\w.-])/(?:home|root|app|workspace|srv|opt|tmp)/[^\s:'\"]+")

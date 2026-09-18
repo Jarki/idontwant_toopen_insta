@@ -118,6 +118,25 @@ class IgReelDownloaderApp:
         ):
             return self.fetch_service.fetch(candidate, media_request_id)
 
+    def _report_unexpected_once(
+        self,
+        error: BaseException,
+        *,
+        message: str,
+        event_code: str,
+    ) -> None:
+        if getattr(error, "_ig_error_reported", False):
+            return
+        object.__setattr__(error, "_ig_error_reported", True)
+        logger.error(
+            message,
+            exc_info=(type(error), error, error.__traceback__),
+            extra={
+                "event_code": event_code,
+                "redact_exception_message": True,
+            },
+        )
+
     async def _unexpected_error_handler(
         self,
         update: object,
@@ -126,13 +145,10 @@ class IgReelDownloaderApp:
         del update
         error = context.error
         if isinstance(error, BaseException):
-            logger.error(
-                "Unhandled Telegram update error",
-                exc_info=(type(error), error, error.__traceback__),
-                extra={
-                    "event_code": "telegram.unexpected_handler",
-                    "redact_exception_message": True,
-                },
+            self._report_unexpected_once(
+                error,
+                message="Unhandled Telegram update error",
+                event_code="telegram.unexpected_handler",
             )
         else:
             logger.error(
@@ -171,6 +187,7 @@ class IgReelDownloaderApp:
     async def _store_telegram_file_ids(
         self,
         render_results: list[MediaRenderResult],
+        request_ids_by_media_object: dict[int, collections.deque[int]],
     ) -> None:
         for render_result in render_results:
             for asset_index, file_id in render_result.telegram_file_ids.items():
@@ -183,6 +200,9 @@ class IgReelDownloaderApp:
                     )
                 except Exception:
                     with error_reporter.bind_context(
+                        media_request_ids=tuple(
+                            request_ids_by_media_object[id(render_result.media)]
+                        ),
                         provider=render_result.media.provider,
                         media_kind=render_result.media.media_kind,
                         stage="persist_telegram_file_id",
@@ -197,7 +217,10 @@ class IgReelDownloaderApp:
         render_results: list[MediaRenderResult],
         request_ids_by_media_object: dict[int, collections.deque[int]],
     ) -> None:
-        await self._store_telegram_file_ids(render_results)
+        await self._store_telegram_file_ids(
+            render_results,
+            request_ids_by_media_object,
+        )
         delivered_request_ids = [
             request_ids_by_media_object[id(result.media)].popleft()
             for result in render_results
@@ -530,6 +553,13 @@ class IgReelDownloaderApp:
                     errors.append(
                         self._format_download_error(media.original_url, "unsupported")
                     )
+                except Exception as exc:
+                    self._report_unexpected_once(
+                        exc,
+                        message="Unexpected media rendering failure",
+                        event_code="telegram.render_unexpected",
+                    )
+                    raise
 
         try:
             with error_reporter.bind_context(
