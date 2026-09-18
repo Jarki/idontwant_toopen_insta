@@ -218,9 +218,14 @@ class TikTokDownloader:
                         failure_reason,
                         error,
                     )
+                elif failure_reason in ("auth", "unsupported"):
+                    logger.warning(
+                        "TikTok download failed: %s (%s)", failure_reason, error
+                    )
                 else:
                     logger.exception(
-                        "Failed to download TikTok video from %s (%s)", url, error
+                        "Unexpected TikTok download failure",
+                        extra={"event_code": "provider.tiktok.download_unexpected"},
                     )
                 return MediaDownloadResult(media=None, failure_reason=failure_reason)
 

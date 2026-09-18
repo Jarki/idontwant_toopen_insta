@@ -33,9 +33,13 @@ from ig_reel_downloader.telegram_sender import MediaRenderResult, MediaRenderTim
 class FakeApplication:
     def __init__(self) -> None:
         self.handlers: list[object] = []
+        self.error_handlers: list[object] = []
 
     def add_handler(self, handler: object) -> None:
         self.handlers.append(handler)
+
+    def add_error_handler(self, handler: object) -> None:
+        self.error_handlers.append(handler)
 
     def run_polling(self) -> None:
         pass

@@ -204,11 +204,19 @@ class XDownloader:
                     return _download_non_video_post(url, ref, context)
                 except Exception as fallback_error:
                     failure_reason = _classify_x_error(fallback_error)
-                    logger.exception(
-                        "Failed to download non-video X post %s (%s)",
-                        url,
-                        fallback_error,
-                    )
+                    if failure_reason in ("auth", "blocked", "unsupported"):
+                        logger.warning(
+                            "X non-video download failed: %s (%s)",
+                            failure_reason,
+                            fallback_error,
+                        )
+                    else:
+                        logger.exception(
+                            "Unexpected X non-video download failure",
+                            extra={
+                                "event_code": "provider.x.non_video_download_unexpected"
+                            },
+                        )
                     return MediaDownloadResult(
                         media=None,
                         failure_reason=failure_reason,
@@ -224,7 +232,10 @@ class XDownloader:
                     error,
                 )
             else:
-                logger.exception("Failed to download X post from %s (%s)", url, error)
+                logger.exception(
+                    "Unexpected X download failure",
+                    extra={"event_code": "provider.x.download_unexpected"},
+                )
             return MediaDownloadResult(media=None, failure_reason=failure_reason)
 
 

@@ -163,14 +163,17 @@ class InstagramReelDownloader:
                 return MediaDownloadResult(media=media)
         except Exception as error:
             failure_reason = _classify_instagram_error(error)
-            if failure_reason == "auth":
+            if failure_reason in ("auth", "blocked", "unsupported"):
                 logger.warning(
-                    "Failed to download video from %s: authentication required (%s)",
-                    url,
+                    "Instagram reel download failed: %s (%s)",
+                    failure_reason,
                     error,
                 )
             else:
-                logger.exception("Failed to download video from %s (%s)", url, error)
+                logger.exception(
+                    "Unexpected Instagram reel download failure",
+                    extra={"event_code": "provider.instagram.reel_download_unexpected"},
+                )
             return MediaDownloadResult(media=None, failure_reason=failure_reason)
 
 
@@ -292,14 +295,17 @@ class InstagramPostDownloader:
             return MediaDownloadResult(media=media)
         except Exception as error:
             failure_reason = _classify_post_download_error(error)
-            if failure_reason == "auth":
+            if failure_reason in ("auth", "blocked", "unsupported"):
                 logger.warning(
-                    "Failed to download post from %s: authentication required (%s)",
-                    url,
+                    "Instagram post download failed: %s (%s)",
+                    failure_reason,
                     error,
                 )
             else:
-                logger.exception("Failed to download post from %s (%s)", url, error)
+                logger.exception(
+                    "Unexpected Instagram post download failure",
+                    extra={"event_code": "provider.instagram.post_download_unexpected"},
+                )
             return MediaDownloadResult(media=None, failure_reason=failure_reason)
 
 

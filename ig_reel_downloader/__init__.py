@@ -1,6 +1,7 @@
 from . import (
     app,
     downloaders,
+    error_reporter,
     media_fetch,
     renderers,
     repository,
@@ -10,6 +11,7 @@ from . import (
 __all__ = [
     "app",
     "downloaders",
+    "error_reporter",
     "media_fetch",
     "renderers",
     "repository",

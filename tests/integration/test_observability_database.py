@@ -24,6 +24,8 @@ from alembic.config import Config
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import DBAPIError
 
+from ig_reel_downloader.error_reporter import ErrorSnapshot, record_snapshot
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -231,6 +233,40 @@ def test_error_api_migrations_use_the_migration_url(
         command.current(config)
 
     assert "20260918_0001" in output.getvalue()
+
+
+def test_reporter_writer_calls_recording_routine(engines: dict[str, Engine]) -> None:
+    snapshot = ErrorSnapshot(
+        fingerprint="reporter-writer-fingerprint",
+        display_name="Reporter writer integration",
+        event_code="reporter.integration",
+        occurred_at=dt.datetime.now(dt.UTC),
+        severity="ERROR",
+        logger_name="ig_reel_downloader.integration",
+        component="integration",
+        exception_type="builtins.RuntimeError",
+        message="sanitized integration failure",
+        traceback=None,
+        provider="instagram",
+        media_kind="reel",
+        release="test-release",
+        media_request_ids=(),
+    )
+
+    record_snapshot(engines["bot"], snapshot)
+
+    with engines["migration"].connect() as connection:
+        stored = connection.execute(
+            text(
+                "SELECT groups.event_code, occurrences.message "
+                "FROM observability.error_occurrences AS occurrences "
+                "JOIN observability.error_groups AS groups "
+                "ON groups.id = occurrences.error_group_id "
+                "WHERE groups.fingerprint = :fingerprint"
+            ),
+            {"fingerprint": snapshot.fingerprint},
+        ).one()
+    assert stored == (snapshot.event_code, snapshot.message)
 
 
 def test_recording_reuses_group_and_keeps_occurrences_immutable(

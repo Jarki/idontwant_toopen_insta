@@ -213,16 +213,16 @@ class RedditDownloader:
             return MediaDownloadResult(media=None, failure_reason="unsupported")
         except Exception as error:
             failure_reason = _classify_reddit_error(error)
-            if failure_reason in ("auth", "blocked"):
+            if failure_reason in ("auth", "blocked", "unsupported"):
                 logger.warning(
-                    "Failed to download Reddit post from %s: %s (%s)",
-                    url,
+                    "Reddit download failed: %s (%s)",
                     failure_reason,
                     error,
                 )
             else:
                 logger.exception(
-                    "Failed to download Reddit post from %s (%s)", url, error
+                    "Unexpected Reddit download failure",
+                    extra={"event_code": "provider.reddit.download_unexpected"},
                 )
             return MediaDownloadResult(media=None, failure_reason=failure_reason)
 

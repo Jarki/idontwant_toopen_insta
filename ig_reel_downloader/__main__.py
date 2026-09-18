@@ -107,32 +107,39 @@ def main() -> None:
         msg = "DATABASE_URL must use the postgresql+psycopg:// dialect"
         raise ValueError(msg)
 
-    repo = ig_reel_downloader.repository.postgres.PostgreSQLRepository(database_url)
-    registry = ig_reel_downloader.downloaders.DownloaderRegistry(
-        _build_downloaders(cookie_filepath)
+    reporter = ig_reel_downloader.error_reporter.install_reporter(
+        database_url,
+        release=os.getenv("RELEASE"),
     )
-    fetch_service = ig_reel_downloader.media_fetch.MediaFetchService(
-        repo,
-        output_dir=output_dir,
-    )
-    renderer_registry = ig_reel_downloader.renderers.default_renderer_registry()
-    sender = ig_reel_downloader.telegram_sender.TelegramMediaSender(
-        telegram_media_write_timeout=telegram_media_write_timeout,
-        telegram_read_timeout=telegram_read_timeout,
-    )
+    try:
+        repo = ig_reel_downloader.repository.postgres.PostgreSQLRepository(database_url)
+        registry = ig_reel_downloader.downloaders.DownloaderRegistry(
+            _build_downloaders(cookie_filepath)
+        )
+        fetch_service = ig_reel_downloader.media_fetch.MediaFetchService(
+            repo,
+            output_dir=output_dir,
+        )
+        renderer_registry = ig_reel_downloader.renderers.default_renderer_registry()
+        sender = ig_reel_downloader.telegram_sender.TelegramMediaSender(
+            telegram_media_write_timeout=telegram_media_write_timeout,
+            telegram_read_timeout=telegram_read_timeout,
+        )
 
-    app = ig_reel_downloader.app.IgReelDownloaderApp(
-        bot_token,
-        registry,
-        fetch_service,
-        renderer_registry,
-        sender,
-        telegram_media_write_timeout=telegram_media_write_timeout,
-        telegram_read_timeout=telegram_read_timeout,
-        judgmental_chance=judgmental_chance,
-        judgmental_gifs=ig_reel_downloader.judgmental.JUDGMENTAL_GIFS,
-    )
-    app.run()
+        app = ig_reel_downloader.app.IgReelDownloaderApp(
+            bot_token,
+            registry,
+            fetch_service,
+            renderer_registry,
+            sender,
+            telegram_media_write_timeout=telegram_media_write_timeout,
+            telegram_read_timeout=telegram_read_timeout,
+            judgmental_chance=judgmental_chance,
+            judgmental_gifs=ig_reel_downloader.judgmental.JUDGMENTAL_GIFS,
+        )
+        app.run()
+    finally:
+        reporter.stop()
 
 
 if __name__ == "__main__":
