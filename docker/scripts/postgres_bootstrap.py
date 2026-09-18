@@ -106,7 +106,7 @@ def main() -> None:
 
         _ensure_schema(cur, "observability", migration_user)
         _configure_error_api_isolation(cur, migration_user, error_api_user)
-        _reject_unsafe_error_api_memberships(cur, error_api_user)
+        _remove_error_api_memberships(cur, error_api_user)
         denied_relation = _representative_public_relation(cur)
 
         cur.execute("REVOKE ALL ON SCHEMA observability FROM PUBLIC")
@@ -237,102 +237,42 @@ def _configure_error_api_isolation(
         f"REVOKE ALL PRIVILEGES ON SEQUENCES FROM {error_api}",
         f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration} IN SCHEMA public "
         f"REVOKE ALL PRIVILEGES ON FUNCTIONS FROM {error_api}",
+        f"REVOKE ALL PRIVILEGES ON SCHEMA observability FROM {error_api}",
+        f"REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA observability FROM {error_api}",
+        f"REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA observability FROM {error_api}",
+        f"REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA observability FROM {error_api}",
+        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration} IN SCHEMA observability "
+        f"REVOKE ALL PRIVILEGES ON TABLES FROM {error_api}",
+        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration} IN SCHEMA observability "
+        f"REVOKE ALL PRIVILEGES ON SEQUENCES FROM {error_api}",
+        f"ALTER DEFAULT PRIVILEGES FOR ROLE {migration} IN SCHEMA observability "
+        f"REVOKE ALL PRIVILEGES ON FUNCTIONS FROM {error_api}",
     )
     for statement in statements:
         cur.execute(statement)
 
 
-def _reject_unsafe_error_api_memberships(cur: Any, error_api_user: str) -> None:
-    cur.execute(
-        """
-WITH RECURSIVE inherited_roles(role_oid) AS (
-    SELECT roleid
-    FROM pg_catalog.pg_auth_members
-    WHERE member = (SELECT oid FROM pg_catalog.pg_roles WHERE rolname = %s)
-    UNION
-    SELECT memberships.roleid
-    FROM pg_catalog.pg_auth_members AS memberships
-    JOIN inherited_roles ON memberships.member = inherited_roles.role_oid
-),
-unsafe_roles AS (
-    SELECT roles.rolname
-    FROM inherited_roles
-    JOIN pg_catalog.pg_roles AS roles ON roles.oid = inherited_roles.role_oid
-    WHERE roles.rolsuper
-       OR roles.rolcreatedb
-       OR roles.rolcreaterole
-       OR roles.oid = (
-           SELECT datdba FROM pg_catalog.pg_database
-           WHERE datname = current_database()
-       )
-       OR EXISTS (
-           SELECT 1
-           FROM pg_catalog.pg_namespace AS schemas
-           WHERE schemas.nspname IN ('public', 'observability')
-             AND (
-                 schemas.nspowner = roles.oid
-                 OR EXISTS (
-                     SELECT 1
-                     FROM pg_catalog.aclexplode(
-                         COALESCE(
-                             schemas.nspacl,
-                             pg_catalog.acldefault('n', schemas.nspowner)
-                         )
-                     ) AS acl
-                     WHERE acl.grantee = roles.oid
-                 )
-             )
-       )
-       OR EXISTS (
-           SELECT 1
-           FROM pg_catalog.pg_class AS relations
-           JOIN pg_catalog.pg_namespace AS schemas
-             ON schemas.oid = relations.relnamespace
-           WHERE schemas.nspname IN ('public', 'observability')
-             AND (
-                 relations.relowner = roles.oid
-                 OR EXISTS (
-                     SELECT 1
-                     FROM pg_catalog.aclexplode(
-                         COALESCE(
-                             relations.relacl,
-                             pg_catalog.acldefault('r', relations.relowner)
-                         )
-                     ) AS acl
-                     WHERE acl.grantee = roles.oid
-                 )
-             )
-       )
-       OR EXISTS (
-           SELECT 1
-           FROM pg_catalog.pg_proc AS functions
-           JOIN pg_catalog.pg_namespace AS schemas
-             ON schemas.oid = functions.pronamespace
-           WHERE schemas.nspname IN ('public', 'observability')
-             AND (
-                 functions.proowner = roles.oid
-                 OR EXISTS (
-                     SELECT 1
-                     FROM pg_catalog.aclexplode(
-                         COALESCE(
-                             functions.proacl,
-                             pg_catalog.acldefault('f', functions.proowner)
-                         )
-                     ) AS acl
-                     WHERE acl.grantee = roles.oid
-                 )
-             )
-       )
+def _remove_error_api_memberships(cur: Any, error_api_user: str) -> None:
+    membership_query = """
+SELECT roles.rolname
+FROM pg_catalog.pg_auth_members AS memberships
+JOIN pg_catalog.pg_roles AS roles ON roles.oid = memberships.roleid
+WHERE memberships.member = (
+    SELECT oid FROM pg_catalog.pg_roles WHERE rolname = %s
 )
-SELECT rolname FROM unsafe_roles ORDER BY rolname
-        """,
-        (error_api_user,),
-    )
-    unsafe_roles = [str(row[0]) for row in cur.fetchall()]
-    if unsafe_roles:
+ORDER BY roles.rolname
+    """
+    cur.execute(membership_query, (error_api_user,))
+    memberships = [str(row[0]) for row in cur.fetchall()]
+    for role in memberships:
+        cur.execute(f"REVOKE {_q(role)} FROM {_q(error_api_user)}")
+
+    cur.execute(membership_query, (error_api_user,))
+    remaining_memberships = [str(row[0]) for row in cur.fetchall()]
+    if remaining_memberships:
         _die(
-            f"Error API role '{error_api_user}' inherits unsafe privileges "
-            f"through role membership(s): {', '.join(unsafe_roles)}"
+            f"Error API role '{error_api_user}' retains role membership(s) after "
+            f"repair: {', '.join(remaining_memberships)}"
         )
 
 

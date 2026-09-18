@@ -13,6 +13,8 @@ from collections.abc import Sequence
 import sqlalchemy as sa
 from alembic import op
 
+from error_api.migrations.runtime_privileges import apply_runtime_privileges
+
 revision: str = "20260918_0001"
 down_revision: str | None = None
 branch_labels: str | Sequence[str] | None = None
@@ -366,7 +368,7 @@ FROM observability.error_notes
             """
         )
     )
-    _grant_runtime_privileges(bind)
+    apply_runtime_privileges(bind, *_runtime_roles())
 
 
 def downgrade() -> None:
@@ -414,38 +416,6 @@ def _runtime_roles() -> tuple[str, str]:
         msg = "DB_APP_USER and DB_ERROR_API_USER are required for Error API migrations"
         raise RuntimeError(msg)
     return app_user, error_api_user
-
-
-def _grant_runtime_privileges(bind: sa.Connection) -> None:
-    app_user, error_api_user = _runtime_roles()
-    quote = bind.dialect.identifier_preparer.quote
-    app = quote(app_user)
-    error_api = quote(error_api_user)
-    statements = (
-        "REVOKE ALL PRIVILEGES ON SCHEMA observability FROM PUBLIC",
-        "REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA observability FROM PUBLIC",
-        "REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA observability FROM PUBLIC",
-        "REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA observability FROM PUBLIC",
-        f"REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA observability FROM {app}",
-        f"REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA observability FROM {app}",
-        f"REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA observability FROM {app}",
-        f"REVOKE ALL PRIVILEGES ON ALL TABLES IN SCHEMA observability FROM {error_api}",
-        f"REVOKE ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA observability FROM {error_api}",
-        f"REVOKE ALL PRIVILEGES ON ALL FUNCTIONS IN SCHEMA observability FROM {error_api}",
-        f"GRANT USAGE ON SCHEMA observability TO {app}",
-        f"GRANT EXECUTE ON FUNCTION observability.record_error(text, text, text, timestamptz, text, text, text, text, text, text, text, text, text, bigint[]) TO {app}",
-        f"GRANT USAGE ON SCHEMA observability TO {error_api}",
-        f"GRANT SELECT ON observability.api_error_groups TO {error_api}",
-        f"GRANT SELECT ON observability.api_error_occurrences TO {error_api}",
-        f"GRANT SELECT ON observability.api_reproduction_cases TO {error_api}",
-        f"GRANT SELECT ON observability.api_error_notes TO {error_api}",
-        f"GRANT SELECT (id) ON observability.error_groups TO {error_api}",
-        f"GRANT UPDATE (display_name, status, linked_change, fixed_at) ON observability.error_groups TO {error_api}",
-        f"GRANT INSERT ON observability.error_notes TO {error_api}",
-        f"GRANT USAGE ON SEQUENCE observability.error_notes_id_seq TO {error_api}",
-    )
-    for statement in statements:
-        bind.execute(sa.text(statement))
 
 
 def _revoke_runtime_privileges(bind: sa.Connection) -> None:

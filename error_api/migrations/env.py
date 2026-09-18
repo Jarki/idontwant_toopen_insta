@@ -4,8 +4,9 @@ import os
 from logging.config import fileConfig
 
 from alembic import context
-from sqlalchemy import engine_from_config, pool
+from sqlalchemy import Connection, engine_from_config, pool
 
+from error_api.migrations.runtime_privileges import apply_runtime_privileges
 from error_api.repository.schema import metadata
 
 config = context.config
@@ -48,19 +49,23 @@ def _required_role(name: str) -> str:
     raise RuntimeError(msg)
 
 
-def _restrict_runtime_roles(connection: object) -> None:
+def _restrict_runtime_roles(connection: Connection) -> None:
     dialect = getattr(connection, "dialect", None)
     if getattr(dialect, "name", None) != "postgresql":
         return
-
-    app_user = _required_role("DB_APP_USER")
-    error_api_user = _required_role("DB_ERROR_API_USER")
-    quote = dialect.identifier_preparer.quote
-    for user in (app_user, error_api_user):
+    if (
         connection.exec_driver_sql(
-            "REVOKE ALL PRIVILEGES ON TABLE "
-            f"observability.alembic_version_error_api FROM {quote(user)}"
-        )
+            "SELECT to_regclass('observability.error_groups')"
+        ).scalar()
+        is None
+    ):
+        return
+
+    apply_runtime_privileges(
+        connection,
+        _required_role("DB_APP_USER"),
+        _required_role("DB_ERROR_API_USER"),
+    )
 
 
 def _configure(connection: object | None = None) -> None:

@@ -9,12 +9,15 @@ from __future__ import annotations
 
 import datetime as dt
 import os
+import subprocess
+import sys
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from io import StringIO
 from pathlib import Path
 
+import psycopg
 import pytest
 from alembic import command
 from alembic.config import Config
@@ -43,6 +46,27 @@ def migration_roles() -> None:
         pytest.skip("DB_APP_USER and DB_ERROR_API_USER are required")
 
 
+@pytest.fixture(scope="module")
+def bootstrap_environment() -> dict[str, str]:
+    names = (
+        "POSTGRES_HOST",
+        "POSTGRES_PORT",
+        "POSTGRES_DB",
+        "POSTGRES_USER",
+        "POSTGRES_PASSWORD",
+        "DB_MIGRATION_USER",
+        "DB_MIGRATION_PASSWORD",
+        "DB_APP_USER",
+        "DB_APP_PASSWORD",
+        "DB_ERROR_API_USER",
+        "DB_ERROR_API_PASSWORD",
+    )
+    values = {name: os.getenv(name, "") for name in names}
+    if not all(values.values()):
+        pytest.skip("bootstrap PostgreSQL environment is not configured")
+    return values
+
+
 @contextmanager
 def _environment(**values: str) -> Iterator[None]:
     original = {name: os.environ.get(name) for name in values}
@@ -67,6 +91,18 @@ def _downgrade_error_api(url: str) -> None:
     config = Config(str(PROJECT_ROOT / "error_api_alembic.ini"))
     config.attributes["database_url"] = url
     command.downgrade(config, "base")
+
+
+def _rerun_bootstrap(environment: dict[str, str]) -> None:
+    result = subprocess.run(
+        [sys.executable, "docker/scripts/postgres_bootstrap.py"],
+        cwd=PROJECT_ROOT,
+        env={**os.environ, **environment},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
 
 
 @pytest.fixture(scope="module")
@@ -376,6 +412,114 @@ def test_runtime_roles_are_restricted_to_intended_capabilities(
                 {"id": occurrence_id},
             ).scalar_one()
             == 1
+        )
+
+
+def test_error_api_migration_rerun_repairs_stale_direct_grants(
+    engines: dict[str, Engine],
+    database_urls: dict[str, str],
+) -> None:
+    _record(engines["bot"], _event("stale-grant-fingerprint"))
+    error_api_user = os.environ["DB_ERROR_API_USER"].replace('"', '""')
+
+    with engines["migration"].begin() as connection:
+        connection.execute(
+            text(
+                f'GRANT SELECT ON observability.error_occurrences TO "{error_api_user}"'
+            )
+        )
+        connection.execute(
+            text(
+                "GRANT USAGE, SELECT ON SEQUENCE observability.error_groups_id_seq "
+                f'TO "{error_api_user}"'
+            )
+        )
+        connection.execute(
+            text(
+                "GRANT EXECUTE ON FUNCTION observability.record_error("
+                "text, text, text, timestamptz, text, text, text, text, text, text, "
+                f'text, text, text, bigint[]) TO "{error_api_user}"'
+            )
+        )
+
+    with engines["error_api"].connect() as connection:
+        assert (
+            connection.execute(
+                text("SELECT count(*) FROM observability.error_occurrences")
+            ).scalar_one()
+            == 1
+        )
+        connection.execute(
+            text("SELECT nextval('observability.error_groups_id_seq')")
+        ).scalar_one()
+        connection.execute(
+            text(
+                "SELECT observability.record_error("
+                "'stale-function-grant', 'x', 'x', CURRENT_TIMESTAMP, 'ERROR', "
+                "'x', NULL, NULL, 'x', NULL, NULL, NULL, NULL, ARRAY[]::bigint[])"
+            )
+        ).scalar_one()
+
+    _upgrade("error_api_alembic.ini", database_urls["migration"])
+
+    _denied(engines["error_api"], "SELECT * FROM observability.error_occurrences")
+    _denied(
+        engines["error_api"],
+        "SELECT nextval('observability.error_groups_id_seq')",
+    )
+    _denied(
+        engines["error_api"],
+        "SELECT observability.record_error("
+        "'x', 'x', 'x', CURRENT_TIMESTAMP, 'ERROR', 'x', NULL, NULL, "
+        "'x', NULL, NULL, NULL, NULL, ARRAY[]::bigint[])",
+    )
+    with engines["error_api"].connect() as connection:
+        group_id = connection.execute(
+            text(
+                "SELECT id FROM observability.api_error_groups "
+                "WHERE fingerprint = 'stale-grant-fingerprint'"
+            )
+        ).scalar_one()
+    with engines["error_api"].begin() as connection:
+        connection.execute(
+            text(
+                "UPDATE observability.error_groups SET status = 'investigating' "
+                "WHERE id = :id"
+            ),
+            {"id": group_id},
+        )
+
+
+def test_bootstrap_rerun_removes_assumable_error_api_memberships(
+    engines: dict[str, Engine],
+    database_urls: dict[str, str],
+    bootstrap_environment: dict[str, str],
+) -> None:
+    error_api_user = bootstrap_environment["DB_ERROR_API_USER"].replace('"', '""')
+    with psycopg.connect(
+        host=bootstrap_environment["POSTGRES_HOST"],
+        port=bootstrap_environment["POSTGRES_PORT"],
+        dbname=bootstrap_environment["POSTGRES_DB"],
+        user=bootstrap_environment["POSTGRES_USER"],
+        password=bootstrap_environment["POSTGRES_PASSWORD"],
+        autocommit=True,
+    ) as connection:
+        connection.execute(f'GRANT pg_read_all_data TO "{error_api_user}"')
+
+    with engines["error_api"].connect() as connection:
+        connection.execute(text("SET ROLE pg_read_all_data"))
+        connection.execute(text("SELECT count(*) FROM public.telegram_users"))
+
+    _rerun_bootstrap(bootstrap_environment)
+    _upgrade("error_api_alembic.ini", database_urls["migration"])
+
+    _denied(engines["error_api"], "SET ROLE pg_read_all_data")
+    with engines["error_api"].connect() as connection:
+        assert (
+            connection.execute(
+                text("SELECT count(*) FROM observability.api_error_groups")
+            ).scalar_one()
+            == 0
         )
 
 
