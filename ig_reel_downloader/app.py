@@ -566,7 +566,17 @@ class IgReelDownloaderApp:
                 media_request_ids=media_request_ids,
                 stage="telegram_upload",
             ):
-                render_results = await self.sender.send(update, rendered_items)
+                try:
+                    render_results = await self.sender.send(update, rendered_items)
+                except (MediaRenderTimedOut, TimedOut):
+                    raise
+                except Exception as exc:
+                    self._report_unexpected_once(
+                        exc,
+                        message="Unexpected Telegram media upload failure",
+                        event_code="telegram.upload_unexpected",
+                    )
+                    raise
         except MediaRenderTimedOut as exc:
             await self._record_deliveries(
                 [*exc.completed_results, *exc.partial_results],

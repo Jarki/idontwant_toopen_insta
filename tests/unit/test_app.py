@@ -536,6 +536,56 @@ def test_unexpected_render_failure_reports_bound_context_once(
     assert context.stage == "render"
 
 
+def test_unexpected_upload_failure_reports_bound_context_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = "https://www.instagram.com/reel/ABC123"
+    media = make_media(url, "ABC123")
+    events: list[str] = []
+
+    class RaisingSender(FakeSender):
+        async def send(
+            self,
+            update: FakeUpdate,
+            rendered_items: list[RenderedItem],
+        ) -> list[MediaRenderResult]:
+            del update, rendered_items
+            raise RuntimeError("unexpected upload failure")
+
+    app = build_app(
+        monkeypatch,
+        FakeRegistry([make_candidate(url, "ABC123")], events),
+        FakeFetchService({url: MediaFetchResult(media=media, url=url)}, events),
+        RaisingSender(events),
+    )
+    reports: list[tuple[dict[str, object], object]] = []
+
+    def capture_report(message: str, **kwargs: object) -> None:
+        del message
+        reports.append((kwargs, app_module.error_reporter.current_context()))
+
+    monkeypatch.setattr(app_module.logger, "error", capture_report)
+    update = FakeUpdate(url, FakeChat())
+    with pytest.raises(RuntimeError) as raised:
+        asyncio.run(app._message_handler(update, object()))  # type: ignore[arg-type]
+
+    asyncio.run(
+        app._unexpected_error_handler(
+            update,
+            SimpleNamespace(error=raised.value),  # type: ignore[arg-type]
+        )
+    )
+
+    assert len(reports) == 1
+    kwargs, context = reports[0]
+    assert kwargs["extra"] == {
+        "event_code": "telegram.upload_unexpected",
+        "redact_exception_message": True,
+    }
+    assert context.media_request_ids == (100,)
+    assert context.stage == "telegram_upload"
+
+
 def test_file_id_persistence_failure_reports_request_ids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
