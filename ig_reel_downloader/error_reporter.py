@@ -27,6 +27,8 @@ MAX_TRACE_SIZE = 65536
 MAX_TRACE_FRAMES = 80
 MAX_EXCEPTION_CHAIN = 8
 MAX_INPUT_TEXT = MAX_TRACE_SIZE
+MAX_FILENAME_SIZE = 1024
+MAX_FUNCTION_NAME_SIZE = 256
 MAX_RETRIES = 2
 RETRY_BACKOFF_SECONDS = 0.05
 SHUTDOWN_BUDGET_SECONDS = 1.0
@@ -38,11 +40,15 @@ _AUTH_RE = re.compile(
     r"(?im)\b(authorization|proxy-authorization|cookie|set-cookie)\s*[:=]\s*"
     r"(?:\"[^\r\n\"]*\"|'[^\r\n']*'|[^\r\n]+)"
 )
+_AUTH_MAPPING_RE = re.compile(
+    r"(?im)(?P<prefix>['\"](?:authorization|proxy-authorization|cookie|set-cookie)"
+    r"['\"]\s*:\s*)(?P<value>\"[^\r\n\"]*\"|'[^\r\n']*')"
+)
 _BEARER_RE = re.compile(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9._~+/=-]+")
 _PATH_RE = re.compile(r"(?<![\w.-])/(?:home|root|app|workspace|srv|opt|tmp)/[^\s:'\"]+")
 _CREDENTIAL_RE = re.compile(r"(?i)(postgresql(?:\+\w+)?://)[^\s/@:]+(?::[^\s/@]*)?@")
 _TELEGRAM_STRUCTURED_IDENTITY_RE = re.compile(
-    r"(?is)\btelegram\s+(?:user|sender|chat)\s*\([^)]*\)"
+    r"(?is)(?<![\w.])(?:telegram\s+)?(?:user|sender|chat)\s*\([^)]*\)"
 )
 _TELEGRAM_IDENTITY_RE = re.compile(r"(?i)\btelegram\s+(?:user|sender|chat)\b[^\n;]*")
 _USERNAME_RE = re.compile(r"(?<!\w)@[A-Za-z0-9_]{2,}")
@@ -140,6 +146,13 @@ def sanitize(value: str, *, secrets: Sequence[str] = ()) -> str:
     sanitized = _TELEGRAM_IDENTITY_RE.sub("[telegram identity]", sanitized)
     sanitized = _LABELED_ID_RE.sub("[telegram identity]", sanitized)
     sanitized = _USERNAME_RE.sub("[telegram username]", sanitized)
+    sanitized = _AUTH_MAPPING_RE.sub(
+        lambda match: (
+            f"{match.group('prefix')}{match.group('value')[0]}"
+            f"[redacted]{match.group('value')[0]}"
+        ),
+        sanitized,
+    )
     sanitized = _CREDENTIAL_RE.sub(r"\1[redacted]@", sanitized)
     sanitized = _AUTH_RE.sub(lambda match: f"{match.group(1)}=[redacted]", sanitized)
     sanitized = _URL_RE.sub("[url]", sanitized)
@@ -157,20 +170,23 @@ def _qualified_exception_type(exc_type: type[BaseException] | None) -> str | Non
     return f"{exc_type.__module__}.{exc_type.__qualname__}"[:256]
 
 
-def _application_frames(tb: TracebackType | None) -> tuple[str, ...]:
+def _application_frames(tb: TracebackType | None) -> tuple[tuple[str, ...], bool]:
     frames: list[str] = []
-    while tb is not None:
-        filename = Path(tb.tb_frame.f_code.co_filename)
+    visited = 0
+    while tb is not None and visited < MAX_TRACE_FRAMES:
+        filename = Path(tb.tb_frame.f_code.co_filename[:MAX_FILENAME_SIZE])
         parts = filename.parts
         if _APP_PACKAGE in parts:
             package_index = parts.index(_APP_PACKAGE)
             module = ".".join(Path(*parts[package_index:]).with_suffix("").parts)
-            frames.append(f"{module}:{tb.tb_frame.f_code.co_name}")
+            function = tb.tb_frame.f_code.co_name[:MAX_FUNCTION_NAME_SIZE]
+            frames.append(f"{module}:{function}")
         tb = tb.tb_next
-    return tuple(frames[-MAX_TRACE_FRAMES:])
+        visited += 1
+    return tuple(frames), tb is not None
 
 
-def _exception_chain(exc: BaseException) -> tuple[BaseException, ...]:
+def _exception_chain(exc: BaseException) -> tuple[tuple[BaseException, ...], bool]:
     chain: list[BaseException] = []
     seen: set[int] = set()
     current: BaseException | None = exc
@@ -188,14 +204,19 @@ def _exception_chain(exc: BaseException) -> tuple[BaseException, ...]:
             if not current.__suppress_context__
             else None
         )
-    return tuple(reversed(chain))
+    truncated = current is not None and id(current) not in seen
+    return tuple(reversed(chain)), truncated
 
 
 def _chain_frames(exc: BaseException) -> tuple[str, ...]:
-    shape: list[str] = []
-    for chained in _exception_chain(exc):
+    chain, chain_truncated = _exception_chain(exc)
+    shape: list[str] = ["chain-truncated"] if chain_truncated else []
+    for chained in chain:
         shape.append(f"chain:{_qualified_exception_type(type(chained))}")
-        shape.extend(_application_frames(chained.__traceback__))
+        frames, frames_truncated = _application_frames(chained.__traceback__)
+        shape.extend(frames)
+        if frames_truncated:
+            shape.append("frames-truncated")
     return tuple(shape[-MAX_TRACE_FRAMES:])
 
 
@@ -211,7 +232,9 @@ def _bounded_exception_message(exc: BaseException) -> str:
 def _bounded_trace(exc: BaseException, *, redact_exception_message: bool) -> str:
     sections: list[str] = []
     remaining_frames = MAX_TRACE_FRAMES
-    for chained in _exception_chain(exc):
+    chain, chain_truncated = _exception_chain(exc)
+    trace_truncated = chain_truncated
+    for chained in chain:
         if sections:
             sections.append(
                 "\nThe above exception was the direct cause of the following "
@@ -222,11 +245,12 @@ def _bounded_trace(exc: BaseException, *, redact_exception_message: bool) -> str
         tb = chained.__traceback__
         while tb is not None and len(frames) < remaining_frames:
             frame = tb.tb_frame
-            frames.append(
-                f'  File "{frame.f_code.co_filename}", line {tb.tb_lineno}, '
-                f"in {frame.f_code.co_name}\n"
-            )
+            filename = frame.f_code.co_filename[:MAX_FILENAME_SIZE]
+            function = frame.f_code.co_name[:MAX_FUNCTION_NAME_SIZE]
+            frames.append(f'  File "{filename}", line {tb.tb_lineno}, in {function}\n')
             tb = tb.tb_next
+        if tb is not None:
+            trace_truncated = True
         sections.extend(frames)
         remaining_frames -= len(frames)
         message = (
@@ -235,6 +259,8 @@ def _bounded_trace(exc: BaseException, *, redact_exception_message: bool) -> str
             else _bounded_exception_message(chained)
         )
         sections.append(f"{_qualified_exception_type(type(chained))}: {message}\n")
+    if trace_truncated:
+        sections.append(TRUNCATION_MARKER)
     return "".join(sections)
 
 
@@ -322,18 +348,31 @@ class SnapshotWriter(Protocol):
 
 
 class ErrorReporterHandler(logging.Handler):
-    def __init__(self, target: queue.Queue[ErrorSnapshot]) -> None:
+    def __init__(
+        self,
+        target: queue.Queue[ErrorSnapshot],
+        capacity: threading.BoundedSemaphore,
+    ) -> None:
         super().__init__(logging.ERROR)
         self._target = target
+        self._capacity = capacity
 
     def emit(self, record: logging.LogRecord) -> None:
-        # Caller-path overload and snapshot failures are deliberately silent:
-        # even stderr can block on a pipe. The original logging handlers still run.
-        with contextlib.suppress(Exception):
-            if self._target.full():
-                return
+        if not self._capacity.acquire(blocking=False):
+            return
+        inserted = False
+        try:
             snapshot = snapshot_from_record(record)
             self._target.put_nowait(snapshot)
+            inserted = True
+        except Exception:
+            pass
+        finally:
+            if not inserted:
+                self._capacity.release()
+
+    def release_capacity(self) -> None:
+        self._capacity.release()
 
 
 _RECORD_SQL = text(
@@ -399,12 +438,16 @@ class ErrorReporter:
         retry_backoff: float = RETRY_BACKOFF_SECONDS,
         fallback: Callable[[str], None] | None = None,
     ) -> None:
-        self._queue: queue.Queue[ErrorSnapshot] = queue.Queue(maxsize=queue_size)
+        bounded_queue_size = max(1, min(queue_size, MAX_QUEUE_SIZE))
+        self._queue: queue.Queue[ErrorSnapshot] = queue.Queue(
+            maxsize=bounded_queue_size
+        )
         self._writer = writer
         self._retries = max(0, min(retries, MAX_RETRIES))
         self._retry_backoff = max(0.0, min(retry_backoff, RETRY_BACKOFF_SECONDS))
         self._fallback = fallback or _Fallback()
-        self.handler = ErrorReporterHandler(self._queue)
+        capacity = threading.BoundedSemaphore(bounded_queue_size)
+        self.handler = ErrorReporterHandler(self._queue, capacity)
         self._installed_logger: logging.Logger | None = None
         self._stopping = threading.Event()
         self._thread = threading.Thread(
@@ -418,6 +461,7 @@ class ErrorReporter:
                 snapshot = self._queue.get(timeout=0.05)
             except queue.Empty:
                 continue
+            self.handler.release_capacity()
             try:
                 for attempt in range(self._retries + 1):
                     try:

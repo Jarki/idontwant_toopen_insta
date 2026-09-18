@@ -88,6 +88,19 @@ def test_parameterized_authorization_header_is_fully_redacted() -> None:
         assert secret not in persisted
 
 
+def test_authorization_mapping_values_are_fully_redacted() -> None:
+    values = (
+        "{'Authorization': 'Digest username=alice, response=TOPSECRET'}",
+        '{"Authorization": "Digest username=alice, response=TOPSECRET"}',
+    )
+
+    for value in values:
+        sanitized = error_reporter.sanitize(value)
+        assert "TOPSECRET" not in sanitized
+        assert "username=alice" not in sanitized
+        assert "[redacted]" in sanitized
+
+
 def test_trace_preserves_chaining_without_locals() -> None:
     exc_info = _captured_exception(
         "secret_local = 'must-not-leak'\n"
@@ -208,6 +221,61 @@ def test_structured_telegram_identity_is_fully_redacted() -> None:
         assert value not in persisted
 
 
+def test_native_telegram_identity_representations_are_fully_redacted() -> None:
+    identities = (
+        "User(first_name='Alice', id=123456, username='alice')",
+        "Chat(id=-987654, title='Secret Group', username='secretchat')",
+    )
+
+    for identity in identities:
+        sanitized = error_reporter.sanitize(identity)
+        assert sanitized == "[telegram identity]"
+
+
+def test_traceback_filename_is_bounded_before_path_processing(monkeypatch) -> None:
+    exc_info = _captured_exception(
+        "raise RuntimeError('failure')",
+        "/srv/app/ig_reel_downloader/" + "x" * 20_000_000,
+    )
+    real_path = error_reporter.Path
+    input_lengths: list[int] = []
+
+    def bounded_path(*parts: str):
+        input_lengths.extend(len(part) for part in parts)
+        return real_path(*parts)
+
+    monkeypatch.setattr(error_reporter, "Path", bounded_path)
+    snapshot = error_reporter.snapshot_from_record(_record(exc_info=exc_info))
+
+    assert max(input_lengths) <= error_reporter.MAX_FILENAME_SIZE
+    assert snapshot.traceback is not None
+    assert "x" * (error_reporter.MAX_FILENAME_SIZE + 1) not in snapshot.traceback
+
+
+def test_frame_and_exception_chain_truncation_are_marked() -> None:
+    deep_trace = _captured_exception(
+        "def recurse(depth):\n"
+        "    if depth == 0:\n        raise RuntimeError('deep')\n"
+        "    recurse(depth - 1)\n"
+        "recurse(100)"
+    )
+    frame_snapshot = error_reporter.snapshot_from_record(_record(exc_info=deep_trace))
+
+    cause: BaseException = ValueError("root")
+    for index in range(error_reporter.MAX_EXCEPTION_CHAIN + 2):
+        outer = RuntimeError(f"layer {index}")
+        outer.__cause__ = cause
+        cause = outer
+    chain_snapshot = error_reporter.snapshot_from_record(
+        _record(exc_info=(type(cause), cause, None))
+    )
+
+    assert frame_snapshot.traceback is not None
+    assert frame_snapshot.traceback.endswith(error_reporter.TRUNCATION_MARKER)
+    assert chain_snapshot.traceback is not None
+    assert chain_snapshot.traceback.endswith(error_reporter.TRUNCATION_MARKER)
+
+
 def test_large_inputs_are_bounded_without_stringifying_arbitrary_values() -> None:
     class BlockingValue:
         def __str__(self) -> str:
@@ -315,6 +383,80 @@ def test_blocked_writer_and_full_queue_never_builds_dropped_snapshot(
     finally:
         release.set()
         reporter.stop()
+
+
+def test_capacity_reservation_prevents_snapshot_race(monkeypatch) -> None:
+    reporter = error_reporter.ErrorReporter(lambda _: None, queue_size=1)
+    original_snapshot = error_reporter.snapshot_from_record
+    entered = threading.Event()
+    release = threading.Event()
+    calls = 0
+
+    def blocking_snapshot(record: logging.LogRecord) -> error_reporter.ErrorSnapshot:
+        nonlocal calls
+        calls += 1
+        entered.set()
+        release.wait()
+        return original_snapshot(record)
+
+    monkeypatch.setattr(error_reporter, "snapshot_from_record", blocking_snapshot)
+    producer = threading.Thread(target=reporter.handler.emit, args=(_record(),))
+    try:
+        producer.start()
+        assert entered.wait(1)
+        reporter.handler.emit(_record(message="must drop before snapshot"))
+        assert calls == 1
+    finally:
+        release.set()
+        producer.join(1)
+        reporter.stop()
+
+
+def test_capacity_token_released_after_writer_consumes() -> None:
+    written: list[error_reporter.ErrorSnapshot] = []
+    two_written = threading.Event()
+
+    def writer(snapshot: error_reporter.ErrorSnapshot) -> None:
+        written.append(snapshot)
+        if len(written) == 2:
+            two_written.set()
+
+    reporter = error_reporter.ErrorReporter(writer, queue_size=1)
+    try:
+        reporter.handler.emit(_record(message="first"))
+        deadline = time.monotonic() + 1
+        while len(written) < 1 and time.monotonic() < deadline:
+            time.sleep(0.005)
+        reporter.handler.emit(_record(message="second"))
+        assert two_written.wait(1)
+    finally:
+        reporter.stop()
+
+    assert [snapshot.message for snapshot in written] == ["first", "second"]
+
+
+def test_capacity_token_released_when_snapshot_fails(monkeypatch) -> None:
+    written = threading.Event()
+    reporter = error_reporter.ErrorReporter(lambda _: written.set(), queue_size=1)
+    original_snapshot = error_reporter.snapshot_from_record
+    calls = 0
+
+    def fail_once(record: logging.LogRecord) -> error_reporter.ErrorSnapshot:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("snapshot failed")
+        return original_snapshot(record)
+
+    monkeypatch.setattr(error_reporter, "snapshot_from_record", fail_once)
+    try:
+        reporter.handler.emit(_record(message="failed"))
+        reporter.handler.emit(_record(message="accepted"))
+        assert written.wait(1)
+    finally:
+        reporter.stop()
+
+    assert calls == 2
 
 
 def test_writer_failures_are_bounded_and_do_not_escape() -> None:
