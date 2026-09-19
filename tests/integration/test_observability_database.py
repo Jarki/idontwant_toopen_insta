@@ -24,6 +24,8 @@ from alembic.config import Config
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import DBAPIError
 
+from error_api.repository.models import ErrorFilters, ErrorPatch, PageRequest
+from error_api.repository.postgres import PostgreSQLErrorRepository
 from ig_reel_downloader.error_reporter import ErrorSnapshot, record_snapshot
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
@@ -468,6 +470,94 @@ def test_runtime_roles_are_restricted_to_intended_capabilities(
             ).scalar_one()
             == 1
         )
+
+
+def test_restricted_repository_reads_and_writes_only_approved_data(
+    engines: dict[str, Engine],
+    database_urls: dict[str, str],
+) -> None:
+    with engines["migration"].begin() as connection:
+        request_id = connection.execute(
+            text(
+                "INSERT INTO public.media_requests "
+                "(url, normalized_url, provider, media_kind, created_at) "
+                "VALUES (:url, :normalized_url, 'instagram', 'reel', CURRENT_TIMESTAMP) "
+                "RETURNING id"
+            ),
+            {
+                "url": "https://example.test/submitted",
+                "normalized_url": "https://example.test/normalized",
+            },
+        ).scalar_one()
+    occurred_at = dt.datetime.now(dt.UTC)
+    occurrence_id = _record(
+        engines["bot"],
+        _event(
+            "repository-fingerprint",
+            occurred_at=occurred_at,
+            request_ids=[request_id],
+        ),
+    )
+    repository = PostgreSQLErrorRepository(
+        database_urls["error_api"], statement_timeout_ms=1000
+    )
+
+    repository.health()
+    listed = repository.list_groups(
+        ErrorFilters(
+            status="new",
+            provider="instagram",
+            severity="ERROR",
+            event_code="downloader.failed",
+            component="download",
+            release="test-release",
+            seen_from=occurred_at - dt.timedelta(seconds=1),
+            seen_to=occurred_at + dt.timedelta(seconds=1),
+        ),
+        PageRequest(limit=1),
+    )
+    assert [item.id for item in listed.items] == [listed.items[0].id]
+    assert listed.next_cursor is None
+    assert (
+        repository.list_occurrences(occurrence_id, PageRequest()).items[0].reference
+        == f"ERR-{occurrence_id}"
+    )
+    reproduction = repository.list_reproduction_cases(occurrence_id, PageRequest())
+    assert reproduction is not None
+    assert reproduction.items[0].submitted_url == "https://example.test/submitted"
+    assert reproduction.items[0].normalized_url == "https://example.test/normalized"
+
+    fixed_at = occurred_at + dt.timedelta(seconds=1)
+    changed = repository.update_group(
+        occurrence_id,
+        ErrorPatch(
+            display_name="Manually triaged",
+            status="resolved",
+            linked_change="abc123",
+            fixed_at=fixed_at,
+        ),
+    )
+    assert changed is not None
+    note = repository.add_note(occurrence_id, "Verified correction", "integration")
+    assert note is not None
+    assert note.actor == "integration"
+    recurrence_id = _record(
+        engines["bot"],
+        _event(
+            "repository-fingerprint",
+            occurred_at=fixed_at + dt.timedelta(seconds=1),
+        ),
+    )
+    recurred = repository.get_group_for_occurrence(occurrence_id)
+    assert recurred is not None
+    assert recurred.recurred_after_fix is True
+    assert recurred.first_post_fix_occurrence == f"ERR-{recurrence_id}"
+    assert recurred.fixed_at == fixed_at
+    assert recurred.display_name == "Manually triaged"
+    assert recurred.status == "resolved"
+    notes = repository.list_notes(occurrence_id, PageRequest())
+    assert notes is not None
+    assert [item.note for item in notes.items] == ["Verified correction"]
 
 
 def test_error_api_migration_rerun_repairs_stale_direct_grants(

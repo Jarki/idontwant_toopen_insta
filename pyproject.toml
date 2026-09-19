@@ -16,6 +16,8 @@ dependencies = [
     "psycopg[binary]>=3.2,<4.0",
     "alembic>=1.17,<2.0",
     "curl-cffi>=0.13,<0.16",
+    "fastapi>=0.116,<1.0",
+    "uvicorn>=0.35,<1.0",
 ]
 
 [build-system]
@@ -34,7 +36,7 @@ format = "ruff format ."
 format-check = "ruff format --check ."
 
 # Type checking
-typecheck = "mypy ig_reel_downloader"
+typecheck = "mypy ig_reel_downloader error_api/__main__.py error_api/app.py error_api/repository"
 
 # Agent pre-handoff gate: auto-fixes then validates (continues on failure so devs see all results)
 verify = {sequence = ["format", "lint-fix", "typecheck", "test"], ignore_fail = "return_non_zero"}
