@@ -132,7 +132,7 @@ jobs:
             -f docker/compose.dev.yaml \
             pull
 
-      - name: Start deployment
+      - name: Start migration gates and runtimes
         env:
           IMAGE_TAG: ${{ inputs.image_tag }}
           INSTAGRAM_REEL_DOWNLOADER_ENABLED: ${{ inputs.enable_instagram_reels }}
@@ -151,7 +151,7 @@ jobs:
             -p ig-reel-downloader-dev \
             -f docker/compose.yaml \
             -f docker/compose.dev.yaml \
-            up -d --wait --remove-orphans downloader
+            up -d --wait --remove-orphans downloader error-api
 
       - name: Show status
         env:

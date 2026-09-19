@@ -525,9 +525,17 @@ def install_reporter(
     database_url: str,
     *,
     release: str | None = None,
+    queue_size: int = MAX_QUEUE_SIZE,
+    retries: int = MAX_RETRIES,
+    retry_backoff: float = RETRY_BACKOFF_SECONDS,
     logger: logging.Logger | None = None,
 ) -> DatabaseErrorReporter:
-    reporter = DatabaseErrorReporter(database_url)
+    reporter = DatabaseErrorReporter(
+        database_url,
+        queue_size=queue_size,
+        retries=retries,
+        retry_backoff=retry_backoff,
+    )
     target_logger = logger or logging.getLogger()
     target_logger.addHandler(reporter.handler)
     if release is not None:

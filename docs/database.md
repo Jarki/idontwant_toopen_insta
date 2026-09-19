@@ -22,22 +22,22 @@ A separate `DB_MIGRATION_URL` variable is used by the bootstrap and migration se
 
 Docker Compose starts database services in this order:
 
-1. `postgres` — PostgreSQL container with persistent named volume and `pg_isready` healthcheck.
-2. `postgres-bootstrap` — one-shot service that creates or validates the migration and application roles idempotently, grants privileges, and exits. Rerunnable against an existing volume.
-3. `migrate` — one-shot Alembic migration service that applies pending schema changes.
-4. `downloader` — the long-running bot. It starts only after migration completes successfully.
+1. `postgres` becomes healthy.
+2. `postgres-bootstrap` provisions the three distinct database roles.
+3. `migrate` applies the public application history.
+4. `error-api-migrate` applies the independent observability history.
+5. `downloader` and `error-api` start independently.
 
-To run only the migration container:
+The downloader waits for Error API migration completion, never API runtime
+availability. Neither runtime applies migrations. To run the gates manually:
 
 ```bash
 docker compose -f docker/compose.yaml run --rm migrate
+docker compose -f docker/compose.yaml run --rm error-api-migrate
 ```
 
-The `migrate` service uses the same image as the bot and runs:
-
-```bash
-/app/.venv/bin/alembic upgrade head
-```
+The migration services use the migration role. The Error API runtime URL is
+never used for DDL.
 
 ## Poe commands
 
@@ -122,12 +122,12 @@ Create and verify PostgreSQL backups before relying on them for rollback:
      'dropdb -U "$POSTGRES_USER" ig_verify'
    ```
 
-3. To restore the authoritative database, stop the bot, replace the database,
-   restore the archive, rerun the idempotent privilege bootstrap and migrations,
-   then restart:
+3. To restore the authoritative database, stop both runtimes, replace the
+   database, restore the archive, rerun the idempotent privilege bootstrap and
+   both migration histories, then restart:
 
    ```bash
-   docker compose stop downloader
+   docker compose stop downloader error-api
    docker compose exec postgres sh -c \
      'dropdb --force -U "$POSTGRES_USER" "$POSTGRES_DB" &&
       createdb -U "$POSTGRES_USER" "$POSTGRES_DB"'
@@ -136,12 +136,14 @@ Create and verify PostgreSQL backups before relying on them for rollback:
      < backup.dump
    docker compose run --rm postgres-bootstrap
    docker compose run --rm migrate
-   docker compose up -d downloader
+   docker compose run --rm error-api-migrate
+   docker compose up -d downloader error-api
    ```
 
 ## Operational notes
 
-- The bot process does not apply migrations at startup.
-- Docker Compose applies migrations with the one-shot `migrate` service after the `postgres-bootstrap` service completes and before starting `downloader`.
+- Neither runtime applies migrations at startup.
+- Docker Compose applies the public and observability histories through
+  separate one-shot gates before starting either runtime.
 - Cleanup removes old media files from `output/`; it does not prune database rows.
 - Cached rows are reused only while fresh and while the referenced media file still exists.

@@ -303,27 +303,31 @@ The Docker image:
 
 ### Compose services
 
-`docker/compose.yaml` defines three database-related services and the downloader:
+`docker/compose.yaml` defines three one-shot database gates and two independent
+long-running runtimes:
 
-- `postgres`: a PostgreSQL container with persistent named volume and `pg_isready` healthcheck. Uses the official PostgreSQL image, not the app image.
-- `postgres-bootstrap`: a one-shot service that runs after PostgreSQL is healthy. It creates or validates the migration and application roles idempotently, grants privileges, and exits. Rerunnable against an existing volume.
-- `migrate`: a one-shot service that uses the app image to run `/app/.venv/bin/alembic upgrade head`. It depends on `postgres-bootstrap` completing successfully.
-- `downloader`: the long-running bot service. It depends on `migrate` completing successfully before startup.
+- `postgres`: persistent PostgreSQL with `pg_isready`; port 5432 is exposed only
+  inside the Compose network and is never published on the host.
+- `postgres-bootstrap`: creates or validates distinct owner, migration, bot,
+  and Error API roles after PostgreSQL is healthy and removes unsafe runtime
+  memberships/default privileges.
+- `migrate`: applies the public Alembic history as the migration role.
+- `error-api-migrate`: applies the independent observability Alembic history
+  with the same migration role after the public history completes.
+- `downloader`: the Telegram bot and direct bounded ledger reporter.
+- `error-api`: the separately authenticated HTTP runtime, published only on
+  `127.0.0.1:${ERROR_API_HOST_PORT:-8000}`.
 
-The default startup order is: `postgres` healthy → `postgres-bootstrap` complete → `migrate` complete → `downloader`.
+The enforced graph is `postgres` healthy → `postgres-bootstrap` complete →
+`migrate` complete → `error-api-migrate` complete → `downloader` and
+`error-api` independently. Neither runtime applies migrations. The downloader
+depends on observability schema readiness, not API process availability.
 
-`downloader` has these mounts:
-
-- `../${OUTPUT_DIR:-output}:/app/${OUTPUT_DIR:-output}`
-- `../assets:/app/assets`
-
-Runtime configuration is injected explicitly from Compose interpolation; the
-container does not mount `.env`, so bootstrap and migration passwords are not
-available to the downloader process.
-
-`downloader` restarts with `unless-stopped`; `postgres` restarts with policy; `postgres-bootstrap` and `migrate` do not restart.
-
-Port `5432` is not published to the host by default. Administrative access uses a network-attached Compose service or a temporary controlled host port.
+The downloader mounts `output/` and `assets/`. Runtime configuration is
+injected explicitly; `.env` is not mounted, so owner/migration credentials and
+API keys are absent from the bot process. Conversely the API receives only its
+restricted database URL and scoped key material. One-shot services do not
+restart; PostgreSQL and both runtimes use `unless-stopped`.
 
 ### Database roles
 
@@ -369,12 +373,34 @@ The documented environment variables are:
 | `REDDIT_DOWNLOADER_ENABLED` | no | `true` | Register the Reddit downloader. |
 | `X_DOWNLOADER_ENABLED` | no | `true` | Register the X downloader. |
 | `YOUTUBE_DOWNLOADER_ENABLED` | no | `true` | Register the YouTube downloader. |
+| `ERROR_LEDGER_ENABLED` | no | `true` | Enable the bot's direct bounded ledger reporter. |
+| `APP_RELEASE` | yes* | none | Immutable image/commit identifier attached to occurrences. |
+| `ERROR_REPORTER_QUEUE_SIZE` | no | `256` | Bounded queue size (1-256). |
+| `ERROR_REPORTER_RETRIES` | no | `2` | Writer-thread retry count (0-2). |
+| `ERROR_REPORTER_RETRY_BACKOFF_SECONDS` | no | `0.05` | Writer-thread backoff (0-0.05 seconds). |
+| `ERROR_API_READ_KEY` / `ERROR_API_READ_LABEL` | yes* | none | Read-only API credential and audit label. |
+| `ERROR_API_TRIAGE_KEY` / `ERROR_API_TRIAGE_LABEL` | yes* | none | Restricted workflow credential and audit label. |
+| `ERROR_API_*_KEY_NEXT` / `ERROR_API_*_LABEL_NEXT` | no | none | Optional paired key-rotation slots. |
+| `ERROR_API_HOST_PORT` | no | `8000` | Loopback-only published host port. |
+| `ERROR_API_STATEMENT_TIMEOUT_MS` | no | `3000` | Bounded API SQL timeout (100-30000 ms). |
 
 A disabled downloader is omitted from URL detection, so matching links receive no bot response. The development and production deployment workflows expose these flags as checkbox inputs.
 
-\* Required by the Compose bootstrap and migration services, not by the downloader runtime.
+\* Required by deployment preflight or the named Compose services, not by every runtime.
 
 Optional cookies should be placed at `assets/cookies.txt`; the code passes them to `yt-dlp` only when the file exists.
+
+Tailnet HTTPS exposure is host administration: Tailscale Serve forwards to the
+loopback listener, and ACLs restrict agent identities. Compose never binds the
+API publicly, and API-key authentication remains mandatory on the tailnet.
+Read and triage keys are independently scoped and can be rotated without bot
+restart by temporarily configuring the matching next key/label pair.
+
+Operational recovery preserves the bot/API separation. An API outage leaves
+polling and direct ledger writes running. Migration recovery reruns bootstrap,
+the public migration, then the Error API migration before restarting both
+runtimes. Agents use `uv run bot-ops` through the authenticated HTTP contract;
+they receive neither shell access nor database credentials.
 
 ## Quality gates
 

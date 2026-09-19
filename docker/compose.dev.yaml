@@ -3,7 +3,15 @@ services:
     build: !reset null
     image: ghcr.io/jarki/idontwant_toopen_insta:${IMAGE_TAG:-latest}
 
+  error-api-migrate:
+    build: !reset null
+    image: ghcr.io/jarki/idontwant_toopen_insta:${IMAGE_TAG:-latest}
+
   downloader:
+    build: !reset null
+    image: ghcr.io/jarki/idontwant_toopen_insta:${IMAGE_TAG:-latest}
+
+  error-api:
     build: !reset null
     image: ghcr.io/jarki/idontwant_toopen_insta:${IMAGE_TAG:-latest}
 

@@ -35,7 +35,14 @@ check_var() {
     fi
 }
 
-# --- PostgreSQL credentials ---
+# --- Runtime secrets and PostgreSQL credentials ---
+check_var "BOT_TOKEN"            "Telegram bot token"
+check_var "APP_RELEASE"          "Immutable application release identifier"
+check_var "ERROR_API_READ_KEY"   "Current read-only Error API key"
+check_var "ERROR_API_READ_LABEL" "Current read-only Error API key label"
+check_var "ERROR_API_TRIAGE_KEY" "Current triage Error API key"
+check_var "ERROR_API_TRIAGE_LABEL" "Current triage Error API key label"
+
 check_var "POSTGRES_DB"          "PostgreSQL database name"
 check_var "POSTGRES_USER"        "PostgreSQL bootstrap/owner user"
 check_var "POSTGRES_PASSWORD"    "PostgreSQL bootstrap/owner password"
@@ -48,6 +55,52 @@ check_var "DB_ERROR_API_PASSWORD" "Restricted Error API password"
 check_var "DB_MIGRATION_URL"     "Migration database URL" "postgresql+psycopg://*"
 check_var "DATABASE_URL"         "Application database URL" "postgresql+psycopg://*"
 check_var "ERROR_API_DATABASE_URL" "Restricted Error API database URL" "postgresql+psycopg://*"
+
+validate_api_key() {
+    local key_name="$1"
+    local label_name="$2"
+    local key="${!key_name:-}"
+    local label="${!label_name:-}"
+    local LC_ALL=C
+    if [ -n "$key" ] && { [ ${#key} -lt 32 ] || [ ${#key} -gt 4096 ] || [[ "$key" =~ [[:space:]] ]] || [[ "$key" == *:* ]] || [[ "$key" == *[![:print:]]* ]]; }; then
+        echo "::error::FATAL: ${key_name} must be a 32-4096 character ASCII bearer token without whitespace or colons"
+        errors=$((errors + 1))
+    fi
+    if { [ -n "$key" ] && [ -z "$label" ]; } || { [ -z "$key" ] && [ -n "$label" ]; }; then
+        echo "::error::FATAL: ${key_name} and ${label_name} must be configured together"
+        errors=$((errors + 1))
+    fi
+}
+
+validate_api_key "ERROR_API_READ_KEY" "ERROR_API_READ_LABEL"
+validate_api_key "ERROR_API_TRIAGE_KEY" "ERROR_API_TRIAGE_LABEL"
+validate_api_key "ERROR_API_READ_KEY_NEXT" "ERROR_API_READ_LABEL_NEXT"
+validate_api_key "ERROR_API_TRIAGE_KEY_NEXT" "ERROR_API_TRIAGE_LABEL_NEXT"
+
+key_names=(
+    ERROR_API_READ_KEY ERROR_API_READ_KEY_NEXT
+    ERROR_API_TRIAGE_KEY ERROR_API_TRIAGE_KEY_NEXT
+)
+for ((i = 0; i < ${#key_names[@]}; i++)); do
+    for ((j = i + 1; j < ${#key_names[@]}; j++)); do
+        left="${!key_names[i]:-}"
+        right="${!key_names[j]:-}"
+        if [ -n "$left" ] && [ "$left" = "$right" ]; then
+            echo "::error::FATAL: Error API credentials must be distinct"
+            errors=$((errors + 1))
+        fi
+    done
+done
+
+roles=("${POSTGRES_USER:-}" "${DB_MIGRATION_USER:-}" "${DB_APP_USER:-}" "${DB_ERROR_API_USER:-}")
+for ((i = 0; i < ${#roles[@]}; i++)); do
+    for ((j = i + 1; j < ${#roles[@]}; j++)); do
+        if [ -n "${roles[i]}" ] && [ "${roles[i]}" = "${roles[j]}" ]; then
+            echo "::error::FATAL: PostgreSQL security-boundary role names must be distinct"
+            errors=$((errors + 1))
+        fi
+    done
+done
 
 # --- Exact URL endpoint, role, and password validation ---
 urlencode() {
@@ -97,4 +150,4 @@ if [ $errors -gt 0 ]; then
     exit 1
 fi
 
-echo "Preflight PASSED — all required PostgreSQL variables present and valid."
+echo "Preflight PASSED — required runtime values and database URLs are valid."
