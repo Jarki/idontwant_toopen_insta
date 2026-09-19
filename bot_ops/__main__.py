@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import os
+import re
 import sys
 import unicodedata
 from collections.abc import Mapping, Sequence
@@ -26,6 +27,8 @@ EXIT_AUTHZ = 5
 EXIT_TRANSPORT = 6
 EXIT_SERVER = 7
 _STATUSES = ("new", "investigating", "fixing", "monitoring", "resolved", "ignored")
+_DURATION = re.compile(r"([1-9][0-9]{0,3})([mhd])\Z")
+_MAX_SINCE_SECONDS = 365 * 24 * 60 * 60
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -46,6 +49,7 @@ def _parser() -> argparse.ArgumentParser:
         "seen-to",
     ):
         listing.add_argument("--" + name)
+    listing.add_argument("--since", type=_relative_duration)
     _add_page(listing)
 
     show = commands.add_parser("show")
@@ -70,7 +74,20 @@ def _parser() -> argparse.ArgumentParser:
     link.add_argument("change", nargs="?")
     fixed = commands.add_parser("mark-fixed")
     fixed.add_argument("reference")
+    fixed.add_argument("--at", choices=("now",), required=True)
     return parser
+
+
+def _relative_duration(value: str) -> dt.timedelta:
+    match = _DURATION.fullmatch(value)
+    if match is None:
+        raise argparse.ArgumentTypeError("must be a duration such as 24h")
+    amount = int(match.group(1))
+    seconds_per_unit = {"m": 60, "h": 3600, "d": 86400}
+    seconds = amount * seconds_per_unit[match.group(2)]
+    if seconds > _MAX_SINCE_SECONDS:
+        raise argparse.ArgumentTypeError("duration must not exceed 365d")
+    return dt.timedelta(seconds=seconds)
 
 
 def _add_page(parser: argparse.ArgumentParser) -> None:
@@ -157,7 +174,13 @@ def _dispatch(client: ErrorApiClient, args: argparse.Namespace) -> dict[str, Any
             "limit",
             "cursor",
         )
-        return client.list_errors({name: getattr(args, name) for name in names})
+        filters = {name: getattr(args, name) for name in names}
+        if args.since is not None:
+            if filters["seen_from"] is not None:
+                raise ApiError("--since and --seen-from are mutually exclusive")
+            since = dt.datetime.now(dt.UTC) - args.since
+            filters["seen_from"] = since.isoformat().replace("+00:00", "Z")
+        return client.list_errors(filters)
     if command == "show":
         return client.show(args.reference)
     if command == "similar":
@@ -175,8 +198,8 @@ def _dispatch(client: ErrorApiClient, args: argparse.Namespace) -> dict[str, Any
     if command == "link":
         return client.link(args.reference, args.change)
     if command == "mark-fixed":
-        now = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
-        return client.mark_fixed(args.reference, now)
+        fixed_at = dt.datetime.now(dt.UTC).isoformat().replace("+00:00", "Z")
+        return client.mark_fixed(args.reference, fixed_at)
     raise AssertionError("unreachable command")
 
 

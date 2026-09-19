@@ -5,9 +5,12 @@ from __future__ import annotations
 import http.client
 import json
 import re
+import socket
+import threading
 import time
 import urllib.parse
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, TypeVar
 
@@ -142,15 +145,35 @@ class HttpTransport:
             else http.client.HTTPConnection
         )
         deadline = time.monotonic() + _EXCHANGE_SECONDS
-        connection = connection_type(
-            parsed.hostname, parsed.port, timeout=_EXCHANGE_SECONDS
-        )
+        try:
+            port = parsed.port
+        except ValueError as error:
+            raise TransportError("could not complete Error API exchange") from error
+        connection = connection_type(parsed.hostname, port, timeout=_EXCHANGE_SECONDS)
         target = parsed.path or "/"
         if parsed.query:
             target += "?" + parsed.query
+
+        def abort_exchange() -> None:
+            active_socket = connection.sock
+            if active_socket is not None:
+                with suppress(OSError):
+                    active_socket.shutdown(socket.SHUT_RDWR)
+            connection.close()
+
+        watchdog = threading.Timer(_EXCHANGE_SECONDS, abort_exchange)
+        watchdog.daemon = True
+        watchdog.start()
         try:
             connection.request(method, target, body=body, headers=dict(headers))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TransportError("Error API exchange timed out")
+            if connection.sock is not None:
+                connection.sock.settimeout(remaining)
             response = connection.getresponse()
+            if time.monotonic() >= deadline:
+                raise TransportError("Error API exchange timed out")
             chunks: list[bytes] = []
             size = 0
             while True:
@@ -170,6 +193,7 @@ class HttpTransport:
         except (TimeoutError, http.client.HTTPException, OSError, ValueError) as error:
             raise TransportError("could not complete Error API exchange") from error
         finally:
+            watchdog.cancel()
             connection.close()
 
 
@@ -188,11 +212,17 @@ class ErrorApiClient:
                 "ERROR_API_URL must not contain credentials, query, or fragment"
             )
         try:
+            port = parsed.port
+        except ValueError as error:
+            raise ValueError("ERROR_API_URL is invalid") from error
+        if port is not None and not 1 <= port <= 65535:
+            raise ValueError("ERROR_API_URL is invalid")
+        try:
             key_bytes = api_key.encode("ascii")
         except UnicodeEncodeError as error:
             raise ValueError("ERROR_API_KEY is invalid") from error
         if (
-            not 1 <= len(key_bytes) <= _MAX_KEY_BYTES
+            not 32 <= len(key_bytes) <= _MAX_KEY_BYTES
             or _BEARER_TOKEN.fullmatch(api_key) is None
         ):
             raise ValueError("ERROR_API_KEY is invalid")

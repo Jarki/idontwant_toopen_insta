@@ -478,27 +478,39 @@ def test_bot_ops_client_against_private_api_http_runtime(
         if server.started:
             break
         time.sleep(0.01)
+    commands = [
+        (["errors", "show", "ERR-1"], READ),
+        (["errors", "list", "--since", "24h"], READ),
+        (["errors", "mark-fixed", "ERR-1", "--at", "now"], TRIAGE),
+    ]
+    results: list[subprocess.CompletedProcess[str]] = []
     try:
-        result = subprocess.run(
-            ["uv", "run", "bot-ops", "errors", "show", "ERR-1"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5,
-            env={
-                **os.environ,
-                "ERROR_API_URL": f"http://127.0.0.1:{port}",
-                "ERROR_API_KEY": READ,
-            },
-        )
+        for command, key in commands:
+            results.append(
+                subprocess.run(
+                    ["uv", "run", "bot-ops", *command],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    env={
+                        **os.environ,
+                        "ERROR_API_URL": f"http://127.0.0.1:{port}",
+                        "ERROR_API_KEY": key,
+                    },
+                )
+            )
     finally:
         server.should_exit = True
         thread.join(timeout=2)
         server_socket.close()
 
-    assert result.returncode == 0
-    assert "display_name: Downloader failed" in result.stdout
-    assert READ not in result.stdout + result.stderr
+    assert all(result.returncode == 0 for result in results)
+    assert "display_name: Downloader failed" in results[0].stdout
+    assert "items:" in results[1].stdout
+    assert "status: resolved" in results[2].stdout
+    assert READ not in "".join(result.stdout + result.stderr for result in results)
+    assert TRIAGE not in "".join(result.stdout + result.stderr for result in results)
 
 
 def test_uvicorn_does_not_relog_handled_repository_details(

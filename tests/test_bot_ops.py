@@ -22,6 +22,8 @@ from bot_ops.client import (
     TransportError,
 )
 
+KEY = "k" * 32
+
 
 def group_payload(**changes: object) -> dict[str, object]:
     result: dict[str, object] = {
@@ -83,7 +85,7 @@ class FakeTransport:
 
 
 def client(fake: FakeTransport) -> ErrorApiClient:
-    return ErrorApiClient("https://api.invalid/root", "top-secret", fake)
+    return ErrorApiClient("https://api.invalid/root", KEY, fake)
 
 
 def test_all_commands_use_only_published_routes(
@@ -93,7 +95,18 @@ def test_all_commands_use_only_published_routes(
     api = client(fake)
     monkeypatch.setattr(cli, "_client_from_environment", lambda: api)
     commands = [
-        ["errors", "list", "--provider", "x/y?z", "--cursor", "2", "--limit", "1"],
+        [
+            "errors",
+            "list",
+            "--provider",
+            "x/y?z",
+            "--cursor",
+            "2",
+            "--limit",
+            "1",
+            "--since",
+            "24h",
+        ],
         ["errors", "show", "ERR-1"],
         ["errors", "similar", "ERR-1"],
         ["errors", "repro", "ERR-1"],
@@ -101,7 +114,7 @@ def test_all_commands_use_only_published_routes(
         ["errors", "status", "ERR-1", "fixing"],
         ["errors", "note", "ERR-1", "checked"],
         ["errors", "link", "ERR-1", "PR-4"],
-        ["errors", "mark-fixed", "ERR-1"],
+        ["errors", "mark-fixed", "ERR-1", "--at", "now"],
     ]
     for command in commands:
         assert cli.main(command) == 0
@@ -116,7 +129,10 @@ def test_all_commands_use_only_published_routes(
         ("PATCH", "https://api.invalid/root/v1/errors/ERR-1"),
         ("PATCH", "https://api.invalid/root/v1/errors/ERR-1"),
     ]
+    assert "seen_from=" in fake.calls[0][1]
+    assert "since=" not in fake.calls[0][1]
     assert "provider=x%2Fy%3Fz" in fake.calls[0][1]
+    assert "fixed_at" in json.loads(fake.calls[-1][3] or b"")
     assert json.loads(fake.calls[-1][3] or b"")["status"] == "resolved"
     capsys.readouterr()
 
@@ -148,7 +164,7 @@ def test_http_failure_categories(
     monkeypatch.setattr(
         cli,
         "_client_from_environment",
-        lambda: ErrorApiClient("https://api.invalid", secret, fake),
+        lambda: ErrorApiClient("https://api.invalid", KEY, fake),
     )
     assert cli.main(["errors", "show", "ERR-1"]) == expected
     captured = capsys.readouterr()
@@ -172,7 +188,7 @@ def test_config_and_transport_have_distinct_secret_free_exits(
     monkeypatch.setattr(
         cli,
         "_client_from_environment",
-        lambda: ErrorApiClient("https://api.invalid", "secret", Broken()),
+        lambda: ErrorApiClient("https://api.invalid", KEY, Broken()),
     )
     assert cli.main(["errors", "list"]) == cli.EXIT_TRANSPORT
 
@@ -230,7 +246,7 @@ def test_client_forwards_canonical_reference_and_auth_header() -> None:
     client(fake).show("ERR-9223372036854775807")
     _, url, headers, _ = fake.calls[0]
     assert url.endswith("/v1/errors/ERR-9223372036854775807")
-    assert headers["Authorization"] == "Bearer top-secret"
+    assert headers["Authorization"] == f"Bearer {KEY}"
 
 
 class QuietServer(socketserver.TCPServer):
@@ -279,7 +295,7 @@ def test_redirect_is_rejected_without_forwarding_authorization() -> None:
     redirect, redirect_thread, redirect_url = _serve(Redirect)
     try:
         with pytest.raises(ApiError, match="HTTP 302"):
-            ErrorApiClient(redirect_url, "valid-key").show("ERR-1")
+            ErrorApiClient(redirect_url, KEY).show("ERR-1")
         time.sleep(0.05)
     finally:
         _stop(redirect, redirect_thread)
@@ -302,7 +318,7 @@ def test_oversized_and_trickle_responses_are_bounded(
     server, thread, url = _serve(Oversized)
     try:
         with pytest.raises(ServerError, match="size limit"):
-            ErrorApiClient(url, "valid-key").show("ERR-1")
+            ErrorApiClient(url, KEY).show("ERR-1")
     finally:
         _stop(server, thread)
 
@@ -327,15 +343,48 @@ def test_oversized_and_trickle_responses_are_bounded(
     started = time.monotonic()
     try:
         with pytest.raises(TransportError):
-            ErrorApiClient(url, "valid-key").show("ERR-1")
+            ErrorApiClient(url, KEY).show("ERR-1")
         elapsed = time.monotonic() - started
     finally:
         _stop(server, thread)
     assert elapsed < 1
 
 
+def test_header_trickle_obeys_total_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(client_module, "_EXCHANGE_SECONDS", 0.1)
+
+    class HeaderTrickle(http.server.BaseHTTPRequestHandler):
+        def do_GET(self) -> None:
+            try:
+                self.wfile.write(b"HTTP/1.1 200 OK\r\n")
+                self.wfile.flush()
+                for index in range(20):
+                    self.wfile.write(f"X-Pad-{index}: x\r\n".encode())
+                    self.wfile.flush()
+                    time.sleep(0.03)
+                self.wfile.write(b"\r\n{}")
+            except BrokenPipeError:
+                pass
+
+        def log_message(self, format: str, *args: object) -> None:
+            pass
+
+    server, thread, url = _serve(HeaderTrickle)
+    started = time.monotonic()
+    try:
+        with pytest.raises(TransportError):
+            ErrorApiClient(url, KEY).show("ERR-1")
+        elapsed = time.monotonic() - started
+    finally:
+        _stop(server, thread)
+    assert elapsed < 0.3
+
+
 @pytest.mark.parametrize(
-    "key", ["bad\\nsecret", "bad\\rsecret", "bad key", "é", "x" * 4097]
+    "key",
+    ["bad\nsecret", "bad\rsecret", "bad key", "é", "x" * 31, "x" * 4097],
 )
 def test_malformed_api_keys_fail_as_fixed_secret_free_configuration(
     key: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -346,6 +395,28 @@ def test_malformed_api_keys_fail_as_fixed_secret_free_configuration(
     output = capsys.readouterr().err
     assert output == "configuration error: invalid Error API configuration\n"
     assert key not in output
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://127.0.0.1:not-a-port", "http://127.0.0.1:0", "http://127.0.0.1:65536"],
+)
+def test_invalid_url_ports_are_fixed_configuration_errors(
+    url: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("ERROR_API_URL", url)
+    monkeypatch.setenv("ERROR_API_KEY", KEY)
+    assert cli.main(["errors", "show", "ERR-1"]) == cli.EXIT_CONFIG
+    assert capsys.readouterr().err == (
+        "configuration error: invalid Error API configuration\n"
+    )
+
+
+@pytest.mark.parametrize("value", ["0h", "1s", "366d", "10000m", "forever"])
+def test_since_rejects_unbounded_or_malformed_durations(value: str) -> None:
+    with pytest.raises(SystemExit) as error:
+        cli._parser().parse_args(["errors", "list", "--since", value])
+    assert error.value.code == cli.EXIT_CONFIG
 
 
 @pytest.mark.parametrize(
@@ -382,7 +453,7 @@ def test_protocol_failures_are_secret_free_transport_errors(
     monkeypatch.setattr(
         cli,
         "_client_from_environment",
-        lambda: ErrorApiClient("http://api.invalid", "valid-key"),
+        lambda: ErrorApiClient("http://api.invalid", KEY),
     )
     assert cli.main(["errors", "show", "ERR-1"]) == cli.EXIT_TRANSPORT
     assert "secret" not in capsys.readouterr().err
