@@ -2,16 +2,24 @@
 
 from __future__ import annotations
 
+import http.client
 import json
 import re
-import urllib.error
+import time
 import urllib.parse
-import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Protocol, cast
+from typing import Any, Literal, Protocol, TypeVar
+
+from pydantic import AwareDatetime, BaseModel, ConfigDict, ValidationError
 
 _REFERENCE = re.compile(r"ERR-[1-9][0-9]{0,18}\Z")
+_BEARER_TOKEN = re.compile(r"[A-Za-z0-9\-._~+/]+=*\Z")
+_MAX_KEY_BYTES = 4096
+_MAX_RESPONSE_BYTES = 1_048_576
+_EXCHANGE_SECONDS = 10.0
+Status = Literal["new", "investigating", "fixing", "monitoring", "resolved", "ignored"]
+Severity = Literal["ERROR", "CRITICAL"]
 
 
 class ClientError(Exception):
@@ -38,6 +46,75 @@ class ApiError(ClientError):
     pass
 
 
+class ContractModel(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+
+class ErrorGroup(ContractModel):
+    id: int
+    display_name: str
+    event_code: str
+    exception_type: str | None
+    status: Status
+    first_seen_at: AwareDatetime
+    last_seen_at: AwareDatetime
+    occurrence_count: int
+    first_release: str | None
+    last_release: str | None
+    linked_change: str | None
+    fixed_at: AwareDatetime | None
+    recurred_after_fix: bool
+    first_post_fix_occurrence: str | None = None
+
+
+class ErrorOccurrence(ContractModel):
+    reference: str
+    occurred_at: AwareDatetime
+    severity: Severity
+    logger_name: str
+    component: str | None
+    exception_type: str | None
+    message: str
+    traceback: str | None
+    provider: str | None
+    media_kind: str | None
+    release: str | None
+
+
+class ReproductionCase(ContractModel):
+    reference: str
+    display_name: str
+    occurred_at: AwareDatetime
+    submitted_url: str | None
+    normalized_url: str | None
+    provider: str | None
+    media_kind: str | None
+    component: str | None
+    release: str | None
+
+
+class ErrorNote(ContractModel):
+    id: int
+    note: str
+    actor: str
+    created_at: AwareDatetime
+
+
+class ErrorGroupPage(ContractModel):
+    items: list[ErrorGroup]
+    next_cursor: str | None
+
+
+class OccurrencePage(ContractModel):
+    items: list[ErrorOccurrence]
+    next_cursor: str | None
+
+
+class ReproductionPage(ContractModel):
+    items: list[ReproductionCase]
+    next_cursor: str | None
+
+
 @dataclass(frozen=True)
 class Response:
     status: int
@@ -50,20 +127,53 @@ class Transport(Protocol):
     ) -> Response: ...
 
 
-class UrlLibTransport:
+class HttpTransport:
+    """Single-exchange transport: no redirects, bounded bytes, total deadline."""
+
     def request(
         self, method: str, url: str, headers: Mapping[str, str], body: bytes | None
     ) -> Response:
-        request = urllib.request.Request(
-            url, data=body, headers=dict(headers), method=method
+        parsed = urllib.parse.urlsplit(url)
+        if parsed.hostname is None:
+            raise TransportError("could not complete Error API exchange")
+        connection_type = (
+            http.client.HTTPSConnection
+            if parsed.scheme == "https"
+            else http.client.HTTPConnection
         )
+        deadline = time.monotonic() + _EXCHANGE_SECONDS
+        connection = connection_type(
+            parsed.hostname, parsed.port, timeout=_EXCHANGE_SECONDS
+        )
+        target = parsed.path or "/"
+        if parsed.query:
+            target += "?" + parsed.query
         try:
-            with urllib.request.urlopen(request, timeout=10) as response:
-                return Response(response.status, response.read())
-        except urllib.error.HTTPError as error:
-            return Response(error.code, error.read())
-        except (OSError, urllib.error.URLError) as error:
-            raise TransportError("could not reach Error API") from error
+            connection.request(method, target, body=body, headers=dict(headers))
+            response = connection.getresponse()
+            chunks: list[bytes] = []
+            size = 0
+            while True:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TransportError("Error API exchange timed out")
+                if connection.sock is not None:
+                    connection.sock.settimeout(remaining)
+                chunk = response.read(min(65_536, _MAX_RESPONSE_BYTES + 1 - size))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                size += len(chunk)
+                if size > _MAX_RESPONSE_BYTES:
+                    raise ServerError("Error API response exceeded size limit")
+            return Response(status=response.status, body=b"".join(chunks))
+        except (TimeoutError, http.client.HTTPException, OSError, ValueError) as error:
+            raise TransportError("could not complete Error API exchange") from error
+        finally:
+            connection.close()
+
+
+_Model = TypeVar("_Model", bound=ContractModel)
 
 
 class ErrorApiClient:
@@ -77,9 +187,18 @@ class ErrorApiClient:
             raise ValueError(
                 "ERROR_API_URL must not contain credentials, query, or fragment"
             )
+        try:
+            key_bytes = api_key.encode("ascii")
+        except UnicodeEncodeError as error:
+            raise ValueError("ERROR_API_KEY is invalid") from error
+        if (
+            not 1 <= len(key_bytes) <= _MAX_KEY_BYTES
+            or _BEARER_TOKEN.fullmatch(api_key) is None
+        ):
+            raise ValueError("ERROR_API_KEY is invalid")
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
-        self._transport = transport or UrlLibTransport()
+        self._transport = transport or HttpTransport()
 
     def list_errors(self, filters: Mapping[str, str | int | None]) -> dict[str, Any]:
         allowed = {
@@ -99,10 +218,10 @@ class ErrorApiClient:
             for key, value in filters.items()
             if key in allowed and value is not None
         ]
-        return self._request("GET", "/v1/errors", query=query)
+        return self._request("GET", "/v1/errors", ErrorGroupPage, query=query)
 
     def show(self, reference: str) -> dict[str, Any]:
-        return self._request("GET", self._error_path(reference))
+        return self._request("GET", self._error_path(reference), ErrorGroup)
 
     def similar(
         self, reference: str, *, limit: int, cursor: str | None
@@ -110,6 +229,7 @@ class ErrorApiClient:
         return self._request(
             "GET",
             self._error_path(reference) + "/occurrences",
+            OccurrencePage,
             query=self._page(limit, cursor),
         )
 
@@ -119,33 +239,44 @@ class ErrorApiClient:
         return self._request(
             "GET",
             self._error_path(reference) + "/reproduction-cases",
+            ReproductionPage,
             query=self._page(limit, cursor),
         )
 
     def rename(self, reference: str, display_name: str) -> dict[str, Any]:
         return self._request(
-            "PATCH", self._error_path(reference), payload={"display_name": display_name}
+            "PATCH",
+            self._error_path(reference),
+            ErrorGroup,
+            payload={"display_name": display_name},
         )
 
     def set_status(self, reference: str, status: str) -> dict[str, Any]:
         return self._request(
-            "PATCH", self._error_path(reference), payload={"status": status}
+            "PATCH", self._error_path(reference), ErrorGroup, payload={"status": status}
         )
 
     def add_note(self, reference: str, note: str) -> dict[str, Any]:
         return self._request(
-            "POST", self._error_path(reference) + "/notes", payload={"note": note}
+            "POST",
+            self._error_path(reference) + "/notes",
+            ErrorNote,
+            payload={"note": note},
         )
 
     def link(self, reference: str, change: str | None) -> dict[str, Any]:
         return self._request(
-            "PATCH", self._error_path(reference), payload={"linked_change": change}
+            "PATCH",
+            self._error_path(reference),
+            ErrorGroup,
+            payload={"linked_change": change},
         )
 
     def mark_fixed(self, reference: str, fixed_at: str) -> dict[str, Any]:
         return self._request(
             "PATCH",
             self._error_path(reference),
+            ErrorGroup,
             payload={"status": "resolved", "fixed_at": fixed_at},
         )
 
@@ -166,6 +297,7 @@ class ErrorApiClient:
         self,
         method: str,
         path: str,
+        model: type[_Model],
         *,
         query: list[tuple[str, str]] | None = None,
         payload: Mapping[str, object] | None = None,
@@ -191,12 +323,10 @@ class ErrorApiClient:
             raise AuthorizationError("Error API authorization failed")
         if response.status >= 500:
             raise ServerError("Error API server failure")
-        if response.status >= 400:
+        if response.status >= 400 or not 200 <= response.status < 300:
             raise ApiError(f"Error API rejected request (HTTP {response.status})")
         try:
-            decoded = json.loads(response.body)
-        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            decoded = model.model_validate_json(response.body)
+        except ValidationError as error:
             raise ServerError("Error API returned an invalid response") from error
-        if not isinstance(decoded, dict):
-            raise ServerError("Error API returned an invalid response")
-        return cast(dict[str, Any], decoded)
+        return decoded.model_dump(mode="json")

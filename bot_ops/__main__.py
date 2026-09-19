@@ -183,10 +183,12 @@ def _dispatch(client: ErrorApiClient, args: argparse.Namespace) -> dict[str, Any
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     try:
-        result = _dispatch(_client_from_environment(), args)
-    except ValueError as error:
-        print(f"configuration error: {_safe(str(error))}", file=sys.stderr)
+        client = _client_from_environment()
+    except ValueError:
+        print("configuration error: invalid Error API configuration", file=sys.stderr)
         return EXIT_CONFIG
+    try:
+        result = _dispatch(client, args)
     except AuthenticationError as error:
         print(_safe(str(error)), file=sys.stderr)
         return EXIT_AUTH
