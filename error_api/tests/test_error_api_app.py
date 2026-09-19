@@ -181,6 +181,13 @@ def test_configuration_fails_closed() -> None:
             triage_key_current=READ,
             triage_label_current="operator",
         )
+    with pytest.raises(ValidationError, match="ASCII"):
+        ApiSettings(
+            read_key_current="é" * 32,
+            read_label_current="reader",
+            triage_key_current=TRIAGE,
+            triage_label_current="operator",
+        )
 
 
 def test_authentication_rotation_and_scopes(
@@ -191,6 +198,12 @@ def test_authentication_rotation_and_scopes(
         response = client.get("/v1/errors", headers=headers)
         assert response.status_code == 401
         assert response.headers["www-authenticate"] == "Bearer"
+    response = client.get(
+        "/v1/errors",
+        headers=[(b"authorization", b"Bearer invalid-\xff-key")],
+    )
+    assert response.status_code == 401
+    assert READ not in response.text
     for key in (READ, READ_NEXT, TRIAGE, TRIAGE_NEXT):
         assert client.get("/v1/health", headers=auth(key)).json() == {"status": "ok"}
     assert (
@@ -237,6 +250,15 @@ def test_all_reads_are_bounded_and_reproduction_is_separate(
     assert client.get("/v1/errors/ERR-1/notes", headers=auth(READ)).status_code == 200
     assert client.get("/v1/errors?limit=101", headers=auth(READ)).status_code == 422
     assert client.get("/v1/errors?cursor=01", headers=auth(READ)).status_code == 422
+    for path in (
+        "/v1/errors",
+        "/v1/errors/ERR-1/occurrences",
+        "/v1/errors/ERR-1/reproduction-cases",
+        "/v1/errors/ERR-1/notes",
+    ):
+        assert (
+            client.get(f"{path}?cursor=1000001", headers=auth(READ)).status_code == 422
+        )
     assert (
         client.get(
             "/v1/errors?seen_from=2026-09-20T00:00:00Z&seen_to=2026-09-19T00:00:00Z",
@@ -263,6 +285,7 @@ def test_all_reads_are_bounded_and_reproduction_is_separate(
         " ERR-1",
         "ERR-+1",
         "ERR-9223372036854775808",
+        f"ERR-{'9' * 5000}",
     ],
 )
 def test_reference_is_canonical(
@@ -297,6 +320,23 @@ def test_triage_updates_only_group_and_appends_labeled_notes(
         client.patch("/v1/errors/ERR-1", headers=auth(TRIAGE), json={}).status_code
         == 422
     )
+    for field in ("display_name", "status"):
+        assert (
+            client.patch(
+                "/v1/errors/ERR-1",
+                headers=auth(TRIAGE),
+                json={field: None},
+            ).status_code
+            == 422
+        )
+    cleared = client.patch(
+        "/v1/errors/ERR-1",
+        headers=auth(TRIAGE),
+        json={"linked_change": None, "fixed_at": None},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["linked_change"] is None
+    assert cleared.json()["fixed_at"] is None
     created = client.post(
         "/v1/errors/ERR-1/notes",
         headers=auth(TRIAGE_NEXT),

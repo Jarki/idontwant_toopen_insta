@@ -1,5 +1,6 @@
 """FastAPI application for bounded private error-ledger access."""
 
+import hashlib
 import hmac
 import logging
 import re
@@ -35,7 +36,7 @@ from .repository.models import (
 )
 
 _LOGGER = logging.getLogger("error_api")
-_REFERENCE = re.compile(r"ERR-([1-9][0-9]*)\Z")
+_REFERENCE = re.compile(r"ERR-([1-9][0-9]{0,18})\Z")
 _LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 
 
@@ -67,7 +68,14 @@ class ApiSettings(BaseModel):
             if label is not None and _LABEL.fullmatch(label) is None:
                 raise ValueError("credential labels must be non-secret identifiers")
             if key is not None:
-                secrets.append(key.get_secret_value())
+                secret = key.get_secret_value()
+                try:
+                    secret.encode("ascii")
+                except UnicodeEncodeError as error:
+                    raise ValueError(
+                        "API credentials must contain only ASCII"
+                    ) from error
+                secrets.append(secret)
         if len(secrets) != len(set(secrets)):
             raise ValueError("API credentials must be distinct")
         return self
@@ -99,7 +107,10 @@ def _page(limit: int, cursor: str | None) -> PageRequest:
         return PageRequest(limit=limit)
     if not re.fullmatch(r"0|[1-9][0-9]{0,6}", cursor):
         raise HTTPException(status_code=422, detail="invalid cursor")
-    return PageRequest(limit=limit, offset=int(cursor))
+    offset = int(cursor)
+    if offset > 1_000_000:
+        raise HTTPException(status_code=422, detail="invalid cursor")
+    return PageRequest(limit=limit, offset=offset)
 
 
 def create_app(repository: ErrorRepository, settings: ApiSettings) -> FastAPI:
@@ -107,27 +118,35 @@ def create_app(repository: ErrorRepository, settings: ApiSettings) -> FastAPI:
 
     app = FastAPI(title="Private Error API", version="1", docs_url=None, redoc_url=None)
 
-    configured_values: list[tuple[str, Principal]] = [
+    configured_values: list[tuple[bytes, Principal]] = [
         (
-            settings.read_key_current.get_secret_value(),
+            hashlib.sha256(
+                settings.read_key_current.get_secret_value().encode("ascii")
+            ).digest(),
             Principal(settings.read_label_current, "read"),
         ),
         (
-            settings.triage_key_current.get_secret_value(),
+            hashlib.sha256(
+                settings.triage_key_current.get_secret_value().encode("ascii")
+            ).digest(),
             Principal(settings.triage_label_current, "triage"),
         ),
     ]
     if settings.read_key_next is not None and settings.read_label_next is not None:
         configured_values.append(
             (
-                settings.read_key_next.get_secret_value(),
+                hashlib.sha256(
+                    settings.read_key_next.get_secret_value().encode("ascii")
+                ).digest(),
                 Principal(settings.read_label_next, "read"),
             )
         )
     if settings.triage_key_next is not None and settings.triage_label_next is not None:
         configured_values.append(
             (
-                settings.triage_key_next.get_secret_value(),
+                hashlib.sha256(
+                    settings.triage_key_next.get_secret_value().encode("ascii")
+                ).digest(),
                 Principal(settings.triage_label_next, "triage"),
             )
         )
@@ -141,10 +160,11 @@ def create_app(repository: ErrorRepository, settings: ApiSettings) -> FastAPI:
         if authorization is not None and authorization.startswith("Bearer "):
             supplied = authorization[7:]
             well_formed = bool(supplied) and " " not in supplied
+        supplied_digest = hashlib.sha256(supplied.encode("utf-8")).digest()
         matched: Principal | None = None
-        # Always compare every configured credential; do not reveal rotation position.
-        for secret, principal in configured:
-            if hmac.compare_digest(supplied, secret):
+        # Fixed-length digests avoid text encoding errors and compare every position.
+        for secret_digest, principal in configured:
+            if hmac.compare_digest(supplied_digest, secret_digest):
                 matched = principal
         if not well_formed or matched is None:
             raise HTTPException(

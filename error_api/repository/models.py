@@ -117,6 +117,10 @@ class ErrorPatch(StrictModel):
     def require_change(self) -> ErrorPatch:
         if not self.model_fields_set:
             raise ValueError("at least one field is required")
+        if "display_name" in self.model_fields_set and self.display_name is None:
+            raise ValueError("display_name may not be null")
+        if "status" in self.model_fields_set and self.status is None:
+            raise ValueError("status may not be null")
         return self
 
 
