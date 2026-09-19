@@ -478,6 +478,67 @@ def test_installed_cli_resolver_deadline(
     assert KEY not in result.stdout + result.stderr
 
 
+def test_resolver_resource_exhaustion_is_safe_transport_failure(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    def exhausted_pipe(*, duplex: bool) -> object:
+        raise OSError("secret resource detail")
+
+    monkeypatch.setattr(client_module.multiprocessing, "Pipe", exhausted_pipe)
+    monkeypatch.setattr(
+        cli,
+        "_client_from_environment",
+        lambda: ErrorApiClient("http://api.invalid", KEY),
+    )
+    assert cli.main(["errors", "show", "ERR-1"]) == cli.EXIT_TRANSPORT
+    assert "secret resource detail" not in capsys.readouterr().err
+
+
+def test_resolver_start_failure_closes_partial_resources(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class Endpoint:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+    receiver = Endpoint()
+    sender = Endpoint()
+
+    class FailedProcess:
+        pid = None
+        closed = False
+
+        def __init__(self, **kwargs: object) -> None:
+            pass
+
+        def start(self) -> None:
+            raise OSError("no process slots")
+
+        def close(self) -> None:
+            self.closed = True
+
+    process = FailedProcess()
+
+    def pipe_factory(*, duplex: bool) -> tuple[Endpoint, Endpoint]:
+        assert duplex is False
+        return receiver, sender
+
+    def process_factory(**kwargs: object) -> FailedProcess:
+        assert kwargs["daemon"] is True
+        return process
+
+    monkeypatch.setattr(client_module.multiprocessing, "Pipe", pipe_factory)
+    monkeypatch.setattr(client_module.multiprocessing, "Process", process_factory)
+    with pytest.raises(TransportError):
+        client_module._resolve_addresses("api.invalid", 80, 0.1)
+    assert receiver.closed
+    assert sender.closed
+    assert process.closed
+
+
 @pytest.mark.parametrize(
     "error",
     [

@@ -144,11 +144,25 @@ def _resolve_worker(host: str, port: int, sender: Any) -> None:
 def _resolve_addresses(
     host: str, port: int, timeout: float
 ) -> list[tuple[int, int, int, str, tuple[Any, ...]]]:
-    receiver, sender = multiprocessing.Pipe(duplex=False)
+    try:
+        receiver, sender = multiprocessing.Pipe(duplex=False)
+    except OSError as error:
+        raise TransportError("could not complete Error API exchange") from error
     process = multiprocessing.Process(
         target=_resolve_worker, args=(host, port, sender), daemon=True
     )
-    process.start()
+    try:
+        process.start()
+    except OSError as error:
+        receiver.close()
+        sender.close()
+        if process.pid is not None:
+            if process.is_alive():
+                process.terminate()
+            process.join()
+        with suppress(ValueError):
+            process.close()
+        raise TransportError("could not complete Error API exchange") from error
     sender.close()
     try:
         if not receiver.poll(timeout):
