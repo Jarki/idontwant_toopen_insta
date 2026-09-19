@@ -32,7 +32,14 @@ class PostgreSQLErrorRepository:
             raise ValueError("ERROR_API_DATABASE_URL must use postgresql+psycopg://")
         if not 100 <= statement_timeout_ms <= 30_000:
             raise ValueError("statement timeout must be between 100 and 30000 ms")
-        self._engine: Engine = create_engine(database_url, pool_pre_ping=True)
+        self._engine: Engine = create_engine(
+            database_url,
+            pool_pre_ping=True,
+            connect_args={
+                "connect_timeout": (statement_timeout_ms + 999) // 1000,
+                "options": f"-c statement_timeout={statement_timeout_ms}",
+            },
+        )
         self._timeout = f"{statement_timeout_ms}ms"
 
     def _timeout_connection(self) -> Any:

@@ -2,12 +2,18 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import socket
+import threading
+import time
 
+import httpx
 import pytest
+import uvicorn
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
 from error_api.app import ApiSettings, create_app
+from error_api.repository import postgres as postgres_module
 from error_api.repository.models import (
     ErrorFilters,
     ErrorGroup,
@@ -21,6 +27,7 @@ from error_api.repository.models import (
     ReproductionCase,
     ReproductionPage,
 )
+from error_api.repository.postgres import PostgreSQLErrorRepository
 
 NOW = dt.datetime(2026, 9, 19, tzinfo=dt.UTC)
 READ = "read-key-that-is-at-least-thirty-two-characters"
@@ -188,6 +195,42 @@ def test_configuration_fails_closed() -> None:
             triage_key_current=TRIAGE,
             triage_label_current="operator",
         )
+    for invalid in ("x" * 31 + " ", "x" * 31 + "\t", "x" * 31 + ":"):
+        with pytest.raises(ValidationError, match="bearer"):
+            ApiSettings(
+                read_key_current=invalid,
+                read_label_current="reader",
+                triage_key_current=TRIAGE,
+                triage_label_current="operator",
+            )
+
+
+def test_repository_configures_checkout_timeouts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, object] = {}
+    engine = object()
+
+    def fake_create_engine(url: str, **kwargs: object) -> object:
+        captured["url"] = url
+        captured.update(kwargs)
+        return engine
+
+    monkeypatch.setattr(postgres_module, "create_engine", fake_create_engine)
+    repository = PostgreSQLErrorRepository(
+        "postgresql+psycopg://api@example.test/errors",
+        statement_timeout_ms=1250,
+    )
+
+    assert repository._engine is engine  # type: ignore[comparison-overlap]
+    assert captured == {
+        "url": "postgresql+psycopg://api@example.test/errors",
+        "pool_pre_ping": True,
+        "connect_args": {
+            "connect_timeout": 2,
+            "options": "-c statement_timeout=1250",
+        },
+    }
 
 
 def test_authentication_rotation_and_scopes(
@@ -204,6 +247,7 @@ def test_authentication_rotation_and_scopes(
     )
     assert response.status_code == 401
     assert READ not in response.text
+    assert client.get("/openapi.json").status_code == 404
     for key in (READ, READ_NEXT, TRIAGE, TRIAGE_NEXT):
         assert client.get("/v1/health", headers=auth(key)).json() == {"status": "ok"}
     assert (
@@ -393,3 +437,62 @@ def test_internal_errors_and_logs_do_not_disclose_secrets(
     assert READ not in combined
     assert "Authorization" not in combined
     assert "internal SQL" not in combined
+
+
+def test_uvicorn_does_not_relog_handled_repository_details(
+    api: tuple[TestClient, FakeRepository],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    _client, repository = api
+    secret_note = "secret-note-value"
+    sql = "INSERT INTO observability.error_notes"
+
+    def fail(_occurrence_id: int, _note: str, _actor: str) -> None:
+        raise RuntimeError(f"{sql} bound_note={secret_note}")
+
+    repository.add_note = fail  # type: ignore[method-assign]
+    app = create_app(
+        repository,
+        ApiSettings(
+            read_key_current=READ,
+            read_label_current="reader",
+            triage_key_current=TRIAGE,
+            triage_label_current="operator",
+        ),
+    )
+    server_socket = socket.socket()
+    server_socket.bind(("127.0.0.1", 0))
+    server_socket.listen()
+    port = int(server_socket.getsockname()[1])
+    server = uvicorn.Server(
+        uvicorn.Config(app, log_config=None, access_log=False, lifespan="off")
+    )
+    thread = threading.Thread(
+        target=server.run,
+        kwargs={"sockets": [server_socket]},
+        daemon=True,
+    )
+    with caplog.at_level(logging.ERROR):
+        thread.start()
+        for _ in range(100):
+            if server.started:
+                break
+            time.sleep(0.01)
+        try:
+            response = httpx.post(
+                f"http://127.0.0.1:{port}/v1/errors/ERR-1/notes",
+                headers=auth(TRIAGE),
+                json={"note": secret_note},
+                timeout=2,
+            )
+        finally:
+            server.should_exit = True
+            thread.join(timeout=2)
+            server_socket.close()
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "internal server error"}
+    combined = response.text + caplog.text
+    assert secret_note not in combined
+    assert sql not in combined
+    assert "RuntimeError" not in combined

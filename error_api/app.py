@@ -18,6 +18,8 @@ from pydantic import (
     SecretStr,
     model_validator,
 )
+from starlette.middleware.base import RequestResponseEndpoint
+from starlette.responses import Response
 
 from .repository.base import ErrorRepository
 from .repository.models import (
@@ -38,6 +40,7 @@ from .repository.models import (
 _LOGGER = logging.getLogger("error_api")
 _REFERENCE = re.compile(r"ERR-([1-9][0-9]{0,18})\Z")
 _LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
+_BEARER_TOKEN = re.compile(r"[A-Za-z0-9\-._~+/]+=*\Z")
 
 
 class ApiSettings(BaseModel):
@@ -75,6 +78,8 @@ class ApiSettings(BaseModel):
                     raise ValueError(
                         "API credentials must contain only ASCII"
                     ) from error
+                if _BEARER_TOKEN.fullmatch(secret) is None:
+                    raise ValueError("API credentials must be valid bearer tokens")
                 secrets.append(secret)
         if len(secrets) != len(set(secrets)):
             raise ValueError("API credentials must be distinct")
@@ -116,7 +121,13 @@ def _page(limit: int, cursor: str | None) -> PageRequest:
 def create_app(repository: ErrorRepository, settings: ApiSettings) -> FastAPI:
     """Create the independent HTTP runtime; the bot never imports this module."""
 
-    app = FastAPI(title="Private Error API", version="1", docs_url=None, redoc_url=None)
+    app = FastAPI(
+        title="Private Error API",
+        version="1",
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+    )
 
     configured_values: list[tuple[bytes, Principal]] = [
         (
@@ -159,7 +170,7 @@ def create_app(repository: ErrorRepository, settings: ApiSettings) -> FastAPI:
         well_formed = False
         if authorization is not None and authorization.startswith("Bearer "):
             supplied = authorization[7:]
-            well_formed = bool(supplied) and " " not in supplied
+            well_formed = _BEARER_TOKEN.fullmatch(supplied) is not None
         supplied_digest = hashlib.sha256(supplied.encode("utf-8")).digest()
         matched: Principal | None = None
         # Fixed-length digests avoid text encoding errors and compare every position.
@@ -181,18 +192,23 @@ def create_app(repository: ErrorRepository, settings: ApiSettings) -> FastAPI:
             raise HTTPException(status_code=403, detail="insufficient scope")
         return principal
 
+    @app.middleware("http")
+    async def contain_internal_errors(
+        request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        try:
+            return await call_next(request)
+        except Exception:
+            _LOGGER.error("Error API request failed")
+            return JSONResponse(
+                status_code=500, content={"detail": "internal server error"}
+            )
+
     @app.exception_handler(RequestValidationError)
     async def validation_error(
         _request: Request, _error: RequestValidationError
     ) -> JSONResponse:
         return JSONResponse(status_code=422, content={"detail": "invalid request"})
-
-    @app.exception_handler(Exception)
-    async def internal_error(_request: Request, _error: Exception) -> JSONResponse:
-        _LOGGER.error("Error API request failed")
-        return JSONResponse(
-            status_code=500, content={"detail": "internal server error"}
-        )
 
     @app.get("/v1/health", response_model=HealthResponse)
     def health(
