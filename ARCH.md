@@ -136,8 +136,7 @@ For each text message:
    - An invalid stored ID falls back to uploading the local file and refreshes the stored ID.
    - Each post retains its own caption rather than being flattened into a media group with unrelated posts.
    - Requests are marked delivered only after Telegram confirms the send.
-7. Failed downloads or unsupported rendered items are summarized as chat messages.
-8. Telegram upload `TimedOut` errors are logged and reported to the user with a friendly timeout message.
+7. Download, rendering, and upload-timeout failures remain silent in Telegram while ordinary logging and request outcome persistence continue. Successful items from the same message are still delivered.
 
 ### Quiet-skip behavior
 
@@ -175,9 +174,8 @@ Download failures are normalized into:
 Each downloader translates its own typed internal errors and provider-specific
 `yt-dlp` messages into these domain failure reasons. Shared downloader support
 contains no provider-specific error strings. TikTok bot-detection failures are
-retried up to three times. If all attempts
-fail, the error is logged as a warning and produces a retry-later message instead
-of escaping the Telegram handler. An opt-in live smoke test in
+retried up to three times. If all attempts fail, the error is logged as a warning
+and remains silent in Telegram instead of escaping the handler. An opt-in live smoke test in
 `tests/e2e/test_tiktok_live.py` exercises one URL or a newline-delimited corpus
 from the current host/IP.
 

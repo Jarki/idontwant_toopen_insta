@@ -2,7 +2,6 @@ import asyncio
 import collections
 import datetime
 import logging
-from contextlib import suppress
 
 from telegram import Update
 from telegram.error import BadRequest, TimedOut
@@ -16,7 +15,7 @@ from telegram.ext import (
 )
 
 from . import error_reporter, judgmental as judgmental_module
-from .downloaders import DownloaderRegistry, DownloadFailureReason, UrlCandidate
+from .downloaders import DownloaderRegistry, UrlCandidate
 from .media_fetch import MediaFetchResult, MediaFetchService
 from .renderers import RendererRegistry, UnsupportedMediaError
 from .repository import models
@@ -155,19 +154,6 @@ class IgReelDownloaderApp:
                 "Unhandled Telegram update error",
                 extra={"event_code": "telegram.unexpected_handler"},
             )
-
-    def _format_download_error(
-        self,
-        reel_url: str,
-        failure_reason: DownloadFailureReason | None,
-    ) -> str:
-        if failure_reason == "auth":
-            return f"Could not download (auth expired): {reel_url}"
-        if failure_reason == "blocked":
-            return (
-                f"Download was temporarily blocked; please try again later: {reel_url}"
-            )
-        return f"Could not download {reel_url}"
 
     async def _get_media_items(
         self,
@@ -498,7 +484,6 @@ class IgReelDownloaderApp:
         )
 
         fetch_results = await self._get_media_items(candidates, media_request_ids)
-        errors: list[str] = []
         media_items: list[models.MediaItem] = []
         request_ids_by_media_object: dict[int, collections.deque[int]] = {}
         for request_id, result in zip(
@@ -506,20 +491,14 @@ class IgReelDownloaderApp:
             fetch_results,
             strict=True,
         ):
-            if result.skipped:
-                continue
-            if result.media is None:
-                errors.append(
-                    self._format_download_error(result.url, result.failure_reason)
-                )
-            else:
+            if result.media is not None:
                 media_items.append(result.media)
                 request_ids_by_media_object.setdefault(
                     id(result.media),
                     collections.deque(),
                 ).append(request_id)
 
-        if not media_items and not errors:
+        if not media_items:
             return
 
         if media_items:
@@ -550,9 +529,7 @@ class IgReelDownloaderApp:
                         )
                     )
                 except UnsupportedMediaError:
-                    errors.append(
-                        self._format_download_error(media.original_url, "unsupported")
-                    )
+                    continue
                 except Exception as exc:
                     self._report_unexpected_once(
                         exc,
@@ -590,13 +567,6 @@ class IgReelDownloaderApp:
                     "Timed out after partially sending media items",
                     extra={"event_code": "telegram.media_upload_timeout"},
                 )
-            chat = update.effective_chat
-            if chat is not None:
-                with suppress(TimedOut):
-                    await chat.send_message(
-                        "Timed out while uploading video(s) to Telegram. "
-                        "Some media may have been delivered."
-                    )
         except TimedOut:
             with error_reporter.bind_context(
                 media_request_ids=media_request_ids,
@@ -606,32 +576,11 @@ class IgReelDownloaderApp:
                     "Timed out while sending media items",
                     extra={"event_code": "telegram.media_upload_timeout"},
                 )
-            chat = update.effective_chat
-            if chat is not None:
-                with suppress(TimedOut):
-                    await chat.send_message(
-                        "Timed out while uploading video(s) to Telegram. "
-                        "The file may be large or the network may be slow."
-                    )
         else:
             await self._record_deliveries(
                 render_results,
                 request_ids_by_media_object,
             )
-            for render_result in render_results:
-                if not render_result.sent:
-                    errors.append(
-                        self._format_download_error(
-                            render_result.media.original_url,
-                            render_result.failure_reason,
-                        )
-                    )
-
-        if errors:
-            errors_text = "\n".join(errors)
-            chat = update.effective_chat
-            if chat is not None:
-                await chat.send_message(errors_text)
 
     def run(self) -> None:
         self.app.run_polling()

@@ -12,6 +12,7 @@ import pytest
 from ig_reel_downloader import app as app_module
 from ig_reel_downloader.downloaders import (
     DownloadContext,
+    DownloadFailureReason,
     MediaDownloadResult,
     ProviderItemRef,
     ResolvedMediaRequest,
@@ -477,9 +478,7 @@ def test_message_handler_uses_registry_fetch_service_renderer_and_sender(
     assert [request.provider_item_id for request in requests] == ["ABC123", "DEF456"]
     assert set(fetch_service.media_request_ids) == {100, 101}
     assert fetch_service.repository.delivered_request_ids == [100]
-    assert chat.sent_messages == [
-        "Could not download (auth expired): https://www.instagram.com/reel/DEF456"
-    ]
+    assert chat.sent_messages == []
     assert events[0] == "registry"
     assert set(events[1:-1]) == {f"fetch:{first_url}", f"fetch:{second_url}"}
     assert events[-1] == "sender"
@@ -680,7 +679,7 @@ def test_message_handler_does_not_mark_failed_send_as_delivered(
     asyncio.run(app._message_handler(FakeUpdate(url, chat), object()))
 
     assert fetch_service.repository.delivered_request_ids == []
-    assert chat.sent_messages == [f"Could not download {url}"]
+    assert chat.sent_messages == []
 
 
 def test_message_handler_records_deliveries_completed_before_timeout(
@@ -720,10 +719,41 @@ def test_message_handler_records_deliveries_completed_before_timeout(
     assert fetch_service.repository.updated_media_file_ids == [
         (second_media.id, 0, "partial-telegram-file-id")
     ]
-    assert chat.sent_messages == [
-        "Timed out while uploading video(s) to Telegram. "
-        "Some media may have been delivered."
-    ]
+    assert chat.sent_messages == []
+
+
+def test_message_handler_keeps_upload_timeout_silent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    url = "https://www.instagram.com/reel/ABC123"
+    media = make_media(url, "ABC123")
+    events: list[str] = []
+
+    class TimedOutSender(FakeSender):
+        async def send(
+            self,
+            update: FakeUpdate,
+            rendered_items: list[RenderedItem],
+        ) -> list[MediaRenderResult]:
+            del update, rendered_items
+            raise app_module.TimedOut("upload diagnostic")
+
+    fetch_service = FakeFetchService(
+        {url: MediaFetchResult(media=media, url=url)},
+        events,
+    )
+    app = build_app(
+        monkeypatch,
+        FakeRegistry([make_candidate(url, "ABC123")], events),
+        fetch_service,
+        TimedOutSender(events),
+    )
+    chat = FakeChat()
+
+    asyncio.run(app._message_handler(FakeUpdate(url, chat), object()))
+
+    assert fetch_service.repository.delivered_request_ids == []
+    assert chat.sent_messages == []
 
 
 def test_stats_command_shows_request_outcome_breakdown(
@@ -848,15 +878,28 @@ def test_message_handler_records_and_processes_userless_request(
     assert sender.media_items == [[media]]
 
 
-def test_message_handler_sends_auth_failure_error(
+@pytest.mark.parametrize(
+    "failure_reason", ["auth", "blocked", "unsupported", "unknown"]
+)
+def test_message_handler_keeps_download_failures_silent(
     monkeypatch: pytest.MonkeyPatch,
+    failure_reason: DownloadFailureReason,
 ) -> None:
-    url = "https://www.instagram.com/reel/ABC123"
+    url = (
+        "https://www.instagram.com/reel/ABC123"
+        "?error_reference=secret&traceback=diagnostic"
+    )
     candidate = make_candidate(url, "ABC123")
     events: list[str] = []
     registry = FakeRegistry([candidate], events)
     fetch_service = FakeFetchService(
-        {url: MediaFetchResult(media=None, url=url, failure_reason="auth")},
+        {
+            url: MediaFetchResult(
+                media=None,
+                url=url,
+                failure_reason=failure_reason,
+            )
+        },
         events,
     )
     sender = FakeSender(events)
@@ -865,33 +908,9 @@ def test_message_handler_sends_auth_failure_error(
 
     asyncio.run(app._message_handler(FakeUpdate(url, chat), object()))
 
-    assert sender.media_items == [[]]
-    assert chat.sent_messages == [
-        "Could not download (auth expired): https://www.instagram.com/reel/ABC123"
-    ]
-
-
-def test_message_handler_sends_temporary_block_message(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    url = "https://www.tiktok.com/@alice/video/7668090902816017671"
-    candidate = make_candidate(url, "7668090902816017671")
-    events: list[str] = []
-    registry = FakeRegistry([candidate], events)
-    fetch_service = FakeFetchService(
-        {url: MediaFetchResult(media=None, url=url, failure_reason="blocked")},
-        events,
-    )
-    sender = FakeSender(events)
-    app = build_app(monkeypatch, registry, fetch_service, sender)
-    chat = FakeChat()
-
-    asyncio.run(app._message_handler(FakeUpdate(url, chat), object()))
-
-    assert chat.sent_messages == [
-        "Download was temporarily blocked; please try again later: "
-        "https://www.tiktok.com/@alice/video/7668090902816017671"
-    ]
+    assert fetch_service.media_request_ids == [100]
+    assert sender.media_items == []
+    assert chat.sent_messages == []
 
 
 def test_message_handler_does_not_send_error_for_skipped_fetch_result(
