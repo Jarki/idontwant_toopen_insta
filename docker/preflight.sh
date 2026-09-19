@@ -61,9 +61,14 @@ validate_api_key() {
     local label_name="$2"
     local key="${!key_name:-}"
     local label="${!label_name:-}"
-    local LC_ALL=C
-    if [ -n "$key" ] && { [ ${#key} -lt 32 ] || [ ${#key} -gt 4096 ] || [[ "$key" =~ [[:space:]] ]] || [[ "$key" == *:* ]] || [[ "$key" == *[![:print:]]* ]]; }; then
-        echo "::error::FATAL: ${key_name} must be a 32-4096 character ASCII bearer token without whitespace or colons"
+    local key_pattern='^[A-Za-z0-9._~+/-]+=*$'
+    local label_pattern='^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$'
+    if [ -n "$key" ] && { [ ${#key} -lt 32 ] || [ ${#key} -gt 4096 ] || [[ ! "$key" =~ $key_pattern ]]; }; then
+        echo "::error::FATAL: ${key_name} is not a valid bounded Error API bearer token"
+        errors=$((errors + 1))
+    fi
+    if [ -n "$label" ] && [[ ! "$label" =~ $label_pattern ]]; then
+        echo "::error::FATAL: ${label_name} is not a valid Error API actor label"
         errors=$((errors + 1))
     fi
     if { [ -n "$key" ] && [ -z "$label" ]; } || { [ -z "$key" ] && [ -n "$label" ]; }; then

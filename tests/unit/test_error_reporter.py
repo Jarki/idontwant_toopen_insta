@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import logging
 import threading
@@ -543,6 +544,33 @@ def test_writer_failures_are_bounded_and_do_not_escape() -> None:
         reporter.stop()
 
     assert attempts == 3
+
+
+def test_failed_ledger_write_preserves_immediate_original_log() -> None:
+    output = io.StringIO()
+    stream = logging.StreamHandler(output)
+    failed = threading.Event()
+
+    def failing_writer(snapshot: error_reporter.ErrorSnapshot) -> None:
+        del snapshot
+        raise RuntimeError("database down")
+
+    reporter = error_reporter.ErrorReporter(
+        failing_writer,
+        retries=0,
+        fallback=lambda _: failed.set(),
+    )
+    logger = logging.Logger("docker-output")
+    logger.addHandler(stream)
+    logger.addHandler(reporter.handler)
+    try:
+        started = time.monotonic()
+        logger.error("original container error", extra={"event_code": "test.failure"})
+        assert time.monotonic() - started < 0.1
+        assert output.getvalue().strip() == "original container error"
+        assert failed.wait(1)
+    finally:
+        reporter.stop()
 
 
 def test_global_error_handler_logs_exception_with_stable_event(monkeypatch) -> None:

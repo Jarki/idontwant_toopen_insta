@@ -8,6 +8,9 @@ from typing import Any
 
 import pytest
 import yaml
+from pydantic import SecretStr
+
+from error_api.app import ApiSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BASE_COMPOSE = PROJECT_ROOT / "docker/compose.yaml"
@@ -143,11 +146,82 @@ def _run_preflight(
     )
 
 
-def test_preflight_accepts_consistent_configuration(tmp_path: Path) -> None:
-    result = _run_preflight(tmp_path, _environment())
+def _api_settings(values: dict[str, str]) -> ApiSettings:
+    def optional(name: str) -> str | None:
+        return values.get(name) or None
+
+    return ApiSettings(
+        read_key_current=SecretStr(values["ERROR_API_READ_KEY"]),
+        read_label_current=values["ERROR_API_READ_LABEL"],
+        read_key_next=(
+            SecretStr(value) if (value := optional("ERROR_API_READ_KEY_NEXT")) else None
+        ),
+        read_label_next=optional("ERROR_API_READ_LABEL_NEXT"),
+        triage_key_current=SecretStr(values["ERROR_API_TRIAGE_KEY"]),
+        triage_label_current=values["ERROR_API_TRIAGE_LABEL"],
+        triage_key_next=(
+            SecretStr(value)
+            if (value := optional("ERROR_API_TRIAGE_KEY_NEXT"))
+            else None
+        ),
+        triage_label_next=optional("ERROR_API_TRIAGE_LABEL_NEXT"),
+    )
+
+
+@pytest.mark.parametrize(
+    "rotation",
+    [
+        {},
+        {
+            "ERROR_API_READ_KEY_NEXT": "N" * 31 + "=",
+            "ERROR_API_READ_LABEL_NEXT": "reader.next-1",
+            "ERROR_API_TRIAGE_KEY_NEXT": "Z" * 4095 + "=",
+            "ERROR_API_TRIAGE_LABEL_NEXT": "operator_next-1",
+        },
+    ],
+)
+def test_every_preflight_accepted_key_configuration_is_runtime_valid(
+    tmp_path: Path, rotation: dict[str, str]
+) -> None:
+    values = {**_environment(), **rotation}
+    result = _run_preflight(tmp_path, values)
 
     assert result.returncode == 0, result.stdout + result.stderr
     assert "Preflight PASSED" in result.stdout
+    _api_settings(values)
+
+
+@pytest.mark.parametrize(
+    (("name", "value")),
+    [
+        ("ERROR_API_READ_KEY", "R" * 31 + "!"),
+        ("ERROR_API_READ_KEY", "R" * 31 + " "),
+        ("ERROR_API_READ_KEY", "R" * 4097),
+        ("ERROR_API_READ_KEY", "R" * 31 + "=R"),
+        ("ERROR_API_READ_LABEL", ".bad-first"),
+        ("ERROR_API_READ_LABEL", "bad label"),
+        ("ERROR_API_READ_LABEL", "L" * 129),
+        ("ERROR_API_READ_KEY_NEXT", "N" * 31 + "!"),
+        ("ERROR_API_READ_LABEL_NEXT", ".bad-next"),
+        ("ERROR_API_TRIAGE_KEY_NEXT", "T" * 31 + " "),
+        ("ERROR_API_TRIAGE_LABEL_NEXT", "bad next"),
+    ],
+)
+def test_preflight_rejects_runtime_invalid_key_configuration(
+    tmp_path: Path, name: str, value: str
+) -> None:
+    values = _environment()
+    values[name] = value
+    if name.endswith("_KEY_NEXT"):
+        values[name.replace("_KEY_NEXT", "_LABEL_NEXT")] = "rotation"
+    elif name.endswith("_LABEL_NEXT"):
+        values[name.replace("_LABEL_NEXT", "_KEY_NEXT")] = "N" * 32
+
+    result = _run_preflight(tmp_path, values)
+
+    assert result.returncode != 0
+    assert "Preflight FAILED" in result.stdout
+    assert value not in result.stdout + result.stderr
 
 
 @pytest.mark.parametrize(
