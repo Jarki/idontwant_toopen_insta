@@ -47,13 +47,17 @@ class ApiSettings(BaseModel):
     """Fail-closed secrets and non-secret audit labels."""
 
     model_config = ConfigDict(extra="forbid")
-    read_key_current: SecretStr = Field(min_length=32)
+    read_key_current: SecretStr = Field(min_length=32, max_length=4096)
     read_label_current: str
-    read_key_next: SecretStr | None = Field(default=None, min_length=32)
+    read_key_next: SecretStr | None = Field(
+        default=None, min_length=32, max_length=4096
+    )
     read_label_next: str | None = None
-    triage_key_current: SecretStr = Field(min_length=32)
+    triage_key_current: SecretStr = Field(min_length=32, max_length=4096)
     triage_label_current: str
-    triage_key_next: SecretStr | None = Field(default=None, min_length=32)
+    triage_key_next: SecretStr | None = Field(
+        default=None, min_length=32, max_length=4096
+    )
     triage_label_next: str | None = None
 
     @model_validator(mode="after")

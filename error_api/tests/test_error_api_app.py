@@ -203,6 +203,13 @@ def test_configuration_fails_closed() -> None:
                 triage_key_current=TRIAGE,
                 triage_label_current="operator",
             )
+    with pytest.raises(ValidationError):
+        ApiSettings(
+            read_key_current="r" * 4097,
+            read_label_current="reader",
+            triage_key_current=TRIAGE,
+            triage_label_current="operator",
+        )
 
 
 def test_repository_configures_checkout_timeouts(
@@ -446,6 +453,7 @@ def test_uvicorn_does_not_relog_handled_repository_details(
     _client, repository = api
     secret_note = "secret-note-value"
     sql = "INSERT INTO observability.error_notes"
+    maximum_key = "t" * 4096
 
     def fail(_occurrence_id: int, _note: str, _actor: str) -> None:
         raise RuntimeError(f"{sql} bound_note={secret_note}")
@@ -456,7 +464,7 @@ def test_uvicorn_does_not_relog_handled_repository_details(
         ApiSettings(
             read_key_current=READ,
             read_label_current="reader",
-            triage_key_current=TRIAGE,
+            triage_key_current=maximum_key,
             triage_label_current="operator",
         ),
     )
@@ -481,7 +489,7 @@ def test_uvicorn_does_not_relog_handled_repository_details(
         try:
             response = httpx.post(
                 f"http://127.0.0.1:{port}/v1/errors/ERR-1/notes",
-                headers=auth(TRIAGE),
+                headers=auth(maximum_key),
                 json={"note": secret_note},
                 timeout=2,
             )
