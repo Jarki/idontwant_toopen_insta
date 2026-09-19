@@ -399,7 +399,13 @@ def test_malformed_api_keys_fail_as_fixed_secret_free_configuration(
 
 @pytest.mark.parametrize(
     "url",
-    ["http://127.0.0.1:not-a-port", "http://127.0.0.1:0", "http://127.0.0.1:65536"],
+    [
+        "http://127.0.0.1:not-a-port",
+        "http://127.0.0.1:0",
+        "http://127.0.0.1:65536",
+        "http://:80",
+        "http:///missing-host",
+    ],
 )
 def test_invalid_url_ports_are_fixed_configuration_errors(
     url: str, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
@@ -417,6 +423,59 @@ def test_since_rejects_unbounded_or_malformed_durations(value: str) -> None:
     with pytest.raises(SystemExit) as error:
         cli._parser().parse_args(["errors", "list", "--since", value])
     assert error.value.code == cli.EXIT_CONFIG
+
+
+def test_blocked_resolver_obeys_deadline_without_lingering_worker(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(client_module, "_EXCHANGE_SECONDS", 0.1)
+
+    def blocked_resolver(
+        host: str,
+        port: int,
+        type: int,
+    ) -> list[tuple[int, int, int, str, tuple[object, ...]]]:
+        time.sleep(10)
+        return []
+
+    monkeypatch.setattr(client_module.socket, "getaddrinfo", blocked_resolver)
+    started = time.monotonic()
+    with pytest.raises(TransportError):
+        ErrorApiClient("http://blocked.invalid", KEY).show("ERR-1")
+    assert time.monotonic() - started < 0.5
+    assert not client_module.multiprocessing.active_children()
+
+
+def test_installed_cli_resolver_deadline(
+    tmp_path: Path,
+) -> None:
+    (tmp_path / "sitecustomize.py").write_text(
+        "import time\n"
+        "import bot_ops.client as client\n"
+        "client._EXCHANGE_SECONDS = 0.1\n"
+        "def blocked(*args, **kwargs):\n"
+        "    time.sleep(10)\n"
+        "    return []\n"
+        "client.socket.getaddrinfo = blocked\n",
+        encoding="utf-8",
+    )
+    started = time.monotonic()
+    result = subprocess.run(
+        ["uv", "run", "bot-ops", "errors", "show", "ERR-1"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=2,
+        env={
+            **os.environ,
+            "PYTHONPATH": str(tmp_path),
+            "ERROR_API_URL": "http://blocked.invalid",
+            "ERROR_API_KEY": KEY,
+        },
+    )
+    assert time.monotonic() - started < 1.5
+    assert result.returncode == cli.EXIT_TRANSPORT
+    assert KEY not in result.stdout + result.stderr
 
 
 @pytest.mark.parametrize(

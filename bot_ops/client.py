@@ -4,15 +4,17 @@ from __future__ import annotations
 
 import http.client
 import json
+import multiprocessing
 import re
 import socket
+import ssl
 import threading
 import time
 import urllib.parse
 from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
-from typing import Any, Literal, Protocol, TypeVar
+from typing import Any, Literal, Protocol, TypeVar, cast
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, ValidationError
 
@@ -130,6 +132,42 @@ class Transport(Protocol):
     ) -> Response: ...
 
 
+def _resolve_worker(host: str, port: int, sender: Any) -> None:
+    try:
+        sender.send(socket.getaddrinfo(host, port, type=socket.SOCK_STREAM))
+    except OSError:
+        sender.send(None)
+    finally:
+        sender.close()
+
+
+def _resolve_addresses(
+    host: str, port: int, timeout: float
+) -> list[tuple[int, int, int, str, tuple[Any, ...]]]:
+    receiver, sender = multiprocessing.Pipe(duplex=False)
+    process = multiprocessing.Process(
+        target=_resolve_worker, args=(host, port, sender), daemon=True
+    )
+    process.start()
+    sender.close()
+    try:
+        if not receiver.poll(timeout):
+            process.terminate()
+            process.join()
+            raise TransportError("Error API exchange timed out")
+        result = receiver.recv()
+    except (EOFError, OSError) as error:
+        raise TransportError("could not complete Error API exchange") from error
+    finally:
+        receiver.close()
+        if process.is_alive():
+            process.terminate()
+        process.join()
+    if result is None:
+        raise TransportError("could not complete Error API exchange")
+    return cast(list[tuple[int, int, int, str, tuple[Any, ...]]], result)
+
+
 class HttpTransport:
     """Single-exchange transport: no redirects, bounded bytes, total deadline."""
 
@@ -137,31 +175,63 @@ class HttpTransport:
         self, method: str, url: str, headers: Mapping[str, str], body: bytes | None
     ) -> Response:
         parsed = urllib.parse.urlsplit(url)
-        if parsed.hostname is None:
+        host = parsed.hostname
+        if host is None:
             raise TransportError("could not complete Error API exchange")
-        connection_type = (
-            http.client.HTTPSConnection
-            if parsed.scheme == "https"
-            else http.client.HTTPConnection
-        )
         deadline = time.monotonic() + _EXCHANGE_SECONDS
         try:
-            port = parsed.port
+            port = parsed.port or (443 if parsed.scheme == "https" else 80)
         except ValueError as error:
             raise TransportError("could not complete Error API exchange") from error
-        connection = connection_type(parsed.hostname, port, timeout=_EXCHANGE_SECONDS)
+        addresses = _resolve_addresses(host, port, _EXCHANGE_SECONDS)
+        active_socket: socket.socket | None = None
+        last_error: OSError | None = None
+        for family, socktype, proto, _canonical_name, address in addresses:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TransportError("Error API exchange timed out")
+            candidate = socket.socket(family, socktype, proto)
+            candidate.settimeout(remaining)
+            try:
+                candidate.connect(address)
+                active_socket = candidate
+                break
+            except OSError as error:
+                last_error = error
+                candidate.close()
+        if active_socket is None:
+            raise TransportError(
+                "could not complete Error API exchange"
+            ) from last_error
+        if parsed.scheme == "https":
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                active_socket.close()
+                raise TransportError("Error API exchange timed out")
+            active_socket.settimeout(remaining)
+            try:
+                active_socket = ssl.create_default_context().wrap_socket(
+                    active_socket, server_hostname=host
+                )
+            except (OSError, ssl.SSLError) as error:
+                active_socket.close()
+                raise TransportError("could not complete Error API exchange") from error
+        connection = http.client.HTTPConnection(host, port, timeout=_EXCHANGE_SECONDS)
+        connection.sock = active_socket
         target = parsed.path or "/"
         if parsed.query:
             target += "?" + parsed.query
 
         def abort_exchange() -> None:
-            active_socket = connection.sock
-            if active_socket is not None:
+            current_socket = connection.sock
+            if current_socket is not None:
                 with suppress(OSError):
-                    active_socket.shutdown(socket.SHUT_RDWR)
+                    current_socket.shutdown(socket.SHUT_RDWR)
             connection.close()
 
-        watchdog = threading.Timer(_EXCHANGE_SECONDS, abort_exchange)
+        watchdog = threading.Timer(
+            max(0.0, deadline - time.monotonic()), abort_exchange
+        )
         watchdog.daemon = True
         watchdog.start()
         try:
@@ -212,10 +282,11 @@ class ErrorApiClient:
                 "ERROR_API_URL must not contain credentials, query, or fragment"
             )
         try:
+            hostname = parsed.hostname
             port = parsed.port
         except ValueError as error:
             raise ValueError("ERROR_API_URL is invalid") from error
-        if port is not None and not 1 <= port <= 65535:
+        if hostname is None or (port is not None and not 1 <= port <= 65535):
             raise ValueError("ERROR_API_URL is invalid")
         try:
             key_bytes = api_key.encode("ascii")
