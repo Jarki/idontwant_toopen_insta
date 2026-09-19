@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import datetime as dt
 import logging
+import os
 import socket
+import subprocess
 import threading
 import time
 
@@ -444,6 +446,59 @@ def test_internal_errors_and_logs_do_not_disclose_secrets(
     assert READ not in combined
     assert "Authorization" not in combined
     assert "internal SQL" not in combined
+
+
+def test_bot_ops_client_against_private_api_http_runtime(
+    api: tuple[TestClient, FakeRepository],
+) -> None:
+    _client, repository = api
+    app = create_app(
+        repository,
+        ApiSettings(
+            read_key_current=READ,
+            read_label_current="reader",
+            triage_key_current=TRIAGE,
+            triage_label_current="operator",
+        ),
+    )
+    server_socket = socket.socket()
+    server_socket.bind(("127.0.0.1", 0))
+    server_socket.listen()
+    port = int(server_socket.getsockname()[1])
+    server = uvicorn.Server(
+        uvicorn.Config(app, log_config=None, access_log=False, lifespan="off")
+    )
+    thread = threading.Thread(
+        target=server.run,
+        kwargs={"sockets": [server_socket]},
+        daemon=True,
+    )
+    thread.start()
+    for _ in range(100):
+        if server.started:
+            break
+        time.sleep(0.01)
+    try:
+        result = subprocess.run(
+            ["uv", "run", "bot-ops", "errors", "show", "ERR-1"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5,
+            env={
+                **os.environ,
+                "ERROR_API_URL": f"http://127.0.0.1:{port}",
+                "ERROR_API_KEY": READ,
+            },
+        )
+    finally:
+        server.should_exit = True
+        thread.join(timeout=2)
+        server_socket.close()
+
+    assert result.returncode == 0
+    assert "display_name: Downloader failed" in result.stdout
+    assert READ not in result.stdout + result.stderr
 
 
 def test_uvicorn_does_not_relog_handled_repository_details(
