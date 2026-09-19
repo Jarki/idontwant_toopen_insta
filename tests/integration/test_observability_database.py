@@ -560,6 +560,29 @@ def test_restricted_repository_reads_and_writes_only_approved_data(
     assert [item.note for item in notes.items] == ["Verified correction"]
 
 
+def test_restricted_repository_enforces_statement_timeout(
+    engines: dict[str, Engine],
+    database_urls: dict[str, str],
+) -> None:
+    occurrence_id = _record(engines["bot"], _event("timeout-fingerprint"))
+    repository = PostgreSQLErrorRepository(
+        database_urls["error_api"], statement_timeout_ms=100
+    )
+
+    with engines["migration"].begin() as connection:
+        connection.execute(
+            text(
+                "SELECT id FROM observability.error_groups "
+                "WHERE fingerprint = 'timeout-fingerprint' FOR UPDATE"
+            )
+        ).scalar_one()
+        with pytest.raises(DBAPIError, match="statement timeout"):
+            repository.update_group(
+                occurrence_id,
+                ErrorPatch(status="investigating"),
+            )
+
+
 def test_error_api_migration_rerun_repairs_stale_direct_grants(
     engines: dict[str, Engine],
     database_urls: dict[str, str],

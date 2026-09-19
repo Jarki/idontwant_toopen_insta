@@ -93,28 +93,30 @@ class PostgreSQLErrorRepository:
                  ORDER BY occurrences.occurred_at ASC, occurrences.id ASC LIMIT 1
                 ) AS first_post_fix_occurrence_id
             FROM observability.api_error_groups AS groups
-            WHERE (:status IS NULL OR groups.status = :status)
-              AND (:event_code IS NULL OR groups.event_code = :event_code)
-              AND (:seen_from IS NULL OR groups.last_seen_at >= :seen_from)
-              AND (:seen_to IS NULL OR groups.first_seen_at <= :seen_to)
-              AND NOT (:seen_from IS NOT NULL AND :seen_to IS NOT NULL
-                       AND :seen_from > :seen_to)
+            WHERE (CAST(:status AS text) IS NULL
+                   OR groups.status = CAST(:status AS text))
+              AND (CAST(:event_code AS text) IS NULL
+                   OR groups.event_code = CAST(:event_code AS text))
+              AND (CAST(:seen_from AS timestamptz) IS NULL
+                   OR groups.last_seen_at >= CAST(:seen_from AS timestamptz))
+              AND (CAST(:seen_to AS timestamptz) IS NULL
+                   OR groups.first_seen_at <= CAST(:seen_to AS timestamptz))
               AND (CAST(:provider AS text) IS NULL OR EXISTS (
                     SELECT 1 FROM observability.api_error_occurrences AS occurrence
                     WHERE occurrence.error_group_id = groups.id
-                      AND occurrence.provider = :provider))
+                      AND occurrence.provider = CAST(:provider AS text)))
               AND (CAST(:severity AS text) IS NULL OR EXISTS (
                     SELECT 1 FROM observability.api_error_occurrences AS occurrence
                     WHERE occurrence.error_group_id = groups.id
-                      AND occurrence.severity = :severity))
+                      AND occurrence.severity = CAST(:severity AS text)))
               AND (CAST(:component AS text) IS NULL OR EXISTS (
                     SELECT 1 FROM observability.api_error_occurrences AS occurrence
                     WHERE occurrence.error_group_id = groups.id
-                      AND occurrence.component = :component))
+                      AND occurrence.component = CAST(:component AS text)))
               AND (CAST(:release AS text) IS NULL OR EXISTS (
                     SELECT 1 FROM observability.api_error_occurrences AS occurrence
                     WHERE occurrence.error_group_id = groups.id
-                      AND occurrence.release = :release))
+                      AND occurrence.release = CAST(:release AS text)))
             ORDER BY groups.last_seen_at DESC, groups.id DESC
             LIMIT :fetch_limit OFFSET :offset
         """)
@@ -263,7 +265,8 @@ class PostgreSQLErrorRepository:
 
     def list_notes(self, occurrence_id: int, page: PageRequest) -> NotePage | None:
         statement = text("""
-            SELECT note.* FROM observability.api_error_notes AS note
+            SELECT note.id, note.note, note.actor, note.created_at
+            FROM observability.api_error_notes AS note
             WHERE note.error_group_id = (
                 SELECT anchor.error_group_id FROM observability.api_error_occurrences AS anchor
                 WHERE anchor.id = :occurrence_id)
@@ -295,29 +298,47 @@ class PostgreSQLErrorRepository:
         return NotePage(items=items, next_cursor=cursor)
 
     def update_group(self, occurrence_id: int, patch: ErrorPatch) -> ErrorGroup | None:
-        supplied = patch.model_fields_set
-        statement = text("""
-            UPDATE observability.error_groups SET
-                display_name = CASE WHEN :set_display_name THEN :display_name ELSE display_name END,
-                status = CASE WHEN :set_status THEN :status ELSE status END,
-                linked_change = CASE WHEN :set_linked_change THEN :linked_change ELSE linked_change END,
-                fixed_at = CASE WHEN :set_fixed_at THEN :fixed_at ELSE fixed_at END
-            WHERE id = (SELECT anchor.error_group_id
-                        FROM observability.api_error_occurrences AS anchor
-                        WHERE anchor.id = :occurrence_id)
-            RETURNING id
-        """)
-        params = patch.model_dump()
-        params.update(
-            occurrence_id=occurrence_id,
-            set_display_name="display_name" in supplied,
-            set_status="status" in supplied,
-            set_linked_change="linked_change" in supplied,
-            set_fixed_at="fixed_at" in supplied,
-        )
+        statements = {
+            "display_name": text("""
+                UPDATE observability.error_groups SET display_name = :value
+                WHERE id = (SELECT anchor.error_group_id
+                            FROM observability.api_error_occurrences AS anchor
+                            WHERE anchor.id = :occurrence_id)
+                RETURNING id
+            """),
+            "status": text("""
+                UPDATE observability.error_groups SET status = :value
+                WHERE id = (SELECT anchor.error_group_id
+                            FROM observability.api_error_occurrences AS anchor
+                            WHERE anchor.id = :occurrence_id)
+                RETURNING id
+            """),
+            "linked_change": text("""
+                UPDATE observability.error_groups SET linked_change = :value
+                WHERE id = (SELECT anchor.error_group_id
+                            FROM observability.api_error_occurrences AS anchor
+                            WHERE anchor.id = :occurrence_id)
+                RETURNING id
+            """),
+            "fixed_at": text("""
+                UPDATE observability.error_groups SET fixed_at = :value
+                WHERE id = (SELECT anchor.error_group_id
+                            FROM observability.api_error_occurrences AS anchor
+                            WHERE anchor.id = :occurrence_id)
+                RETURNING id
+            """),
+        }
+        values = patch.model_dump()
+        changed: int | None = None
         connection, transaction = self._timeout_connection()
         try:
-            changed = connection.execute(statement, params).scalar_one_or_none()
+            for field in patch.model_fields_set:
+                changed = connection.execute(
+                    statements[field],
+                    {"occurrence_id": occurrence_id, "value": values[field]},
+                ).scalar_one_or_none()
+                if changed is None:
+                    break
             row = (
                 self._group_row(connection, occurrence_id)
                 if changed is not None
@@ -333,17 +354,25 @@ class PostgreSQLErrorRepository:
             INSERT INTO observability.error_notes (error_group_id, note, actor, created_at)
             SELECT anchor.error_group_id, :note, :actor, CURRENT_TIMESTAMP
             FROM observability.api_error_occurrences AS anchor WHERE anchor.id = :occurrence_id
-            RETURNING id, note, actor, created_at
         """)
         connection, transaction = self._timeout_connection()
         try:
+            inserted = connection.execute(
+                statement,
+                {"occurrence_id": occurrence_id, "note": note, "actor": actor},
+            )
             row = (
                 connection.execute(
-                    statement,
-                    {"occurrence_id": occurrence_id, "note": note, "actor": actor},
+                    text("""
+                        SELECT id, note, actor, created_at
+                        FROM observability.api_error_notes
+                        WHERE id = currval('observability.error_notes_id_seq')
+                    """)
                 )
                 .mappings()
-                .one_or_none()
+                .one()
+                if inserted.rowcount == 1
+                else None
             )
             transaction.commit()
         finally:
