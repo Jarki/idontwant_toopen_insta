@@ -59,7 +59,9 @@ class PostgreSQLErrorRepository:
     def health(self) -> None:
         connection, transaction = self._timeout_connection()
         try:
-            connection.execute(text("SELECT 1")).scalar_one()
+            connection.execute(
+                text("SELECT 1 FROM observability.api_error_groups LIMIT 1")
+            ).all()
             transaction.commit()
         finally:
             connection.close()

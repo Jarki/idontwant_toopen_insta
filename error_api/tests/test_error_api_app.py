@@ -242,6 +242,33 @@ def test_repository_configures_checkout_timeouts(
     }
 
 
+def test_repository_health_requires_curated_observability_read() -> None:
+    statements: list[str] = []
+
+    class Result:
+        def all(self) -> list[object]:
+            return []
+
+    class Connection:
+        def execute(self, statement: object) -> Result:
+            statements.append(str(statement))
+            return Result()
+
+        def close(self) -> None:
+            pass
+
+    class Transaction:
+        def commit(self) -> None:
+            pass
+
+    repository = object.__new__(PostgreSQLErrorRepository)
+    repository._timeout_connection = lambda: (Connection(), Transaction())  # type: ignore[method-assign]
+
+    repository.health()
+
+    assert statements == ["SELECT 1 FROM observability.api_error_groups LIMIT 1"]
+
+
 def test_authentication_rotation_and_scopes(
     api: tuple[TestClient, FakeRepository],
 ) -> None:

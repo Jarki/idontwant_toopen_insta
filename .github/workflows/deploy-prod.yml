@@ -213,7 +213,7 @@ jobs:
             -p ig-reel-downloader-prod \
             -f docker/compose.yaml \
             -f docker/compose.prod.yaml \
-            up -d --remove-orphans downloader error-api
+            up -d --wait --wait-timeout 90 --remove-orphans downloader error-api
 
       - name: Show status
         env:

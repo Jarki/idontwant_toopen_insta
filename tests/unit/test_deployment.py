@@ -104,6 +104,18 @@ def test_compose_enforces_migration_gates_and_private_network_surface() -> None:
     assert "DB_MIGRATION_URL" not in services["downloader"]["environment"]
     assert "ERROR_API_READ_KEY" not in services["downloader"]["environment"]
     assert "BOT_TOKEN" not in services["error-api"]["environment"]
+    healthcheck = services["error-api"]["healthcheck"]
+    health_command = healthcheck["test"][1]
+    assert "/v1/health" in health_command
+    assert 'os.environ["ERROR_API_READ_KEY"]' in health_command
+    assert _environment()["ERROR_API_READ_KEY"] not in health_command
+    assert healthcheck == {
+        "test": healthcheck["test"],
+        "timeout": "6s",
+        "interval": "10s",
+        "retries": 6,
+        "start_period": "5s",
+    }
 
 
 @pytest.mark.parametrize(
@@ -278,3 +290,5 @@ def test_deployment_workflows_start_both_runtimes_and_prod_runs_both_gates() -> 
     assert any(
         "run --rm error-api-migrate" in step.get("run", "") for step in prod_steps
     )
+    assert "--wait --wait-timeout 90" in dev_start["run"]
+    assert "--wait --wait-timeout 90" in prod_start["run"]
