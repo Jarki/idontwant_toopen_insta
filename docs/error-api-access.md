@@ -68,6 +68,58 @@ The current design supports at most two simultaneously valid keys per scope duri
 
 4. Give each client only the API URL and the least-privileged key it needs. Never provide database credentials or the deployment `.env` file.
 
+## Publish the API to the tailnet
+
+Compose binds the Error API only to the deployment host's loopback interface.
+For dev, the default listener is `http://127.0.0.1:8001`; use the configured
+`ERROR_API_HOST_PORT` instead if it was overridden.
+
+Run these commands on the deployment host:
+
+1. Inspect existing Serve configuration before changing it:
+
+   ```bash
+   tailscale serve status
+   ```
+
+   If HTTPS port 443 already serves another application, do not overwrite that
+   configuration. Choose an unused HTTPS port or intentionally add a separate
+   path according to the host's existing Serve layout.
+
+2. Publish the dev listener as persistent, tailnet-only HTTPS:
+
+   ```bash
+   sudo tailscale serve --bg --https=443 http://127.0.0.1:8001
+   ```
+
+3. Read the generated tailnet URL:
+
+   ```bash
+   tailscale serve status
+   ```
+
+   The output includes a URL such as:
+
+   ```text
+   https://dev-pi.example-tailnet.ts.net
+   ```
+
+   Use that complete origin as `ERROR_API_URL`. If Serve uses a non-default
+   HTTPS port, retain the port in the URL.
+
+4. Restrict the hostname to the required operator and agent identities with
+   tailnet ACLs or grants. The bearer key remains mandatory as a second access
+   boundary.
+
+Use `tailscale serve`, never `tailscale funnel`. Funnel would make the service
+publicly reachable. Do not change Compose to bind the Error API to a public
+host interface. The `--bg` flag makes the Serve configuration survive host and
+Tailscale restarts.
+
+Tailscale Serve is host configuration, not part of the Compose deployment.
+Configure it once per host and recheck it when the local port or tailnet
+hostname changes.
+
 ## Configure a client
 
 Set the private HTTPS endpoint and one scoped key on the operator or agent machine:

@@ -184,16 +184,13 @@ mark-fixed operations. Generate high-entropy keys, give each a non-secret audit
 label, and never share database credentials with agents.
 
 See [Error API access](docs/error-api-access.md) for credential issuance,
-client setup, rotation, revocation, and validation rules.
-
-To expose the loopback listener to the tailnet, configure Tailscale Serve on the
-host (for example, forward a tailnet HTTPS name to
-`http://127.0.0.1:8000`). Do not change Compose to a public bind. Tailnet ACLs
-should allow only the agent identities that need the API, while the API key
-remains mandatory as a second boundary.
+Tailscale Serve setup and URL discovery, client setup, rotation, revocation,
+and validation rules. Compose keeps the API on a loopback bind; do not change
+it to a public bind. Tailnet ACLs should allow only the agent identities that
+need the API, while the API key remains mandatory as a second boundary.
 
 For key rotation, add a new key and label to the matching `*_KEY_NEXT` and
-`*_LABEL_NEXT` pair, restart only `error-api`, move clients to the next key,
+`*_LABEL_NEXT` pair, recreate only `error-api`, move clients to the next key,
 then promote it to the current pair and clear the next pair. Read and triage
 keys must stay distinct. Rotation does not require a migration or bot restart.
 
