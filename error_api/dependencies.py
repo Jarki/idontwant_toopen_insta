@@ -34,5 +34,4 @@ def require_triage(principal: AuthenticatedPrincipal) -> Principal:
     return principal
 
 
-RepositoryDependency = Annotated[ErrorRepository, Depends(get_repository)]
 TriagePrincipal = Annotated[Principal, Depends(require_triage)]

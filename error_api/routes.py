@@ -5,14 +5,15 @@ from __future__ import annotations
 import re
 from typing import Annotated
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import AwareDatetime
 
 from .dependencies import (
     AuthenticatedPrincipal,
-    RepositoryDependency,
     TriagePrincipal,
+    get_repository,
 )
+from .repository.base import ErrorRepository
 from .schemas import (
     ErrorFilters,
     ErrorGroup,
@@ -63,7 +64,7 @@ def _page(
 
 @router.get("/health", response_model=HealthResponse)
 def health(
-    repository: RepositoryDependency,
+    repository: Annotated[ErrorRepository, Depends(get_repository)],
     _principal: AuthenticatedPrincipal,
 ) -> HealthResponse:
     repository.health()
@@ -72,7 +73,7 @@ def health(
 
 @router.get("/errors", response_model=ErrorGroupPage)
 def list_errors(
-    repository: RepositoryDependency,
+    repository: Annotated[ErrorRepository, Depends(get_repository)],
     _principal: AuthenticatedPrincipal,
     status_filter: Annotated[Status | None, Query(alias="status")] = None,
     provider: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
@@ -103,7 +104,7 @@ def list_errors(
 @router.get("/errors/{reference}", response_model=ErrorGroup)
 def get_error(
     reference: str,
-    repository: RepositoryDependency,
+    repository: Annotated[ErrorRepository, Depends(get_repository)],
     _principal: AuthenticatedPrincipal,
 ) -> ErrorGroup:
     result = repository.get_group_for_occurrence(_reference_id(reference))
@@ -115,7 +116,7 @@ def get_error(
 @router.get("/errors/{reference}/occurrences", response_model=OccurrencePage)
 def occurrences(
     reference: str,
-    repository: RepositoryDependency,
+    repository: Annotated[ErrorRepository, Depends(get_repository)],
     _principal: AuthenticatedPrincipal,
     limit: Annotated[int, Query(ge=1, le=10)] = 10,
     cursor: str | None = None,
@@ -131,7 +132,7 @@ def occurrences(
 @router.get("/errors/{reference}/reproduction-cases", response_model=ReproductionPage)
 def reproduction_cases(
     reference: str,
-    repository: RepositoryDependency,
+    repository: Annotated[ErrorRepository, Depends(get_repository)],
     _principal: AuthenticatedPrincipal,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: str | None = None,
@@ -148,7 +149,7 @@ def reproduction_cases(
 @router.get("/errors/{reference}/notes", response_model=NotePage)
 def notes(
     reference: str,
-    repository: RepositoryDependency,
+    repository: Annotated[ErrorRepository, Depends(get_repository)],
     _principal: AuthenticatedPrincipal,
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: str | None = None,
@@ -165,7 +166,7 @@ def notes(
 def patch_error(
     reference: str,
     patch: ErrorPatch,
-    repository: RepositoryDependency,
+    repository: Annotated[ErrorRepository, Depends(get_repository)],
     _principal: TriagePrincipal,
 ) -> ErrorGroup:
     result = repository.update_group(_reference_id(reference), patch)
@@ -178,7 +179,7 @@ def patch_error(
 def create_note(
     reference: str,
     request: NoteCreate,
-    repository: RepositoryDependency,
+    repository: Annotated[ErrorRepository, Depends(get_repository)],
     principal: TriagePrincipal,
 ) -> ErrorNote:
     result = repository.add_note(
