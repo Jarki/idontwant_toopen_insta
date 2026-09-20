@@ -15,10 +15,11 @@ import uvicorn
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from error_api import app as app_module
-from error_api.app import ApiSettings, create_app
+from error_api.app import create_app
+from error_api.config import ApiSettings
 from error_api.repository import postgres as postgres_module
-from error_api.repository.models import (
+from error_api.repository.postgres import PostgreSQLErrorRepository
+from error_api.schemas import (
     ErrorFilters,
     ErrorGroup,
     ErrorGroupPage,
@@ -32,7 +33,6 @@ from error_api.repository.models import (
     ReproductionPage,
     encode_cursor,
 )
-from error_api.repository.postgres import PostgreSQLErrorRepository
 
 NOW = dt.datetime(2026, 9, 19, tzinfo=dt.UTC)
 READ = "read-key-that-is-at-least-thirty-two-characters"
@@ -459,10 +459,7 @@ def test_unauthorized_mutation_is_rejected_without_reading_body(
     assert sent[0]["status"] == expected
 
 
-def test_authenticated_slow_mutation_body_times_out(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(app_module, "_BODY_READ_TIMEOUT_SECONDS", 0.01)
+def test_authenticated_slow_mutation_body_times_out() -> None:
     application = create_app(
         FakeRepository(),
         ApiSettings(
@@ -471,6 +468,7 @@ def test_authenticated_slow_mutation_body_times_out(
             triage_key_current=TRIAGE,
             triage_label_current="operator",
         ),
+        body_read_timeout_seconds=0.01,
     )
     scope = {
         "type": "http",

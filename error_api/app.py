@@ -1,270 +1,35 @@
-"""FastAPI application for bounded private error-ledger access."""
+"""FastAPI application factory for the private error ledger."""
 
-import asyncio
-import hashlib
-import hmac
-import logging
-import re
-from dataclasses import dataclass
-from typing import Annotated, Literal
+from __future__ import annotations
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, status
+from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
-from pydantic import (
-    AwareDatetime,
-    BaseModel,
-    ConfigDict,
-    Field,
-    SecretStr,
-    model_validator,
-)
-from starlette.middleware.base import RequestResponseEndpoint
-from starlette.responses import Response
-from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from starlette.middleware.authentication import AuthenticationMiddleware
 
+from .auth import ApiKeyAuthenticationBackend
+from .config import ApiSettings
+from .middleware import (
+    DEFAULT_BODY_READ_TIMEOUT_SECONDS,
+    MAX_MUTATION_BODY_BYTES,
+    InternalErrorMiddleware,
+    MutationBodyLimitMiddleware,
+)
 from .repository.base import ErrorRepository
-from .repository.models import (
-    ErrorFilters,
-    ErrorGroup,
-    ErrorGroupPage,
-    ErrorNote,
-    ErrorPatch,
-    NoteCreate,
-    NotePage,
-    OccurrencePage,
-    PageRequest,
-    ReproductionPage,
-    Severity,
-    Status,
-    decode_cursor,
-)
-
-_LOGGER = logging.getLogger("error_api")
-_REFERENCE = re.compile(r"ERR-([1-9][0-9]{0,18})\Z")
-_LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
-_BEARER_TOKEN = re.compile(r"[A-Za-z0-9\-._~+/]+=*\Z")
-_MUTATION_PATH = re.compile(r"/v1/errors/[^/]+(?:/notes)?\Z")
-_BODY_READ_TIMEOUT_SECONDS = 2.0
-
-_MAX_MUTATION_BODY_BYTES = 32_768
+from .routes import router
 
 
-@dataclass(frozen=True)
-class Principal:
-    label: str
-    scope: Literal["read", "triage"]
+async def _validation_error(_request: Request, _error: Exception) -> JSONResponse:
+    return JSONResponse(status_code=422, content={"detail": "invalid request"})
 
 
-class RequestBodyLimitMiddleware:
-    def __init__(
-        self,
-        app: ASGIApp,
-        max_body_bytes: int,
-        body_timeout_seconds: float,
-        credentials: tuple[tuple[bytes, Principal], ...],
-    ) -> None:
-        self._app = app
-        self._max_body_bytes = max_body_bytes
-        self._body_timeout_seconds = body_timeout_seconds
-        self._credentials = credentials
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http" or not self._is_mutation(scope):
-            await self._app(scope, receive, send)
-            return
-        authorization = next(
-            (
-                value.decode("latin-1")
-                for name, value in scope["headers"]
-                if name.lower() == b"authorization"
-            ),
-            None,
-        )
-        principal = _match_principal(authorization, self._credentials)
-        if principal is None:
-            await self._reject(send, 401, "invalid credentials", authenticate=True)
-            return
-        if principal.scope != "triage":
-            await self._reject(send, 403, "insufficient scope")
-            return
-        for name, value in scope["headers"]:
-            if name.lower() != b"content-length":
-                continue
-            try:
-                declared = int(value)
-            except ValueError:
-                continue
-            if declared > self._max_body_bytes:
-                await self._reject(send, 413, "request body too large")
-                return
-
-        body = bytearray()
-        disconnected = False
-        try:
-            async with asyncio.timeout(self._body_timeout_seconds):
-                while True:
-                    message = await receive()
-                    if message["type"] == "http.disconnect":
-                        disconnected = True
-                        break
-                    if message["type"] != "http.request":
-                        continue
-                    chunk = message.get("body", b"")
-                    if len(body) + len(chunk) > self._max_body_bytes:
-                        await self._reject(send, 413, "request body too large")
-                        return
-                    body.extend(chunk)
-                    if not message.get("more_body", False):
-                        break
-        except TimeoutError:
-            await self._reject(send, 408, "request body timed out")
-            return
-
-        replayed = False
-
-        async def replay_receive() -> Message:
-            nonlocal replayed
-            if not replayed:
-                replayed = True
-                if disconnected:
-                    return {"type": "http.disconnect"}
-                return {
-                    "type": "http.request",
-                    "body": bytes(body),
-                    "more_body": False,
-                }
-            return {"type": "http.request", "body": b"", "more_body": False}
-
-        await self._app(scope, replay_receive, send)
-
-    @staticmethod
-    def _is_mutation(scope: Scope) -> bool:
-        method = scope["method"]
-        path = scope["path"]
-        is_note = path.endswith("/notes")
-        return _MUTATION_PATH.fullmatch(path) is not None and (
-            (method == "PATCH" and not is_note) or (method == "POST" and is_note)
-        )
-
-    @staticmethod
-    async def _reject(
-        send: Send, status_code: int, detail: str, *, authenticate: bool = False
-    ) -> None:
-        body = ('{"detail":"' + detail + '"}').encode()
-        headers = [
-            (b"content-type", b"application/json"),
-            (b"content-length", str(len(body)).encode("ascii")),
-        ]
-        if authenticate:
-            headers.append((b"www-authenticate", b"Bearer"))
-        await send(
-            {
-                "type": "http.response.start",
-                "status": status_code,
-                "headers": headers,
-            }
-        )
-        await send({"type": "http.response.body", "body": body})
-
-
-class ApiSettings(BaseModel):
-    """Fail-closed secrets and non-secret audit labels."""
-
-    model_config = ConfigDict(extra="forbid")
-    read_key_current: SecretStr = Field(min_length=32, max_length=4096)
-    read_label_current: str
-    read_key_next: SecretStr | None = Field(
-        default=None, min_length=32, max_length=4096
-    )
-    read_label_next: str | None = None
-    triage_key_current: SecretStr = Field(min_length=32, max_length=4096)
-    triage_label_current: str
-    triage_key_next: SecretStr | None = Field(
-        default=None, min_length=32, max_length=4096
-    )
-    triage_label_next: str | None = None
-
-    @model_validator(mode="after")
-    def validate_credentials(self) -> "ApiSettings":
-        pairs = (
-            (self.read_key_current, self.read_label_current),
-            (self.read_key_next, self.read_label_next),
-            (self.triage_key_current, self.triage_label_current),
-            (self.triage_key_next, self.triage_label_next),
-        )
-        secrets: list[str] = []
-        for key, label in pairs:
-            if (key is None) != (label is None):
-                raise ValueError("each configured key requires exactly one label")
-            if label is not None and _LABEL.fullmatch(label) is None:
-                raise ValueError("credential labels must be non-secret identifiers")
-            if key is not None:
-                secret = key.get_secret_value()
-                try:
-                    secret.encode("ascii")
-                except UnicodeEncodeError as error:
-                    raise ValueError(
-                        "API credentials must contain only ASCII"
-                    ) from error
-                if _BEARER_TOKEN.fullmatch(secret) is None:
-                    raise ValueError("API credentials must be valid bearer tokens")
-                secrets.append(secret)
-        if len(secrets) != len(set(secrets)):
-            raise ValueError("API credentials must be distinct")
-        return self
-
-
-def _match_principal(
-    authorization: str | None,
-    configured: tuple[tuple[bytes, Principal], ...],
-) -> Principal | None:
-    supplied = ""
-    well_formed = False
-    if authorization is not None and authorization.startswith("Bearer "):
-        supplied = authorization[7:]
-        well_formed = _BEARER_TOKEN.fullmatch(supplied) is not None
-    supplied_digest = hashlib.sha256(supplied.encode("utf-8")).digest()
-    matched: Principal | None = None
-    for secret_digest, principal in configured:
-        if hmac.compare_digest(supplied_digest, secret_digest):
-            matched = principal
-    return matched if well_formed else None
-
-
-class HealthResponse(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    status: Literal["ok"] = "ok"
-
-
-def parse_reference(reference: str) -> int:
-    match = _REFERENCE.fullmatch(reference)
-    if match is None:
-        raise HTTPException(status_code=404, detail="error not found")
-    occurrence_id = int(match.group(1))
-    if occurrence_id > 9_223_372_036_854_775_807:
-        raise HTTPException(status_code=404, detail="error not found")
-    return occurrence_id
-
-
-def _page(
-    limit: int, cursor: str | None, kind: str, *, tiebreaker: bool = False
-) -> PageRequest:
-    if cursor is None:
-        return PageRequest(limit=limit)
-    try:
-        when, identifier, tie = decode_cursor(cursor, kind, tiebreaker=tiebreaker)
-    except ValueError as error:
-        raise HTTPException(status_code=422, detail="invalid cursor") from error
-    return PageRequest(
-        limit=limit,
-        cursor_time=when,
-        cursor_id=identifier,
-        cursor_tiebreaker=tie,
-    )
-
-
-def create_app(repository: ErrorRepository, settings: ApiSettings) -> FastAPI:
+def create_app(
+    repository: ErrorRepository,
+    settings: ApiSettings,
+    *,
+    body_read_timeout_seconds: float = DEFAULT_BODY_READ_TIMEOUT_SECONDS,
+    max_mutation_body_bytes: int = MAX_MUTATION_BODY_BYTES,
+) -> FastAPI:
     """Create the independent HTTP runtime; the bot never imports this module."""
 
     app = FastAPI(
@@ -274,195 +39,20 @@ def create_app(repository: ErrorRepository, settings: ApiSettings) -> FastAPI:
         redoc_url=None,
         openapi_url=None,
     )
+    app.state.repository = repository
+    app.add_exception_handler(RequestValidationError, _validation_error)
+    app.include_router(router)
 
-    configured_values: list[tuple[bytes, Principal]] = [
-        (
-            hashlib.sha256(
-                settings.read_key_current.get_secret_value().encode("ascii")
-            ).digest(),
-            Principal(settings.read_label_current, "read"),
-        ),
-        (
-            hashlib.sha256(
-                settings.triage_key_current.get_secret_value().encode("ascii")
-            ).digest(),
-            Principal(settings.triage_label_current, "triage"),
-        ),
-    ]
-    if settings.read_key_next is not None and settings.read_label_next is not None:
-        configured_values.append(
-            (
-                hashlib.sha256(
-                    settings.read_key_next.get_secret_value().encode("ascii")
-                ).digest(),
-                Principal(settings.read_label_next, "read"),
-            )
-        )
-    if settings.triage_key_next is not None and settings.triage_label_next is not None:
-        configured_values.append(
-            (
-                hashlib.sha256(
-                    settings.triage_key_next.get_secret_value().encode("ascii")
-                ).digest(),
-                Principal(settings.triage_label_next, "triage"),
-            )
-        )
-    configured = tuple(configured_values)
-
-    def authenticate(
-        authorization: Annotated[str | None, Header()] = None,
-    ) -> Principal:
-        matched = _match_principal(authorization, configured)
-        if matched is None:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="invalid credentials",
-                headers={"WWW-Authenticate": "Bearer"},
-            )
-        return matched
-
-    def require_triage(
-        principal: Annotated[Principal, Depends(authenticate)],
-    ) -> Principal:
-        if principal.scope != "triage":
-            raise HTTPException(status_code=403, detail="insufficient scope")
-        return principal
-
-    @app.middleware("http")
-    async def contain_internal_errors(
-        request: Request, call_next: RequestResponseEndpoint
-    ) -> Response:
-        try:
-            return await call_next(request)
-        except Exception:
-            _LOGGER.error("Error API request failed")
-            return JSONResponse(
-                status_code=500, content={"detail": "internal server error"}
-            )
-
-    @app.exception_handler(RequestValidationError)
-    async def validation_error(
-        _request: Request, _error: RequestValidationError
-    ) -> JSONResponse:
-        return JSONResponse(status_code=422, content={"detail": "invalid request"})
-
-    @app.get("/v1/health", response_model=HealthResponse)
-    def health(
-        _principal: Annotated[Principal, Depends(authenticate)],
-    ) -> HealthResponse:
-        repository.health()
-        return HealthResponse()
-
-    @app.get("/v1/errors", response_model=ErrorGroupPage)
-    def list_errors(
-        _principal: Annotated[Principal, Depends(authenticate)],
-        status_filter: Annotated[Status | None, Query(alias="status")] = None,
-        provider: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
-        severity: Severity | None = None,
-        event_code: Annotated[str | None, Query(min_length=1, max_length=128)] = None,
-        component: Annotated[str | None, Query(min_length=1, max_length=255)] = None,
-        release: Annotated[str | None, Query(min_length=1, max_length=128)] = None,
-        seen_from: AwareDatetime | None = None,
-        seen_to: AwareDatetime | None = None,
-        limit: Annotated[int, Query(ge=1, le=100)] = 50,
-        cursor: str | None = None,
-    ) -> ErrorGroupPage:
-        if seen_from is not None and seen_to is not None and seen_from > seen_to:
-            raise HTTPException(status_code=422, detail="invalid seen range")
-        filters = ErrorFilters(
-            status=status_filter,
-            provider=provider,
-            severity=severity,
-            event_code=event_code,
-            component=component,
-            release=release,
-            seen_from=seen_from,
-            seen_to=seen_to,
-        )
-        return repository.list_groups(filters, _page(limit, cursor, "groups"))
-
-    @app.get("/v1/errors/{reference}", response_model=ErrorGroup)
-    def get_error(
-        reference: str, _principal: Annotated[Principal, Depends(authenticate)]
-    ) -> ErrorGroup:
-        result = repository.get_group_for_occurrence(parse_reference(reference))
-        if result is None:
-            raise HTTPException(status_code=404, detail="error not found")
-        return result
-
-    @app.get("/v1/errors/{reference}/occurrences", response_model=OccurrencePage)
-    def occurrences(
-        reference: str,
-        _principal: Annotated[Principal, Depends(authenticate)],
-        limit: Annotated[int, Query(ge=1, le=10)] = 10,
-        cursor: str | None = None,
-    ) -> OccurrencePage:
-        result = repository.list_occurrences(
-            parse_reference(reference), _page(limit, cursor, "occurrences")
-        )
-        if result is None:
-            raise HTTPException(status_code=404, detail="error not found")
-        return result
-
-    @app.get(
-        "/v1/errors/{reference}/reproduction-cases", response_model=ReproductionPage
-    )
-    def reproduction_cases(
-        reference: str,
-        _principal: Annotated[Principal, Depends(authenticate)],
-        limit: Annotated[int, Query(ge=1, le=100)] = 50,
-        cursor: str | None = None,
-    ) -> ReproductionPage:
-        result = repository.list_reproduction_cases(
-            parse_reference(reference),
-            _page(limit, cursor, "reproduction", tiebreaker=True),
-        )
-        if result is None:
-            raise HTTPException(status_code=404, detail="error not found")
-        return result
-
-    @app.get("/v1/errors/{reference}/notes", response_model=NotePage)
-    def notes(
-        reference: str,
-        _principal: Annotated[Principal, Depends(authenticate)],
-        limit: Annotated[int, Query(ge=1, le=100)] = 50,
-        cursor: str | None = None,
-    ) -> NotePage:
-        result = repository.list_notes(
-            parse_reference(reference), _page(limit, cursor, "notes")
-        )
-        if result is None:
-            raise HTTPException(status_code=404, detail="error not found")
-        return result
-
-    @app.patch("/v1/errors/{reference}", response_model=ErrorGroup)
-    def patch_error(
-        reference: str,
-        patch: ErrorPatch,
-        _principal: Annotated[Principal, Depends(require_triage)],
-    ) -> ErrorGroup:
-        result = repository.update_group(parse_reference(reference), patch)
-        if result is None:
-            raise HTTPException(status_code=404, detail="error not found")
-        return result
-
-    @app.post("/v1/errors/{reference}/notes", response_model=ErrorNote, status_code=201)
-    def create_note(
-        reference: str,
-        request: NoteCreate,
-        principal: Annotated[Principal, Depends(require_triage)],
-    ) -> ErrorNote:
-        result = repository.add_note(
-            parse_reference(reference), request.note, principal.label
-        )
-        if result is None:
-            raise HTTPException(status_code=404, detail="error not found")
-        return result
-
+    # Starlette applies the most recently added middleware first. Authentication
+    # must establish request scopes before the mutation boundary reads a body.
     app.add_middleware(
-        RequestBodyLimitMiddleware,
-        max_body_bytes=_MAX_MUTATION_BODY_BYTES,
-        body_timeout_seconds=_BODY_READ_TIMEOUT_SECONDS,
-        credentials=configured,
+        MutationBodyLimitMiddleware,
+        max_body_bytes=max_mutation_body_bytes,
+        body_timeout_seconds=body_read_timeout_seconds,
+    )
+    app.add_middleware(InternalErrorMiddleware)
+    app.add_middleware(
+        AuthenticationMiddleware,
+        backend=ApiKeyAuthenticationBackend(settings),
     )
     return app

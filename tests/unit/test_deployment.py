@@ -10,7 +10,7 @@ import pytest
 import yaml
 from pydantic import SecretStr
 
-from error_api.app import ApiSettings
+from error_api.config import ApiSettings
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 BASE_COMPOSE = PROJECT_ROOT / "docker/compose.yaml"

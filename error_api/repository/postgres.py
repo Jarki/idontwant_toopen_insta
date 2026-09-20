@@ -8,7 +8,7 @@ from typing import Any, cast
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import RowMapping
 
-from .models import (
+from ..schemas import (
     ErrorFilters,
     ErrorGroup,
     ErrorGroupPage,

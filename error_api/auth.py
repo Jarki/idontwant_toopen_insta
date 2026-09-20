@@ -1,0 +1,60 @@
+"""Bearer authentication for the private Error API."""
+
+from __future__ import annotations
+
+import hashlib
+import hmac
+from dataclasses import dataclass
+
+from starlette.authentication import AuthCredentials, AuthenticationBackend, BaseUser
+from starlette.requests import HTTPConnection
+
+from .config import BEARER_TOKEN_PATTERN, ApiSettings, CredentialScope
+
+
+@dataclass(frozen=True, slots=True)
+class Principal(BaseUser):
+    label: str
+    scope: CredentialScope
+
+    @property
+    def is_authenticated(self) -> bool:
+        return True
+
+    @property
+    def display_name(self) -> str:
+        return self.label
+
+
+class ApiKeyAuthenticationBackend(AuthenticationBackend):
+    """Match configured keys in constant time and expose one request principal."""
+
+    def __init__(self, settings: ApiSettings) -> None:
+        self._credentials = tuple(
+            (
+                hashlib.sha256(
+                    credential.secret.get_secret_value().encode("ascii")
+                ).digest(),
+                Principal(credential.label, credential.scope),
+            )
+            for credential in settings.credentials
+        )
+
+    async def authenticate(
+        self, connection: HTTPConnection
+    ) -> tuple[AuthCredentials, BaseUser] | None:
+        authorization = connection.headers.get("Authorization")
+        supplied = ""
+        well_formed = False
+        if authorization is not None and authorization.startswith("Bearer "):
+            supplied = authorization[7:]
+            well_formed = BEARER_TOKEN_PATTERN.fullmatch(supplied) is not None
+
+        supplied_digest = hashlib.sha256(supplied.encode()).digest()
+        matched: Principal | None = None
+        for secret_digest, principal in self._credentials:
+            if hmac.compare_digest(supplied_digest, secret_digest):
+                matched = principal
+        if not well_formed or matched is None:
+            return None
+        return AuthCredentials(("authenticated", matched.scope)), matched

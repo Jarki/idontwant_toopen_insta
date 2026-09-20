@@ -24,13 +24,13 @@ from alembic.config import Config
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import DBAPIError
 
-from error_api.repository.models import (
+from error_api.repository.postgres import PostgreSQLErrorRepository
+from error_api.schemas import (
     ErrorFilters,
     ErrorPatch,
     PageRequest,
     decode_cursor,
 )
-from error_api.repository.postgres import PostgreSQLErrorRepository
 from ig_reel_downloader.error_reporter import ErrorSnapshot, record_snapshot
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]

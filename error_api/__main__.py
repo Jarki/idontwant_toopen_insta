@@ -8,7 +8,8 @@ import uvicorn
 from dotenv import load_dotenv
 from pydantic import SecretStr
 
-from .app import ApiSettings, create_app
+from .app import create_app
+from .config import ApiSettings
 from .repository.postgres import PostgreSQLErrorRepository
 
 

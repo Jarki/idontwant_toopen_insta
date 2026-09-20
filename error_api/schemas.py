@@ -154,6 +154,10 @@ class ErrorNote(StrictModel):
     created_at: AwareDatetime
 
 
+class HealthResponse(StrictModel):
+    status: Literal["ok"] = "ok"
+
+
 class ErrorGroupPage(StrictModel):
     items: list[ErrorGroup]
     next_cursor: str | None
