@@ -63,15 +63,19 @@ def test_bootstrap_rejects_replication_and_bypassrls_roles_without_secrets(
     secret = "role-password-must-not-leak"
 
     class RoleCursor:
-        def execute(self, _statement: object, *_args: object) -> None:
-            pass
+        statement = ""
+
+        def execute(self, statement: object, *_args: object) -> None:
+            self.statement = str(statement)
 
         def fetchone(self) -> tuple[bool, ...]:
             return attributes
 
+    cursor = RoleCursor()
+
     with pytest.raises(SystemExit):
         postgres_bootstrap._ensure_role(
-            RoleCursor(),
+            cursor,
             "db_app",
             secret,
             host="postgres",
@@ -79,6 +83,7 @@ def test_bootstrap_rejects_replication_and_bypassrls_roles_without_secrets(
         )
 
     assert secret not in capsys.readouterr().err
+    assert "rolbypassrls" in cursor.statement
 
 
 def test_bootstrap_removes_unsafe_runtime_default_privileges() -> None:

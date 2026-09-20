@@ -325,7 +325,7 @@ def _ensure_role(
     """Create a least-privilege login role or fail closed on role drift."""
     cur.execute(
         "SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolinherit, "
-        "rolreplication, rolbypassrl "
+        "rolreplication, rolbypassrls "
         "FROM pg_catalog.pg_authid WHERE rolname = %s",
         (username,),
     )
