@@ -316,7 +316,8 @@ long-running runtimes:
   with the same migration role after the public history completes.
 - `downloader`: the Telegram bot and direct bounded ledger reporter.
 - `error-api`: the separately authenticated HTTP runtime, published only on
-  `127.0.0.1:${ERROR_API_HOST_PORT:-8000}`.
+  loopback. The production overlay defaults to port `8000`, development to
+  `8001`, and `ERROR_API_HOST_PORT` overrides either default.
 
 The enforced graph is `postgres` healthy → `postgres-bootstrap` complete →
 `migrate` complete → `error-api-migrate` complete → `downloader` and
@@ -381,7 +382,7 @@ The documented environment variables are:
 | `ERROR_API_READ_KEY` / `ERROR_API_READ_LABEL` | yes* | none | Read-only API credential and audit label. |
 | `ERROR_API_TRIAGE_KEY` / `ERROR_API_TRIAGE_LABEL` | yes* | none | Restricted workflow credential and audit label. |
 | `ERROR_API_*_KEY_NEXT` / `ERROR_API_*_LABEL_NEXT` | no | none | Optional paired key-rotation slots. |
-| `ERROR_API_HOST_PORT` | no | `8000` | Loopback-only published host port. |
+| `ERROR_API_HOST_PORT` | no | prod `8000`, dev `8001` | Explicit loopback-only published host-port override. |
 | `ERROR_API_STATEMENT_TIMEOUT_MS` | no | `3000` | Bounded API SQL timeout (100-30000 ms). |
 
 A disabled downloader is omitted from URL detection, so matching links receive no bot response. The development and production deployment workflows expose these flags as checkbox inputs.

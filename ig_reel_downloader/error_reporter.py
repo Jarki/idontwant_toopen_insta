@@ -413,7 +413,15 @@ def create_reporter_engine(database_url: str) -> Engine:
         pool_size=1,
         max_overflow=0,
         pool_timeout=0.25,
-        connect_args={"connect_timeout": 1, "options": "-c statement_timeout=1000"},
+        connect_args={
+            "connect_timeout": 1,
+            "options": "-c statement_timeout=1000",
+            "keepalives": 1,
+            "keepalives_idle": 1,
+            "keepalives_interval": 1,
+            "keepalives_count": 1,
+            "tcp_user_timeout": 1000,
+        },
     )
 
 

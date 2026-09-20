@@ -136,10 +136,16 @@ class MediaFetchService:
             ref.provider_item_id,
         )
         try:
-            download_result = request.downloader.download(
-                request,
-                DownloadContext(output_dir=self.output_dir),
-            )
+            with error_reporter.bind_context(
+                media_request_ids=(media_request_id,),
+                provider=ref.provider,
+                media_kind=ref.media_kind,
+                stage="download",
+            ):
+                download_result = request.downloader.download(
+                    request,
+                    DownloadContext(output_dir=self.output_dir),
+                )
         except Exception:
             failure_url = request.normalized_url or request.url
             with error_reporter.bind_context(

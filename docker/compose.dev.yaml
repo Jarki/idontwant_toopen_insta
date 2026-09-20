@@ -14,6 +14,8 @@ services:
   error-api:
     build: !reset null
     image: ghcr.io/jarki/idontwant_toopen_insta:${IMAGE_TAG:-latest}
+    ports: !override
+      - "127.0.0.1:${ERROR_API_HOST_PORT:-8001}:8000"
 
   postgres-bootstrap:
     build: !reset null

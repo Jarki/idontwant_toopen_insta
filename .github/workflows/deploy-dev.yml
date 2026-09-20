@@ -66,6 +66,9 @@ jobs:
         with:
           ref: ${{ inputs.compose_ref || github.ref_name }}
 
+      - name: Set deployment release
+        run: echo "APP_RELEASE=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
         with:

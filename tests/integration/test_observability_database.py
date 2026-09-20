@@ -24,7 +24,12 @@ from alembic.config import Config
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.exc import DBAPIError
 
-from error_api.repository.models import ErrorFilters, ErrorPatch, PageRequest
+from error_api.repository.models import (
+    ErrorFilters,
+    ErrorPatch,
+    PageRequest,
+    decode_cursor,
+)
 from error_api.repository.postgres import PostgreSQLErrorRepository
 from ig_reel_downloader.error_reporter import ErrorSnapshot, record_snapshot
 
@@ -498,6 +503,13 @@ def test_restricted_repository_reads_and_writes_only_approved_data(
             request_ids=[request_id],
         ),
     )
+    latest_occurrence_id = _record(
+        engines["bot"],
+        _event(
+            "repository-fingerprint",
+            occurred_at=occurred_at + dt.timedelta(microseconds=1),
+        ),
+    )
     repository = PostgreSQLErrorRepository(
         database_urls["error_api"], statement_timeout_ms=1000
     )
@@ -516,11 +528,11 @@ def test_restricted_repository_reads_and_writes_only_approved_data(
         ),
         PageRequest(limit=1),
     )
-    assert [item.id for item in listed.items] == [listed.items[0].id]
+    assert [item.reference for item in listed.items] == [f"ERR-{latest_occurrence_id}"]
     assert listed.next_cursor is None
     assert (
         repository.list_occurrences(occurrence_id, PageRequest()).items[0].reference
-        == f"ERR-{occurrence_id}"
+        == f"ERR-{latest_occurrence_id}"
     )
     reproduction = repository.list_reproduction_cases(occurrence_id, PageRequest())
     assert reproduction is not None
@@ -558,6 +570,68 @@ def test_restricted_repository_reads_and_writes_only_approved_data(
     notes = repository.list_notes(occurrence_id, PageRequest())
     assert notes is not None
     assert [item.note for item in notes.items] == ["Verified correction"]
+
+
+def test_occurrence_filters_must_match_the_same_occurrence(
+    engines: dict[str, Engine],
+    database_urls: dict[str, str],
+) -> None:
+    first = _event("same-occurrence-filter")
+    first.update(
+        provider="instagram",
+        severity="ERROR",
+        component="download",
+        release="a",
+    )
+    occurrence_id = _record(engines["bot"], first)
+    second = _event("same-occurrence-filter")
+    second.update(
+        provider="youtube",
+        severity="CRITICAL",
+        component="upload",
+        release="b",
+    )
+    _record(engines["bot"], second)
+    repository = PostgreSQLErrorRepository(database_urls["error_api"])
+
+    result = repository.list_groups(
+        ErrorFilters(provider="instagram", severity="CRITICAL"),
+        PageRequest(),
+    )
+
+    assert result.items == []
+    assert repository.get_group_for_occurrence(occurrence_id) is not None
+
+
+def test_group_keyset_cursor_is_stable_across_newer_insert(
+    engines: dict[str, Engine],
+    database_urls: dict[str, str],
+) -> None:
+    baseline = dt.datetime.now(dt.UTC) - dt.timedelta(minutes=1)
+    older_id = _record(
+        engines["bot"],
+        _event("keyset-older", occurred_at=baseline),
+    )
+    newer_id = _record(
+        engines["bot"],
+        _event("keyset-newer", occurred_at=baseline + dt.timedelta(seconds=1)),
+    )
+    repository = PostgreSQLErrorRepository(database_urls["error_api"])
+    first = repository.list_groups(ErrorFilters(), PageRequest(limit=1))
+    assert first.items[0].reference == f"ERR-{newer_id}"
+    assert first.next_cursor is not None
+
+    _record(
+        engines["bot"],
+        _event("keyset-newest", occurred_at=baseline + dt.timedelta(seconds=2)),
+    )
+    cursor_time, cursor_id, _ = decode_cursor(first.next_cursor, "groups")
+    second = repository.list_groups(
+        ErrorFilters(),
+        PageRequest(limit=1, cursor_time=cursor_time, cursor_id=cursor_id),
+    )
+
+    assert second.items[0].reference == f"ERR-{older_id}"
 
 
 def test_restricted_repository_enforces_statement_timeout(
@@ -783,6 +857,53 @@ def test_error_api_migration_repair_removes_global_default_privileges(
         connection.execute(
             text("DROP TABLE observability.future_default_privilege_test")
         )
+
+
+def test_public_history_can_downgrade_while_error_api_remains_installed(
+    engines: dict[str, Engine],
+    database_urls: dict[str, str],
+) -> None:
+    with engines["migration"].begin() as connection:
+        request_id = connection.execute(
+            text(
+                "INSERT INTO public.media_requests "
+                "(url, normalized_url, provider, media_kind, created_at) "
+                "VALUES ('https://example.test/submitted', "
+                "'https://example.test/normalized', 'instagram', 'reel', "
+                "CURRENT_TIMESTAMP) RETURNING id"
+            )
+        ).scalar_one()
+    occurrence_id = _record(
+        engines["bot"],
+        _event("public-history-downgrade", request_ids=[request_id]),
+    )
+    config = Config(str(PROJECT_ROOT / "alembic.ini"))
+    config.attributes["database_url"] = database_urls["migration"]
+
+    with _environment(
+        DB_APP_USER=os.environ["DB_APP_USER"],
+        DB_ERROR_API_USER=os.environ["DB_ERROR_API_USER"],
+    ):
+        try:
+            command.downgrade(config, "20260715_0004")
+            with engines["migration"].connect() as connection:
+                assert (
+                    connection.execute(
+                        text("SELECT to_regclass('public.media_requests')")
+                    ).scalar_one()
+                    is None
+                )
+                reproduction = connection.execute(
+                    text(
+                        "SELECT url, normalized_url "
+                        "FROM observability.api_reproduction_cases "
+                        "WHERE occurrence_id = :id"
+                    ),
+                    {"id": occurrence_id},
+                ).one()
+                assert reproduction == (None, None)
+        finally:
+            command.upgrade(config, "head")
 
 
 def test_error_api_migration_rejects_colliding_runtime_roles(

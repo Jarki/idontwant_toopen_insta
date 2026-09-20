@@ -212,10 +212,27 @@ class IgReelDownloaderApp:
             for result in render_results
             if result.sent
         ]
-        await asyncio.to_thread(
-            self.fetch_service.repository.mark_media_requests_delivered,
-            delivered_request_ids,
-        )
+        delivered_context_ids = tuple(dict.fromkeys(delivered_request_ids))
+        try:
+            with error_reporter.bind_context(
+                media_request_ids=delivered_context_ids,
+                stage="persist_delivery",
+            ):
+                await asyncio.to_thread(
+                    self.fetch_service.repository.mark_media_requests_delivered,
+                    delivered_request_ids,
+                )
+        except Exception as exc:
+            with error_reporter.bind_context(
+                media_request_ids=delivered_context_ids,
+                stage="persist_delivery",
+            ):
+                self._report_unexpected_once(
+                    exc,
+                    message="Failed to persist delivered media requests",
+                    event_code="telegram.delivery_persist_failed",
+                )
+            raise
 
     async def _record_media_requests(
         self,
@@ -538,9 +555,19 @@ class IgReelDownloaderApp:
                     )
                     raise
 
+        upload_request_ids = tuple(
+            dict.fromkeys(
+                request_id
+                for rendered_item in rendered_items
+                for request_id in request_ids_by_media_object.get(
+                    id(rendered_item.source), ()
+                )
+            )
+        )
+
         try:
             with error_reporter.bind_context(
-                media_request_ids=media_request_ids,
+                media_request_ids=upload_request_ids,
                 stage="telegram_upload",
             ):
                 try:
@@ -560,7 +587,7 @@ class IgReelDownloaderApp:
                 request_ids_by_media_object,
             )
             with error_reporter.bind_context(
-                media_request_ids=media_request_ids,
+                media_request_ids=upload_request_ids,
                 stage="telegram_upload",
             ):
                 logger.exception(
@@ -569,7 +596,7 @@ class IgReelDownloaderApp:
                 )
         except TimedOut:
             with error_reporter.bind_context(
-                media_request_ids=media_request_ids,
+                media_request_ids=upload_request_ids,
                 stage="telegram_upload",
             ):
                 logger.exception(

@@ -68,6 +68,7 @@ def main() -> None:
         app,
         host=os.getenv("ERROR_API_HOST", "127.0.0.1"),
         port=_integer("ERROR_API_PORT", 8000, 1, 65535),
+        limit_concurrency=32,
         access_log=False,
     )
 

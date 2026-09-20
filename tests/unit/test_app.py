@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import datetime
+import logging
 from dataclasses import dataclass
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -20,7 +21,11 @@ from ig_reel_downloader.downloaders import (
     UrlCandidate,
 )
 from ig_reel_downloader.media_fetch import MediaFetchResult
-from ig_reel_downloader.renderers import RenderConstraints, RenderedItem
+from ig_reel_downloader.renderers import (
+    RenderConstraints,
+    RenderedItem,
+    UnsupportedMediaError,
+)
 from ig_reel_downloader.repository.models import (
     ChatLeaderboardEntry,
     ChatUserStats,
@@ -585,6 +590,87 @@ def test_unexpected_upload_failure_reports_bound_context_once(
     assert context.stage == "telegram_upload"
 
 
+def test_upload_error_links_only_requests_actually_passed_to_sender(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    skipped_url = "https://www.instagram.com/reel/SKIPPED"
+    attempted_url = "https://www.instagram.com/reel/ATTEMPTED"
+    skipped_media = make_media(skipped_url, "SKIPPED")
+    attempted_media = make_media(attempted_url, "ATTEMPTED")
+    events: list[str] = []
+
+    class MixedRenderer:
+        def render(
+            self, media: MediaItem, constraints: RenderConstraints
+        ) -> RenderedItem:
+            if media is skipped_media:
+                raise UnsupportedMediaError
+            return FakeRendererRegistry().render(media, constraints)
+
+    class RaisingSender(FakeSender):
+        async def send(
+            self,
+            update: FakeUpdate,
+            rendered_items: list[RenderedItem],
+        ) -> list[MediaRenderResult]:
+            assert [item.source for item in rendered_items] == [attempted_media]
+            del update
+            raise RuntimeError("unexpected upload failure")
+
+    app = build_app(
+        monkeypatch,
+        FakeRegistry(
+            [
+                make_candidate(skipped_url, "SKIPPED"),
+                make_candidate(attempted_url, "ATTEMPTED"),
+            ],
+            events,
+        ),
+        FakeFetchService(
+            {
+                skipped_url: MediaFetchResult(media=skipped_media, url=skipped_url),
+                attempted_url: MediaFetchResult(
+                    media=attempted_media, url=attempted_url
+                ),
+            },
+            events,
+        ),
+        RaisingSender(events),
+    )
+    app.renderer_registry = MixedRenderer()  # type: ignore[assignment]
+    snapshots = []
+
+    def capture_report(message: str, **kwargs: object) -> None:
+        record = logging.LogRecord(
+            app_module.logger.name,
+            logging.ERROR,
+            __file__,
+            1,
+            message,
+            (),
+            kwargs.get("exc_info"),  # type: ignore[arg-type]
+        )
+        extra = kwargs.get("extra", {})
+        assert isinstance(extra, dict)
+        for name, value in extra.items():
+            setattr(record, name, value)
+        snapshots.append(app_module.error_reporter.snapshot_from_record(record))
+
+    monkeypatch.setattr(app_module.logger, "error", capture_report)
+
+    with pytest.raises(RuntimeError):
+        asyncio.run(
+            app._message_handler(
+                FakeUpdate(f"{skipped_url} {attempted_url}", FakeChat()),
+                object(),
+            )
+        )
+
+    assert len(snapshots) == 1
+    assert snapshots[0].media_request_ids == (101,)
+    assert snapshots[0].component == "telegram_upload"
+
+
 def test_file_id_persistence_failure_reports_request_ids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -628,6 +714,71 @@ def test_file_id_persistence_failure_reports_request_ids(
     assert contexts[0].provider == "instagram"
     assert contexts[0].media_kind == "reel"
     assert contexts[0].stage == "persist_telegram_file_id"
+
+
+def test_delivery_persistence_failure_reports_only_delivered_requests_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    repository = FakeRepository()
+    app = build_app(
+        monkeypatch,
+        FakeRegistry([], events),
+        FakeFetchService({}, events, repository=repository),
+        FakeSender(events),
+    )
+    delivered = make_media("https://www.instagram.com/reel/DELIVERED", "DELIVERED")
+    unsent = make_media("https://www.instagram.com/reel/UNSENT", "UNSENT")
+    results = [
+        MediaRenderResult(media=delivered, sent=True),
+        MediaRenderResult(media=unsent, sent=False),
+    ]
+    request_ids = {
+        id(delivered): collections.deque([401]),
+        id(unsent): collections.deque([402]),
+    }
+    snapshots = []
+
+    def fail_delivery(_request_ids: list[int]) -> None:
+        raise RuntimeError("delivery persistence failed")
+
+    def capture_report(message: str, **kwargs: object) -> None:
+        record = logging.LogRecord(
+            app_module.logger.name,
+            logging.ERROR,
+            __file__,
+            1,
+            message,
+            (),
+            kwargs.get("exc_info"),  # type: ignore[arg-type]
+        )
+        extra = kwargs.get("extra", {})
+        assert isinstance(extra, dict)
+        for name, value in extra.items():
+            setattr(record, name, value)
+        snapshots.append(app_module.error_reporter.snapshot_from_record(record))
+
+    monkeypatch.setattr(
+        repository,
+        "mark_media_requests_delivered",
+        fail_delivery,
+    )
+    monkeypatch.setattr(app_module.logger, "error", capture_report)
+
+    with pytest.raises(RuntimeError) as raised:
+        asyncio.run(app._record_deliveries(results, request_ids))
+    asyncio.run(
+        app._unexpected_error_handler(
+            object(),
+            SimpleNamespace(error=raised.value),  # type: ignore[arg-type]
+        )
+    )
+
+    assert len(snapshots) == 1
+    assert snapshots[0].event_code == "telegram.delivery_persist_failed"
+    assert snapshots[0].media_request_ids == (401,)
+    assert snapshots[0].component == "persist_delivery"
+    assert list(request_ids[id(unsent)]) == [402]
 
 
 def test_message_handler_persists_file_ids_returned_by_sender(

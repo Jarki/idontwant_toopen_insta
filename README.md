@@ -136,8 +136,9 @@ Docker Compose enforces this startup graph:
 Neither long-running process runs migrations. The downloader depends on
 `error-api-migrate`, never on Error API availability, so stopping the API does
 not stop Telegram polling or direct ledger recording. PostgreSQL has no
-published host port. The Error API publishes only
-`127.0.0.1:${ERROR_API_HOST_PORT:-8000}`.
+published host port. Production publishes on `127.0.0.1:8000` and development
+on `127.0.0.1:8001` by default; `ERROR_API_HOST_PORT` explicitly overrides
+either loopback-only port.
 
 ### Schema migrations
 
@@ -164,10 +165,12 @@ explicit least-privilege grants. The Error API runtime URL is never used for
 DDL.
 
 Poe commands use `DATABASE_URL` from the environment. PostgreSQL migrations
-also require `DB_APP_USER` so Alembic can keep its metadata migration-only:
+also require both runtime role names so Alembic can preserve their isolation
+from migration metadata:
 
 ```bash
 DB_APP_USER=db_app \
+DB_ERROR_API_USER=db_error_api \
 DATABASE_URL=postgresql+psycopg://db_migration:pass@localhost:5432/db \
   uv run poe db-upgrade
 ```

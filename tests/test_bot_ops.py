@@ -27,7 +27,7 @@ KEY = "k" * 32
 
 def group_payload(**changes: object) -> dict[str, object]:
     result: dict[str, object] = {
-        "id": 7,
+        "reference": "ERR-11",
         "display_name": "Downloader failed",
         "event_code": "download.failed",
         "exception_type": "RuntimeError",
@@ -75,7 +75,7 @@ class FakeTransport:
                     }
                 ),
             )
-        if url.endswith("/occurrences?limit=50"):
+        if url.endswith("/occurrences?limit=10"):
             return Response(200, encoded({"items": [], "next_cursor": None}))
         if url.endswith("/reproduction-cases?limit=50"):
             return Response(200, encoded({"items": [], "next_cursor": None}))
@@ -239,6 +239,50 @@ def test_import_boundary_and_no_database_configuration() -> None:
     )
     assert all(value not in content for value in forbidden)
     assert "--database" not in cli._parser().format_help()
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://api.example.test",
+        "http://localhost:8000",
+        "http://192.168.1.10:8000",
+    ],
+)
+def test_cleartext_transport_is_rejected_for_nonliteral_loopback(url: str) -> None:
+    with pytest.raises(ValueError, match="HTTPS"):
+        ErrorApiClient(url, KEY, FakeTransport())
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["http://127.0.0.1:8000", "http://127.25.1.2:8000", "http://[::1]:8000"],
+)
+def test_cleartext_transport_allows_only_literal_loopback(url: str) -> None:
+    ErrorApiClient(url, KEY, FakeTransport())
+
+
+def test_maximum_occurrence_page_fits_client_response_contract() -> None:
+    occurrence = {
+        "reference": "ERR-1",
+        "occurred_at": "2026-09-19T00:00:00Z",
+        "severity": "ERROR",
+        "logger_name": "provider",
+        "component": "download",
+        "exception_type": "RuntimeError",
+        "message": "\u0000" * 8192,
+        "traceback": "\u0000" * 65536,
+        "provider": "instagram",
+        "media_kind": "reel",
+        "release": "a",
+    }
+    body = encoded({"items": [occurrence] * 10, "next_cursor": None})
+    fake = FakeTransport(Response(200, body))
+
+    result = client(fake).similar("ERR-1", limit=10, cursor=None)
+
+    assert len(body) <= client_module._MAX_RESPONSE_BYTES
+    assert len(result["items"]) == 10
 
 
 def test_client_forwards_canonical_reference_and_auth_header() -> None:
@@ -441,7 +485,7 @@ def test_blocked_resolver_obeys_deadline_without_lingering_worker(
     monkeypatch.setattr(client_module.socket, "getaddrinfo", blocked_resolver)
     started = time.monotonic()
     with pytest.raises(TransportError):
-        ErrorApiClient("http://blocked.invalid", KEY).show("ERR-1")
+        ErrorApiClient("https://blocked.invalid", KEY).show("ERR-1")
     assert time.monotonic() - started < 0.5
     assert not client_module.multiprocessing.active_children()
 
@@ -469,7 +513,7 @@ def test_installed_cli_resolver_deadline(
         env={
             **os.environ,
             "PYTHONPATH": str(tmp_path),
-            "ERROR_API_URL": "http://blocked.invalid",
+            "ERROR_API_URL": "https://blocked.invalid",
             "ERROR_API_KEY": KEY,
         },
     )
@@ -489,7 +533,7 @@ def test_resolver_resource_exhaustion_is_safe_transport_failure(
     monkeypatch.setattr(
         cli,
         "_client_from_environment",
-        lambda: ErrorApiClient("http://api.invalid", KEY),
+        lambda: ErrorApiClient("https://api.invalid", KEY),
     )
     assert cli.main(["errors", "show", "ERR-1"]) == cli.EXIT_TRANSPORT
     assert "secret resource detail" not in capsys.readouterr().err
@@ -573,7 +617,7 @@ def test_protocol_failures_are_secret_free_transport_errors(
     monkeypatch.setattr(
         cli,
         "_client_from_environment",
-        lambda: ErrorApiClient("http://api.invalid", KEY),
+        lambda: ErrorApiClient("https://api.invalid", KEY),
     )
     assert cli.main(["errors", "show", "ERR-1"]) == cli.EXIT_TRANSPORT
     assert "secret" not in capsys.readouterr().err

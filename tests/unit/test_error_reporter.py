@@ -40,6 +40,33 @@ def _captured_exception(
     raise AssertionError("source did not raise")
 
 
+def test_reporter_engine_bounds_established_tcp_failure_detection(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    engine = object()
+
+    def fake_create_engine(url: str, **kwargs: object) -> object:
+        captured["url"] = url
+        captured.update(kwargs)
+        return engine
+
+    monkeypatch.setattr(error_reporter, "create_engine", fake_create_engine)
+
+    result = error_reporter.create_reporter_engine(
+        "postgresql+psycopg://bot@example.test/reels"
+    )
+
+    assert result is engine
+    assert captured["connect_args"] == {
+        "connect_timeout": 1,
+        "options": "-c statement_timeout=1000",
+        "keepalives": 1,
+        "keepalives_idle": 1,
+        "keepalives_interval": 1,
+        "keepalives_count": 1,
+        "tcp_user_timeout": 1000,
+    }
+
+
 def test_snapshot_sanitizes_secrets_urls_credentials_authorization_and_paths(
     monkeypatch,
 ) -> None:

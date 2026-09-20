@@ -35,6 +35,15 @@ check_var() {
     fi
 }
 
+reject_known_value() {
+    local var_name="$1"
+    local known_value="$2"
+    if [ -n "${!var_name:-}" ] && [ "${!var_name}" = "$known_value" ]; then
+        echo "::error::FATAL: ${var_name} still uses a documented example value"
+        errors=$((errors + 1))
+    fi
+}
+
 # --- Runtime secrets and PostgreSQL credentials ---
 check_var "BOT_TOKEN"            "Telegram bot token"
 check_var "APP_RELEASE"          "Immutable application release identifier"
@@ -55,6 +64,17 @@ check_var "DB_ERROR_API_PASSWORD" "Restricted Error API password"
 check_var "DB_MIGRATION_URL"     "Migration database URL" "postgresql+psycopg://*"
 check_var "DATABASE_URL"         "Application database URL" "postgresql+psycopg://*"
 check_var "ERROR_API_DATABASE_URL" "Restricted Error API database URL" "postgresql+psycopg://*"
+
+reject_known_value "DB_ERROR_API_PASSWORD" "change_me_error_api"
+reject_known_value \
+    "ERROR_API_DATABASE_URL" \
+    "postgresql+psycopg://db_error_api:change_me_error_api@postgres:5432/reels"
+reject_known_value \
+    "ERROR_API_READ_KEY" \
+    "replace_with_random_read_key_at_least_32_chars"
+reject_known_value \
+    "ERROR_API_TRIAGE_KEY" \
+    "replace_with_random_triage_key_at_least_32_chars"
 
 validate_api_key() {
     local key_name="$1"
@@ -92,6 +112,20 @@ for ((i = 0; i < ${#key_names[@]}; i++)); do
         right="${!key_names[j]:-}"
         if [ -n "$left" ] && [ "$left" = "$right" ]; then
             echo "::error::FATAL: Error API credentials must be distinct"
+            errors=$((errors + 1))
+        fi
+    done
+done
+password_names=(
+    POSTGRES_PASSWORD DB_MIGRATION_PASSWORD
+    DB_APP_PASSWORD DB_ERROR_API_PASSWORD
+)
+for ((i = 0; i < ${#password_names[@]}; i++)); do
+    for ((j = i + 1; j < ${#password_names[@]}; j++)); do
+        left="${!password_names[i]:-}"
+        right="${!password_names[j]:-}"
+        if [ -n "$left" ] && [ "$left" = "$right" ]; then
+            echo "::error::FATAL: PostgreSQL security-boundary passwords must be distinct"
             errors=$((errors + 1))
         fi
     done

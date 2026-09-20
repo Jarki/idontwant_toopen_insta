@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import logging
 import os
@@ -14,6 +15,7 @@ import uvicorn
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
+from error_api import app as app_module
 from error_api.app import ApiSettings, create_app
 from error_api.repository import postgres as postgres_module
 from error_api.repository.models import (
@@ -28,6 +30,7 @@ from error_api.repository.models import (
     PageRequest,
     ReproductionCase,
     ReproductionPage,
+    encode_cursor,
 )
 from error_api.repository.postgres import PostgreSQLErrorRepository
 
@@ -40,7 +43,7 @@ TRIAGE_NEXT = "next-triage-key-that-is-at-least-thirty-two"
 
 def group(**changes: object) -> ErrorGroup:
     values: dict[str, object] = {
-        "id": 7,
+        "reference": "ERR-11",
         "display_name": "Downloader failed",
         "event_code": "download.failed",
         "exception_type": "RuntimeError",
@@ -97,7 +100,7 @@ class FakeRepository:
                     release="a",
                 )
             ],
-            next_cursor="1",
+            next_cursor=encode_cursor("occurrences", NOW, 1),
         )
 
     def list_reproduction_cases(
@@ -235,9 +238,15 @@ def test_repository_configures_checkout_timeouts(
     assert captured == {
         "url": "postgresql+psycopg://api@example.test/errors",
         "pool_pre_ping": True,
+        "pool_timeout": 1.25,
         "connect_args": {
             "connect_timeout": 2,
             "options": "-c statement_timeout=1250",
+            "keepalives": 1,
+            "keepalives_idle": 2,
+            "keepalives_interval": 1,
+            "keepalives_count": 3,
+            "tcp_user_timeout": 5000,
         },
     }
 
@@ -304,8 +313,11 @@ def test_all_reads_are_bounded_and_reproduction_is_separate(
     api: tuple[TestClient, FakeRepository],
 ) -> None:
     client, repository = api
+    cursor = encode_cursor("groups", NOW, 7)
     listed = client.get(
-        "/v1/errors?status=new&provider=instagram&severity=ERROR&event_code=download.failed&component=download&release=a&limit=1&cursor=2",
+        "/v1/errors?status=new&provider=instagram&severity=ERROR"
+        "&event_code=download.failed&component=download&release=a"
+        f"&limit=1&cursor={cursor}",
         headers=auth(READ),
     )
     assert listed.status_code == 200
@@ -317,8 +329,10 @@ def test_all_reads_are_bounded_and_reproduction_is_separate(
         component="download",
         release="a",
     )
-    assert repository.last_page == PageRequest(limit=1, offset=2)
+    assert listed.json()["items"][0]["reference"] == "ERR-11"
+    assert repository.last_page == PageRequest(limit=1, cursor_time=NOW, cursor_id=7)
     detail = client.get("/v1/errors/ERR-1", headers=auth(READ)).json()
+    assert detail["reference"] == "ERR-11"
     assert "submitted_url" not in str(detail)
     occurrences = client.get("/v1/errors/ERR-1/occurrences", headers=auth(READ)).json()
     assert occurrences["items"][0]["reference"] == "ERR-1"
@@ -328,17 +342,21 @@ def test_all_reads_are_bounded_and_reproduction_is_separate(
     ).json()
     assert reproduction["items"][0]["submitted_url"].endswith("/raw")
     assert client.get("/v1/errors/ERR-1/notes", headers=auth(READ)).status_code == 200
+    assert (
+        client.get(
+            "/v1/errors/ERR-1/occurrences?limit=11", headers=auth(READ)
+        ).status_code
+        == 422
+    )
     assert client.get("/v1/errors?limit=101", headers=auth(READ)).status_code == 422
     assert client.get("/v1/errors?cursor=01", headers=auth(READ)).status_code == 422
-    for path in (
-        "/v1/errors",
-        "/v1/errors/ERR-1/occurrences",
-        "/v1/errors/ERR-1/reproduction-cases",
-        "/v1/errors/ERR-1/notes",
-    ):
-        assert (
-            client.get(f"{path}?cursor=1000001", headers=auth(READ)).status_code == 422
-        )
+    occurrence_cursor = encode_cursor("occurrences", NOW, 7)
+    assert (
+        client.get(
+            f"/v1/errors?cursor={occurrence_cursor}", headers=auth(READ)
+        ).status_code
+        == 422
+    )
     assert (
         client.get(
             "/v1/errors?seen_from=2026-09-20T00:00:00Z&seen_to=2026-09-19T00:00:00Z",
@@ -353,6 +371,132 @@ def test_all_reads_are_bounded_and_reproduction_is_separate(
         ).status_code
         == 422
     )
+
+
+@pytest.mark.parametrize(
+    ("kind", "identifier", "tiebreaker", "expected"),
+    [
+        ("groups", 9_223_372_036_854_775_807, None, 200),
+        ("groups", 9_223_372_036_854_775_808, None, 422),
+        ("groups", True, None, 422),
+        (
+            "reproduction",
+            9_223_372_036_854_775_807,
+            9_223_372_036_854_775_807,
+            200,
+        ),
+        (
+            "reproduction",
+            9_223_372_036_854_775_807,
+            9_223_372_036_854_775_808,
+            422,
+        ),
+        ("reproduction", 1, True, 422),
+    ],
+)
+def test_cursor_database_domain_is_validated_before_repository_access(
+    api: tuple[TestClient, FakeRepository],
+    kind: str,
+    identifier: int,
+    tiebreaker: int | None,
+    expected: int,
+) -> None:
+    client, repository = api
+    cursor = encode_cursor(kind, NOW, identifier, tiebreaker)
+    path = (
+        f"/v1/errors?cursor={cursor}"
+        if kind == "groups"
+        else f"/v1/errors/ERR-1/reproduction-cases?cursor={cursor}"
+    )
+
+    response = client.get(path, headers=auth(READ))
+
+    assert response.status_code == expected
+    if expected == 422:
+        assert repository.last_page is None
+
+
+@pytest.mark.parametrize(("key", "expected"), [(None, 401), (READ, 403)])
+def test_unauthorized_mutation_is_rejected_without_reading_body(
+    key: str | None, expected: int
+) -> None:
+    repository = FakeRepository()
+    application = create_app(
+        repository,
+        ApiSettings(
+            read_key_current=READ,
+            read_label_current="reader",
+            triage_key_current=TRIAGE,
+            triage_label_current="operator",
+        ),
+    )
+    headers = (
+        [] if key is None else [(b"authorization", f"Bearer {key}".encode("ascii"))]
+    )
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "POST",
+        "scheme": "http",
+        "path": "/v1/errors/ERR-1/notes",
+        "raw_path": b"/v1/errors/ERR-1/notes",
+        "query_string": b"",
+        "headers": headers,
+        "client": ("127.0.0.1", 1),
+        "server": ("127.0.0.1", 8000),
+    }
+    sent: list[dict[str, object]] = []
+
+    async def unread() -> dict[str, object]:
+        raise AssertionError("unauthorized body was read")
+
+    async def capture(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    asyncio.run(application(scope, unread, capture))  # type: ignore[arg-type]
+
+    assert sent[0]["status"] == expected
+
+
+def test_authenticated_slow_mutation_body_times_out(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(app_module, "_BODY_READ_TIMEOUT_SECONDS", 0.01)
+    application = create_app(
+        FakeRepository(),
+        ApiSettings(
+            read_key_current=READ,
+            read_label_current="reader",
+            triage_key_current=TRIAGE,
+            triage_label_current="operator",
+        ),
+    )
+    scope = {
+        "type": "http",
+        "asgi": {"version": "3.0"},
+        "http_version": "1.1",
+        "method": "PATCH",
+        "scheme": "http",
+        "path": "/v1/errors/ERR-1",
+        "raw_path": b"/v1/errors/ERR-1",
+        "query_string": b"",
+        "headers": [(b"authorization", f"Bearer {TRIAGE}".encode("ascii"))],
+        "client": ("127.0.0.1", 1),
+        "server": ("127.0.0.1", 8000),
+    }
+    sent: list[dict[str, object]] = []
+
+    async def stalled() -> dict[str, object]:
+        await asyncio.Event().wait()
+        raise AssertionError
+
+    async def capture(message: dict[str, object]) -> None:
+        sent.append(message)
+
+    asyncio.run(application(scope, stalled, capture))  # type: ignore[arg-type]
+
+    assert sent[0]["status"] == 408
 
 
 @pytest.mark.parametrize(
@@ -372,6 +516,32 @@ def test_reference_is_canonical(
     api: tuple[TestClient, FakeRepository], reference: str
 ) -> None:
     assert api[0].get(f"/v1/errors/{reference}", headers=auth(READ)).status_code == 404
+
+
+@pytest.mark.parametrize("authenticated", [False, True])
+@pytest.mark.parametrize("declared", [False, True])
+def test_oversized_mutation_bodies_are_rejected_before_parsing(
+    api: tuple[TestClient, FakeRepository],
+    authenticated: bool,
+    declared: bool,
+) -> None:
+    client, repository = api
+    headers = auth(TRIAGE) if authenticated else {}
+    body = b'{"note":"' + (b"x" * 40_000) + b'"}'
+    if declared:
+        headers["Content-Length"] = str(len(body))
+        content: object = b"{}"
+    else:
+        content = iter((body[:20_000], body[20_000:]))
+
+    response = client.post(
+        "/v1/errors/ERR-1/notes",
+        headers=headers,
+        content=content,
+    )
+
+    assert response.status_code == (413 if authenticated else 401)
+    assert repository.note_values == []
 
 
 def test_triage_updates_only_group_and_appends_labeled_notes(

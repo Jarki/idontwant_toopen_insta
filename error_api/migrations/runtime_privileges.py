@@ -67,6 +67,8 @@ def apply_runtime_privileges(
         f"GRANT SELECT ON observability.api_error_occurrences TO {error_api}",
         f"GRANT SELECT ON observability.api_reproduction_cases TO {error_api}",
         f"GRANT SELECT ON observability.api_error_notes TO {error_api}",
+        "GRANT EXECUTE ON FUNCTION "
+        f"observability.lookup_reproduction_request(bigint, bigint) TO {error_api}",
         f"GRANT SELECT (id) ON observability.error_groups TO {error_api}",
         f"GRANT UPDATE (display_name, status, linked_change, fixed_at) "
         f"ON observability.error_groups TO {error_api}",

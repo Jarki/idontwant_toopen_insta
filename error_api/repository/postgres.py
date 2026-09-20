@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Any, TypeVar, cast
+from collections.abc import Sequence
+from typing import Any, cast
 
 from sqlalchemy import Engine, create_engine, text
 from sqlalchemy.engine import RowMapping
@@ -19,9 +20,8 @@ from .models import (
     PageRequest,
     ReproductionCase,
     ReproductionPage,
+    encode_cursor,
 )
-
-T = TypeVar("T")
 
 
 class PostgreSQLErrorRepository:
@@ -35,9 +35,15 @@ class PostgreSQLErrorRepository:
         self._engine: Engine = create_engine(
             database_url,
             pool_pre_ping=True,
+            pool_timeout=max(1.0, min(5.0, statement_timeout_ms / 1000)),
             connect_args={
                 "connect_timeout": (statement_timeout_ms + 999) // 1000,
                 "options": f"-c statement_timeout={statement_timeout_ms}",
+                "keepalives": 1,
+                "keepalives_idle": 2,
+                "keepalives_interval": 1,
+                "keepalives_count": 3,
+                "tcp_user_timeout": 5000,
             },
         )
         self._timeout = f"{statement_timeout_ms}ms"
@@ -70,7 +76,7 @@ class PostgreSQLErrorRepository:
     def _group(row: RowMapping) -> ErrorGroup:
         first = row.get("first_post_fix_occurrence_id")
         return ErrorGroup(
-            id=row["id"],
+            reference=f"ERR-{row['latest_occurrence_id']}",
             display_name=row["display_name"],
             event_code=row["event_code"],
             exception_type=row["exception_type"],
@@ -87,13 +93,31 @@ class PostgreSQLErrorRepository:
         )
 
     @staticmethod
-    def _paged(items: list[T], page: PageRequest) -> tuple[list[T], str | None]:
-        more = len(items) > page.limit
-        return items[: page.limit], str(page.offset + page.limit) if more else None
+    def _paged_rows(
+        rows: Sequence[RowMapping],
+        page: PageRequest,
+        kind: str,
+        time_column: str,
+        id_column: str,
+        tiebreaker_column: str | None = None,
+    ) -> tuple[list[RowMapping], str | None]:
+        visible = list(rows[: page.limit])
+        if len(rows) <= page.limit:
+            return visible, None
+        last = visible[-1]
+        tie = int(last[tiebreaker_column]) if tiebreaker_column is not None else None
+        return visible, encode_cursor(
+            kind, last[time_column], int(last[id_column]), tie
+        )
 
     def list_groups(self, filters: ErrorFilters, page: PageRequest) -> ErrorGroupPage:
         statement = text("""
             SELECT groups.*,
+                (SELECT occurrences.id
+                 FROM observability.api_error_occurrences AS occurrences
+                 WHERE occurrences.error_group_id = groups.id
+                 ORDER BY occurrences.occurred_at DESC, occurrences.id DESC LIMIT 1
+                ) AS latest_occurrence_id,
                 (SELECT occurrences.id
                  FROM observability.api_error_occurrences AS occurrences
                  WHERE occurrences.error_group_id = groups.id
@@ -110,35 +134,48 @@ class PostgreSQLErrorRepository:
                    OR groups.last_seen_at >= CAST(:seen_from AS timestamptz))
               AND (CAST(:seen_to AS timestamptz) IS NULL
                    OR groups.first_seen_at <= CAST(:seen_to AS timestamptz))
-              AND (CAST(:provider AS text) IS NULL OR EXISTS (
-                    SELECT 1 FROM observability.api_error_occurrences AS occurrence
-                    WHERE occurrence.error_group_id = groups.id
-                      AND occurrence.provider = CAST(:provider AS text)))
-              AND (CAST(:severity AS text) IS NULL OR EXISTS (
-                    SELECT 1 FROM observability.api_error_occurrences AS occurrence
-                    WHERE occurrence.error_group_id = groups.id
-                      AND occurrence.severity = CAST(:severity AS text)))
-              AND (CAST(:component AS text) IS NULL OR EXISTS (
-                    SELECT 1 FROM observability.api_error_occurrences AS occurrence
-                    WHERE occurrence.error_group_id = groups.id
-                      AND occurrence.component = CAST(:component AS text)))
-              AND (CAST(:release AS text) IS NULL OR EXISTS (
-                    SELECT 1 FROM observability.api_error_occurrences AS occurrence
-                    WHERE occurrence.error_group_id = groups.id
-                      AND occurrence.release = CAST(:release AS text)))
+              AND (
+                    CAST(:provider AS text) IS NULL
+                    AND CAST(:severity AS text) IS NULL
+                    AND CAST(:component AS text) IS NULL
+                    AND CAST(:release AS text) IS NULL
+                    OR EXISTS (
+                        SELECT 1
+                        FROM observability.api_error_occurrences AS occurrence
+                        WHERE occurrence.error_group_id = groups.id
+                          AND (CAST(:provider AS text) IS NULL
+                               OR occurrence.provider = CAST(:provider AS text))
+                          AND (CAST(:severity AS text) IS NULL
+                               OR occurrence.severity = CAST(:severity AS text))
+                          AND (CAST(:component AS text) IS NULL
+                               OR occurrence.component = CAST(:component AS text))
+                          AND (CAST(:release AS text) IS NULL
+                               OR occurrence.release = CAST(:release AS text))
+                    )
+              )
+              AND (CAST(:cursor_time AS timestamptz) IS NULL
+                   OR (groups.last_seen_at, groups.id) < (
+                       CAST(:cursor_time AS timestamptz),
+                       CAST(:cursor_id AS bigint)))
             ORDER BY groups.last_seen_at DESC, groups.id DESC
-            LIMIT :fetch_limit OFFSET :offset
+            LIMIT :fetch_limit
         """)
         params = filters.model_dump()
-        params.update(fetch_limit=page.limit + 1, offset=page.offset)
+        params.update(
+            fetch_limit=page.limit + 1,
+            cursor_time=page.cursor_time,
+            cursor_id=page.cursor_id,
+        )
         connection, transaction = self._timeout_connection()
         try:
             rows = connection.execute(statement, params).mappings().all()
             transaction.commit()
         finally:
             connection.close()
-        items, cursor = self._paged([self._group(row) for row in rows], page)
-        return ErrorGroupPage(items=items, next_cursor=cursor)
+        visible, cursor = self._paged_rows(rows, page, "groups", "last_seen_at", "id")
+        return ErrorGroupPage(
+            items=[self._group(row) for row in visible], next_cursor=cursor
+        )
 
     def _group_row(self, connection: Any, occurrence_id: int) -> RowMapping | None:
         return cast(
@@ -146,6 +183,11 @@ class PostgreSQLErrorRepository:
             connection.execute(
                 text("""
                 SELECT groups.*,
+                    (SELECT candidate.id
+                     FROM observability.api_error_occurrences AS candidate
+                     WHERE candidate.error_group_id = groups.id
+                     ORDER BY candidate.occurred_at DESC, candidate.id DESC LIMIT 1
+                    ) AS latest_occurrence_id,
                     (SELECT candidate.id
                      FROM observability.api_error_occurrences AS candidate
                      WHERE candidate.error_group_id = groups.id
@@ -181,8 +223,11 @@ class PostgreSQLErrorRepository:
             WHERE occurrence.error_group_id = (
                 SELECT anchor.error_group_id FROM observability.api_error_occurrences AS anchor
                 WHERE anchor.id = :occurrence_id)
+              AND (CAST(:cursor_time AS timestamptz) IS NULL
+                   OR (occurrence.occurred_at, occurrence.id) < (
+                       CAST(:cursor_time AS timestamptz), CAST(:cursor_id AS bigint)))
             ORDER BY occurrence.occurred_at DESC, occurrence.id DESC
-            LIMIT :fetch_limit OFFSET :offset
+            LIMIT :fetch_limit
         """)
         connection, transaction = self._timeout_connection()
         try:
@@ -195,7 +240,8 @@ class PostgreSQLErrorRepository:
                     {
                         "occurrence_id": occurrence_id,
                         "fetch_limit": page.limit + 1,
-                        "offset": page.offset,
+                        "cursor_time": page.cursor_time,
+                        "cursor_id": page.cursor_id,
                     },
                 )
                 .mappings()
@@ -204,6 +250,9 @@ class PostgreSQLErrorRepository:
             transaction.commit()
         finally:
             connection.close()
+        visible, cursor = self._paged_rows(
+            rows, page, "occurrences", "occurred_at", "id"
+        )
         values = [
             ErrorOccurrence(
                 reference=f"ERR-{row['id']}",
@@ -218,10 +267,9 @@ class PostgreSQLErrorRepository:
                 media_kind=row["media_kind"],
                 release=row["release"],
             )
-            for row in rows
+            for row in visible
         ]
-        items, cursor = self._paged(values, page)
-        return OccurrencePage(items=items, next_cursor=cursor)
+        return OccurrencePage(items=values, next_cursor=cursor)
 
     def list_reproduction_cases(
         self, occurrence_id: int, page: PageRequest
@@ -231,9 +279,15 @@ class PostgreSQLErrorRepository:
             WHERE reproduction.error_group_id = (
                 SELECT anchor.error_group_id FROM observability.api_error_occurrences AS anchor
                 WHERE anchor.id = :occurrence_id)
-            ORDER BY reproduction.occurred_at DESC, reproduction.occurrence_id DESC,
-                     reproduction.url ASC NULLS LAST, reproduction.normalized_url ASC NULLS LAST
-            LIMIT :fetch_limit OFFSET :offset
+              AND (CAST(:cursor_time AS timestamptz) IS NULL
+                   OR (reproduction.occurred_at, reproduction.occurrence_id,
+                       reproduction.media_request_id) < (
+                       CAST(:cursor_time AS timestamptz), CAST(:cursor_id AS bigint),
+                       CAST(:cursor_tiebreaker AS bigint)))
+            ORDER BY reproduction.occurred_at DESC,
+                     reproduction.occurrence_id DESC,
+                     reproduction.media_request_id DESC
+            LIMIT :fetch_limit
         """)
         connection, transaction = self._timeout_connection()
         try:
@@ -246,7 +300,9 @@ class PostgreSQLErrorRepository:
                     {
                         "occurrence_id": occurrence_id,
                         "fetch_limit": page.limit + 1,
-                        "offset": page.offset,
+                        "cursor_time": page.cursor_time,
+                        "cursor_id": page.cursor_id,
+                        "cursor_tiebreaker": page.cursor_tiebreaker,
                     },
                 )
                 .mappings()
@@ -255,6 +311,14 @@ class PostgreSQLErrorRepository:
             transaction.commit()
         finally:
             connection.close()
+        visible, cursor = self._paged_rows(
+            rows,
+            page,
+            "reproduction",
+            "occurred_at",
+            "occurrence_id",
+            "media_request_id",
+        )
         values = [
             ReproductionCase(
                 reference=f"ERR-{row['occurrence_id']}",
@@ -267,10 +331,9 @@ class PostgreSQLErrorRepository:
                 component=row["component"],
                 release=row["release"],
             )
-            for row in rows
+            for row in visible
         ]
-        items, cursor = self._paged(values, page)
-        return ReproductionPage(items=items, next_cursor=cursor)
+        return ReproductionPage(items=values, next_cursor=cursor)
 
     def list_notes(self, occurrence_id: int, page: PageRequest) -> NotePage | None:
         statement = text("""
@@ -279,8 +342,11 @@ class PostgreSQLErrorRepository:
             WHERE note.error_group_id = (
                 SELECT anchor.error_group_id FROM observability.api_error_occurrences AS anchor
                 WHERE anchor.id = :occurrence_id)
+              AND (CAST(:cursor_time AS timestamptz) IS NULL
+                   OR (note.created_at, note.id) < (
+                       CAST(:cursor_time AS timestamptz), CAST(:cursor_id AS bigint)))
             ORDER BY note.created_at DESC, note.id DESC
-            LIMIT :fetch_limit OFFSET :offset
+            LIMIT :fetch_limit
         """)
         connection, transaction = self._timeout_connection()
         try:
@@ -293,7 +359,8 @@ class PostgreSQLErrorRepository:
                     {
                         "occurrence_id": occurrence_id,
                         "fetch_limit": page.limit + 1,
-                        "offset": page.offset,
+                        "cursor_time": page.cursor_time,
+                        "cursor_id": page.cursor_id,
                     },
                 )
                 .mappings()
@@ -302,9 +369,9 @@ class PostgreSQLErrorRepository:
             transaction.commit()
         finally:
             connection.close()
-        values = [ErrorNote.model_validate(row) for row in rows]
-        items, cursor = self._paged(values, page)
-        return NotePage(items=items, next_cursor=cursor)
+        visible, cursor = self._paged_rows(rows, page, "notes", "created_at", "id")
+        values = [ErrorNote.model_validate(row) for row in visible]
+        return NotePage(items=values, next_cursor=cursor)
 
     def update_group(self, occurrence_id: int, patch: ErrorPatch) -> ErrorGroup | None:
         statements = {

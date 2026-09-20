@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.client
+import ipaddress
 import json
 import multiprocessing
 import re
@@ -21,7 +22,7 @@ from pydantic import AwareDatetime, BaseModel, ConfigDict, ValidationError
 _REFERENCE = re.compile(r"ERR-[1-9][0-9]{0,18}\Z")
 _BEARER_TOKEN = re.compile(r"[A-Za-z0-9\-._~+/]+=*\Z")
 _MAX_KEY_BYTES = 4096
-_MAX_RESPONSE_BYTES = 1_048_576
+_MAX_RESPONSE_BYTES = 16 * 1_048_576
 _EXCHANGE_SECONDS = 10.0
 Status = Literal["new", "investigating", "fixing", "monitoring", "resolved", "ignored"]
 Severity = Literal["ERROR", "CRITICAL"]
@@ -56,7 +57,7 @@ class ContractModel(BaseModel):
 
 
 class ErrorGroup(ContractModel):
-    id: int
+    reference: str
     display_name: str
     event_code: str
     exception_type: str | None
@@ -302,6 +303,17 @@ class ErrorApiClient:
             raise ValueError("ERROR_API_URL is invalid") from error
         if hostname is None or (port is not None and not 1 <= port <= 65535):
             raise ValueError("ERROR_API_URL is invalid")
+        if parsed.scheme == "http":
+            try:
+                address = ipaddress.ip_address(hostname)
+            except ValueError as error:
+                raise ValueError(
+                    "ERROR_API_URL must use HTTPS except on literal loopback"
+                ) from error
+            if not address.is_loopback:
+                raise ValueError(
+                    "ERROR_API_URL must use HTTPS except on literal loopback"
+                )
         try:
             key_bytes = api_key.encode("ascii")
         except UnicodeEncodeError as error:

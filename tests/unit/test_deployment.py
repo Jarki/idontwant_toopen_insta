@@ -39,7 +39,9 @@ def _environment() -> dict[str, str]:
     }
 
 
-def _compose_config(overlay: str | None = None) -> dict[str, Any]:
+def _compose_config(
+    overlay: str | None = None, **environment_overrides: str
+) -> dict[str, Any]:
     command = ["docker", "compose", "-f", str(BASE_COMPOSE)]
     if overlay is not None:
         command.extend(["-f", str(PROJECT_ROOT / overlay)])
@@ -47,7 +49,7 @@ def _compose_config(overlay: str | None = None) -> dict[str, Any]:
     result = subprocess.run(
         command,
         cwd=PROJECT_ROOT,
-        env={**os.environ, **_environment()},
+        env={**os.environ, **_environment(), **environment_overrides},
         capture_output=True,
         text=True,
         check=False,
@@ -119,14 +121,14 @@ def test_compose_enforces_migration_gates_and_private_network_surface() -> None:
 
 
 @pytest.mark.parametrize(
-    ("overlay", "tag"),
+    ("overlay", "tag", "host_port"),
     [
-        ("docker/compose.dev.yaml", "latest"),
-        ("docker/compose.prod.yaml", "prod"),
+        ("docker/compose.dev.yaml", "latest", "8001"),
+        ("docker/compose.prod.yaml", "prod", "8000"),
     ],
 )
-def test_compose_overlays_use_one_image_for_every_application_service(
-    overlay: str, tag: str
+def test_compose_overlays_use_one_image_and_distinct_api_ports(
+    overlay: str, tag: str, host_port: str
 ) -> None:
     services = _compose_config(overlay)["services"]
     expected = f"ghcr.io/jarki/idontwant_toopen_insta:{tag}"
@@ -139,6 +141,23 @@ def test_compose_overlays_use_one_image_for_every_application_service(
     ):
         assert services[name]["image"] == expected
         assert "build" not in services[name]
+    assert services["error-api"]["ports"] == [
+        {
+            "mode": "ingress",
+            "target": 8000,
+            "published": host_port,
+            "host_ip": "127.0.0.1",
+            "protocol": "tcp",
+        }
+    ]
+
+
+def test_compose_overlay_api_port_can_be_explicitly_overridden() -> None:
+    services = _compose_config("docker/compose.dev.yaml", ERROR_API_HOST_PORT="8123")[
+        "services"
+    ]
+
+    assert services["error-api"]["ports"][0]["published"] == "8123"
 
 
 def _run_preflight(
@@ -233,6 +252,61 @@ def test_preflight_rejects_runtime_invalid_key_configuration(
 
     assert result.returncode != 0
     assert "Preflight FAILED" in result.stdout
+    assert value not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    ("left", "right"),
+    [
+        ("POSTGRES_PASSWORD", "DB_MIGRATION_PASSWORD"),
+        ("POSTGRES_PASSWORD", "DB_APP_PASSWORD"),
+        ("POSTGRES_PASSWORD", "DB_ERROR_API_PASSWORD"),
+        ("DB_MIGRATION_PASSWORD", "DB_APP_PASSWORD"),
+        ("DB_MIGRATION_PASSWORD", "DB_ERROR_API_PASSWORD"),
+        ("DB_APP_PASSWORD", "DB_ERROR_API_PASSWORD"),
+    ],
+)
+def test_preflight_rejects_database_password_collisions_without_secrets(
+    tmp_path: Path, left: str, right: str
+) -> None:
+    values = _environment()
+    values[right] = values[left]
+
+    result = _run_preflight(tmp_path, values)
+
+    assert result.returncode != 0
+    assert "security-boundary passwords must be distinct" in result.stdout
+    assert values[left] not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("DB_ERROR_API_PASSWORD", "change_me_error_api"),
+        (
+            "ERROR_API_DATABASE_URL",
+            "postgresql+psycopg://db_error_api:change_me_error_api@postgres:5432/reels",
+        ),
+        (
+            "ERROR_API_READ_KEY",
+            "replace_with_random_read_key_at_least_32_chars",
+        ),
+        (
+            "ERROR_API_TRIAGE_KEY",
+            "replace_with_random_triage_key_at_least_32_chars",
+        ),
+    ],
+)
+def test_preflight_rejects_documented_error_api_placeholders(
+    tmp_path: Path, name: str, value: str
+) -> None:
+    values = _environment()
+    values[name] = value
+
+    result = _run_preflight(tmp_path, values)
+
+    assert result.returncode != 0
+    assert "documented example value" in result.stdout
     assert value not in result.stdout + result.stderr
 
 

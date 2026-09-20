@@ -1,5 +1,6 @@
 """FastAPI application for bounded private error-ledger access."""
 
+import asyncio
 import hashlib
 import hmac
 import logging
@@ -20,6 +21,7 @@ from pydantic import (
 )
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.responses import Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from .repository.base import ErrorRepository
 from .repository.models import (
@@ -35,12 +37,135 @@ from .repository.models import (
     ReproductionPage,
     Severity,
     Status,
+    decode_cursor,
 )
 
 _LOGGER = logging.getLogger("error_api")
 _REFERENCE = re.compile(r"ERR-([1-9][0-9]{0,18})\Z")
 _LABEL = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 _BEARER_TOKEN = re.compile(r"[A-Za-z0-9\-._~+/]+=*\Z")
+_MUTATION_PATH = re.compile(r"/v1/errors/[^/]+(?:/notes)?\Z")
+_BODY_READ_TIMEOUT_SECONDS = 2.0
+
+_MAX_MUTATION_BODY_BYTES = 32_768
+
+
+@dataclass(frozen=True)
+class Principal:
+    label: str
+    scope: Literal["read", "triage"]
+
+
+class RequestBodyLimitMiddleware:
+    def __init__(
+        self,
+        app: ASGIApp,
+        max_body_bytes: int,
+        body_timeout_seconds: float,
+        credentials: tuple[tuple[bytes, Principal], ...],
+    ) -> None:
+        self._app = app
+        self._max_body_bytes = max_body_bytes
+        self._body_timeout_seconds = body_timeout_seconds
+        self._credentials = credentials
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http" or not self._is_mutation(scope):
+            await self._app(scope, receive, send)
+            return
+        authorization = next(
+            (
+                value.decode("latin-1")
+                for name, value in scope["headers"]
+                if name.lower() == b"authorization"
+            ),
+            None,
+        )
+        principal = _match_principal(authorization, self._credentials)
+        if principal is None:
+            await self._reject(send, 401, "invalid credentials", authenticate=True)
+            return
+        if principal.scope != "triage":
+            await self._reject(send, 403, "insufficient scope")
+            return
+        for name, value in scope["headers"]:
+            if name.lower() != b"content-length":
+                continue
+            try:
+                declared = int(value)
+            except ValueError:
+                continue
+            if declared > self._max_body_bytes:
+                await self._reject(send, 413, "request body too large")
+                return
+
+        body = bytearray()
+        disconnected = False
+        try:
+            async with asyncio.timeout(self._body_timeout_seconds):
+                while True:
+                    message = await receive()
+                    if message["type"] == "http.disconnect":
+                        disconnected = True
+                        break
+                    if message["type"] != "http.request":
+                        continue
+                    chunk = message.get("body", b"")
+                    if len(body) + len(chunk) > self._max_body_bytes:
+                        await self._reject(send, 413, "request body too large")
+                        return
+                    body.extend(chunk)
+                    if not message.get("more_body", False):
+                        break
+        except TimeoutError:
+            await self._reject(send, 408, "request body timed out")
+            return
+
+        replayed = False
+
+        async def replay_receive() -> Message:
+            nonlocal replayed
+            if not replayed:
+                replayed = True
+                if disconnected:
+                    return {"type": "http.disconnect"}
+                return {
+                    "type": "http.request",
+                    "body": bytes(body),
+                    "more_body": False,
+                }
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        await self._app(scope, replay_receive, send)
+
+    @staticmethod
+    def _is_mutation(scope: Scope) -> bool:
+        method = scope["method"]
+        path = scope["path"]
+        is_note = path.endswith("/notes")
+        return _MUTATION_PATH.fullmatch(path) is not None and (
+            (method == "PATCH" and not is_note) or (method == "POST" and is_note)
+        )
+
+    @staticmethod
+    async def _reject(
+        send: Send, status_code: int, detail: str, *, authenticate: bool = False
+    ) -> None:
+        body = ('{"detail":"' + detail + '"}').encode()
+        headers = [
+            (b"content-type", b"application/json"),
+            (b"content-length", str(len(body)).encode("ascii")),
+        ]
+        if authenticate:
+            headers.append((b"www-authenticate", b"Bearer"))
+        await send(
+            {
+                "type": "http.response.start",
+                "status": status_code,
+                "headers": headers,
+            }
+        )
+        await send({"type": "http.response.body", "body": body})
 
 
 class ApiSettings(BaseModel):
@@ -90,10 +215,21 @@ class ApiSettings(BaseModel):
         return self
 
 
-@dataclass(frozen=True)
-class Principal:
-    label: str
-    scope: Literal["read", "triage"]
+def _match_principal(
+    authorization: str | None,
+    configured: tuple[tuple[bytes, Principal], ...],
+) -> Principal | None:
+    supplied = ""
+    well_formed = False
+    if authorization is not None and authorization.startswith("Bearer "):
+        supplied = authorization[7:]
+        well_formed = _BEARER_TOKEN.fullmatch(supplied) is not None
+    supplied_digest = hashlib.sha256(supplied.encode("utf-8")).digest()
+    matched: Principal | None = None
+    for secret_digest, principal in configured:
+        if hmac.compare_digest(supplied_digest, secret_digest):
+            matched = principal
+    return matched if well_formed else None
 
 
 class HealthResponse(BaseModel):
@@ -111,15 +247,21 @@ def parse_reference(reference: str) -> int:
     return occurrence_id
 
 
-def _page(limit: int, cursor: str | None) -> PageRequest:
+def _page(
+    limit: int, cursor: str | None, kind: str, *, tiebreaker: bool = False
+) -> PageRequest:
     if cursor is None:
         return PageRequest(limit=limit)
-    if not re.fullmatch(r"0|[1-9][0-9]{0,6}", cursor):
-        raise HTTPException(status_code=422, detail="invalid cursor")
-    offset = int(cursor)
-    if offset > 1_000_000:
-        raise HTTPException(status_code=422, detail="invalid cursor")
-    return PageRequest(limit=limit, offset=offset)
+    try:
+        when, identifier, tie = decode_cursor(cursor, kind, tiebreaker=tiebreaker)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail="invalid cursor") from error
+    return PageRequest(
+        limit=limit,
+        cursor_time=when,
+        cursor_id=identifier,
+        cursor_tiebreaker=tie,
+    )
 
 
 def create_app(repository: ErrorRepository, settings: ApiSettings) -> FastAPI:
@@ -170,18 +312,8 @@ def create_app(repository: ErrorRepository, settings: ApiSettings) -> FastAPI:
     def authenticate(
         authorization: Annotated[str | None, Header()] = None,
     ) -> Principal:
-        supplied = ""
-        well_formed = False
-        if authorization is not None and authorization.startswith("Bearer "):
-            supplied = authorization[7:]
-            well_formed = _BEARER_TOKEN.fullmatch(supplied) is not None
-        supplied_digest = hashlib.sha256(supplied.encode("utf-8")).digest()
-        matched: Principal | None = None
-        # Fixed-length digests avoid text encoding errors and compare every position.
-        for secret_digest, principal in configured:
-            if hmac.compare_digest(supplied_digest, secret_digest):
-                matched = principal
-        if not well_formed or matched is None:
+        matched = _match_principal(authorization, configured)
+        if matched is None:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
                 detail="invalid credentials",
@@ -247,7 +379,7 @@ def create_app(repository: ErrorRepository, settings: ApiSettings) -> FastAPI:
             seen_from=seen_from,
             seen_to=seen_to,
         )
-        return repository.list_groups(filters, _page(limit, cursor))
+        return repository.list_groups(filters, _page(limit, cursor, "groups"))
 
     @app.get("/v1/errors/{reference}", response_model=ErrorGroup)
     def get_error(
@@ -262,11 +394,11 @@ def create_app(repository: ErrorRepository, settings: ApiSettings) -> FastAPI:
     def occurrences(
         reference: str,
         _principal: Annotated[Principal, Depends(authenticate)],
-        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        limit: Annotated[int, Query(ge=1, le=10)] = 10,
         cursor: str | None = None,
     ) -> OccurrencePage:
         result = repository.list_occurrences(
-            parse_reference(reference), _page(limit, cursor)
+            parse_reference(reference), _page(limit, cursor, "occurrences")
         )
         if result is None:
             raise HTTPException(status_code=404, detail="error not found")
@@ -282,7 +414,8 @@ def create_app(repository: ErrorRepository, settings: ApiSettings) -> FastAPI:
         cursor: str | None = None,
     ) -> ReproductionPage:
         result = repository.list_reproduction_cases(
-            parse_reference(reference), _page(limit, cursor)
+            parse_reference(reference),
+            _page(limit, cursor, "reproduction", tiebreaker=True),
         )
         if result is None:
             raise HTTPException(status_code=404, detail="error not found")
@@ -295,7 +428,9 @@ def create_app(repository: ErrorRepository, settings: ApiSettings) -> FastAPI:
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
         cursor: str | None = None,
     ) -> NotePage:
-        result = repository.list_notes(parse_reference(reference), _page(limit, cursor))
+        result = repository.list_notes(
+            parse_reference(reference), _page(limit, cursor, "notes")
+        )
         if result is None:
             raise HTTPException(status_code=404, detail="error not found")
         return result
@@ -324,4 +459,10 @@ def create_app(repository: ErrorRepository, settings: ApiSettings) -> FastAPI:
             raise HTTPException(status_code=404, detail="error not found")
         return result
 
+    app.add_middleware(
+        RequestBodyLimitMiddleware,
+        max_body_bytes=_MAX_MUTATION_BODY_BYTES,
+        body_timeout_seconds=_BODY_READ_TIMEOUT_SECONDS,
+        credentials=configured,
+    )
     return app

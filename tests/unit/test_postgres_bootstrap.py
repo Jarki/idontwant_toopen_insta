@@ -32,6 +32,55 @@ def test_bootstrap_rejects_colliding_security_boundary_roles() -> None:
         )
 
 
+def test_bootstrap_rejects_colliding_security_boundary_passwords(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    secret = "shared-secret-must-not-leak"
+    with pytest.raises(SystemExit):
+        postgres_bootstrap._require_distinct_passwords(
+            {
+                "POSTGRES_PASSWORD": "owner-secret",
+                "DB_MIGRATION_PASSWORD": "migration-secret",
+                "DB_APP_PASSWORD": secret,
+                "DB_ERROR_API_PASSWORD": secret,
+            }
+        )
+
+    assert secret not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "attributes",
+    [
+        (True, False, False, False, True, True, False),
+        (True, False, False, False, True, False, True),
+    ],
+)
+def test_bootstrap_rejects_replication_and_bypassrls_roles_without_secrets(
+    attributes: tuple[bool, ...],
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    secret = "role-password-must-not-leak"
+
+    class RoleCursor:
+        def execute(self, _statement: object, *_args: object) -> None:
+            pass
+
+        def fetchone(self) -> tuple[bool, ...]:
+            return attributes
+
+    with pytest.raises(SystemExit):
+        postgres_bootstrap._ensure_role(
+            RoleCursor(),
+            "db_app",
+            secret,
+            host="postgres",
+            port="5432",
+        )
+
+    assert secret not in capsys.readouterr().err
+
+
 def test_bootstrap_removes_unsafe_runtime_default_privileges() -> None:
     cursor = _RecordingCursor()
 

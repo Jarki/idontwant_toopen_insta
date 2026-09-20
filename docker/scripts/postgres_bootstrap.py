@@ -51,6 +51,14 @@ def main() -> None:
             "DB_ERROR_API_USER": error_api_user,
         }
     )
+    _require_distinct_passwords(
+        {
+            "POSTGRES_PASSWORD": pg_password,
+            "DB_MIGRATION_PASSWORD": migration_password,
+            "DB_APP_PASSWORD": app_password,
+            "DB_ERROR_API_PASSWORD": error_api_password,
+        }
+    )
     import psycopg
 
     # Phase 1 — connect to the maintenance database, create roles and database
@@ -222,6 +230,17 @@ def _require_distinct_role_names(roles: dict[str, str]) -> None:
     )
 
 
+def _require_distinct_passwords(passwords: dict[str, str]) -> None:
+    names = list(passwords)
+    for index, left_name in enumerate(names):
+        for right_name in names[index + 1 :]:
+            if passwords[left_name] == passwords[right_name]:
+                _die(
+                    "Security-boundary database passwords must be distinct; "
+                    f"{left_name} matches {right_name}"
+                )
+
+
 def _configure_runtime_isolation(
     cur: Any, migration_user: str, app_user: str, error_api_user: str
 ) -> None:
@@ -305,7 +324,8 @@ def _ensure_role(
 ) -> None:
     """Create a least-privilege login role or fail closed on role drift."""
     cur.execute(
-        "SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolinherit "
+        "SELECT rolcanlogin, rolsuper, rolcreatedb, rolcreaterole, rolinherit, "
+        "rolreplication, rolbypassrl "
         "FROM pg_catalog.pg_authid WHERE rolname = %s",
         (username,),
     )
@@ -315,7 +335,11 @@ def _ensure_role(
     if not exists:
         from psycopg import sql
 
-        role_options = "LOGIN" if inherit else "LOGIN NOINHERIT"
+        role_options = (
+            "LOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOREPLICATION NOBYPASSRLS"
+        )
+        if not inherit:
+            role_options += " NOINHERIT"
         cur.execute(
             sql.SQL("CREATE ROLE {} WITH {} PASSWORD {}").format(
                 sql.Identifier(username),
@@ -327,11 +351,26 @@ def _ensure_role(
         return
 
     assert attributes is not None
-    can_login, is_superuser, can_create_db, can_create_role, role_inherits = attributes
-    if not can_login or is_superuser or can_create_db or can_create_role:
+    (
+        can_login,
+        is_superuser,
+        can_create_db,
+        can_create_role,
+        role_inherits,
+        can_replicate,
+        can_bypass_rls,
+    ) = attributes
+    if (
+        not can_login
+        or is_superuser
+        or can_create_db
+        or can_create_role
+        or can_replicate
+        or can_bypass_rls
+    ):
         _die(
             f"Role '{username}' has unexpected privileges; expected LOGIN, "
-            "NOSUPERUSER, NOCREATEDB, and NOCREATEROLE"
+            "NOSUPERUSER, NOCREATEDB, NOCREATEROLE, NOREPLICATION, and NOBYPASSRLS"
         )
     if not inherit and role_inherits:
         cur.execute(f"ALTER ROLE {_q(username)} NOINHERIT")

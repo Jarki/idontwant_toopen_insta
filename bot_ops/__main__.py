@@ -56,7 +56,7 @@ def _parser() -> argparse.ArgumentParser:
     show.add_argument("reference")
     similar = commands.add_parser("similar")
     similar.add_argument("reference")
-    _add_page(similar)
+    _add_page(similar, maximum=10, default=10)
     repro = commands.add_parser("repro")
     repro.add_argument("reference")
     _add_page(repro)
@@ -90,9 +90,15 @@ def _relative_duration(value: str) -> dt.timedelta:
     return dt.timedelta(seconds=seconds)
 
 
-def _add_page(parser: argparse.ArgumentParser) -> None:
+def _add_page(
+    parser: argparse.ArgumentParser, *, maximum: int = 100, default: int = 50
+) -> None:
     parser.add_argument(
-        "--limit", type=int, choices=range(1, 101), default=50, metavar="1..100"
+        "--limit",
+        type=int,
+        choices=range(1, maximum + 1),
+        default=default,
+        metavar=f"1..{maximum}",
     )
     parser.add_argument("--cursor")
 

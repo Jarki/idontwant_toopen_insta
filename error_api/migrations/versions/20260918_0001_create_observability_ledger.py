@@ -293,6 +293,49 @@ $$
     op.execute(
         sa.text(
             """
+CREATE FUNCTION observability.lookup_reproduction_request(
+    p_error_occurrence_id bigint,
+    p_media_request_id bigint
+)
+RETURNS TABLE(url text, normalized_url text)
+LANGUAGE plpgsql
+STABLE
+SECURITY DEFINER
+SET search_path = pg_catalog, observability
+AS $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM observability.error_request_links
+        WHERE error_occurrence_id = p_error_occurrence_id
+          AND media_request_id = p_media_request_id
+    ) OR to_regclass('public.media_requests') IS NULL
+    THEN
+        RETURN QUERY SELECT NULL::text, NULL::text;
+        RETURN;
+    END IF;
+
+    BEGIN
+        RETURN QUERY EXECUTE
+            'SELECT left(url::text, 8192), left(normalized_url::text, 8192) '
+            'FROM public.media_requests WHERE id = $1'
+            USING p_media_request_id;
+    EXCEPTION
+        WHEN undefined_table THEN
+            RETURN QUERY SELECT NULL::text, NULL::text;
+    END;
+
+    IF NOT FOUND THEN
+        RETURN QUERY SELECT NULL::text, NULL::text;
+    END IF;
+END;
+$$
+            """
+        )
+    )
+    op.execute(
+        sa.text(
+            """
 CREATE VIEW observability.api_error_groups AS
 SELECT
     id,
@@ -343,6 +386,7 @@ FROM observability.error_occurrences
 CREATE VIEW observability.api_reproduction_cases AS
 SELECT
     links.error_occurrence_id AS occurrence_id,
+    links.media_request_id,
     occurrences.error_group_id,
     groups.display_name,
     occurrences.occurred_at,
@@ -357,8 +401,10 @@ JOIN observability.error_occurrences AS occurrences
     ON occurrences.id = links.error_occurrence_id
 JOIN observability.error_groups AS groups
     ON groups.id = occurrences.error_group_id
-LEFT JOIN public.media_requests AS requests
-    ON requests.id = links.media_request_id
+LEFT JOIN LATERAL observability.lookup_reproduction_request(
+    links.error_occurrence_id,
+    links.media_request_id
+) AS requests ON TRUE
             """
         )
     )
@@ -378,6 +424,12 @@ def downgrade() -> None:
     bind = op.get_bind()
     _revoke_runtime_privileges(bind)
     op.execute(sa.text("DROP VIEW IF EXISTS observability.api_reproduction_cases"))
+    op.execute(
+        sa.text(
+            "DROP FUNCTION IF EXISTS "
+            "observability.lookup_reproduction_request(bigint, bigint)"
+        )
+    )
     op.execute(sa.text("DROP VIEW IF EXISTS observability.api_error_notes"))
     op.execute(sa.text("DROP VIEW IF EXISTS observability.api_error_occurrences"))
     op.execute(sa.text("DROP VIEW IF EXISTS observability.api_error_groups"))

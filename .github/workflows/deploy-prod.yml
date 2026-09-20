@@ -66,6 +66,9 @@ jobs:
         with:
           ref: ${{ inputs.compose_ref || github.ref_name }}
 
+      - name: Set deployment release
+        run: echo "APP_RELEASE=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
