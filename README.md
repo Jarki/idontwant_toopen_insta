@@ -183,6 +183,9 @@ triage keys can perform only the documented rename, status, note, link, and
 mark-fixed operations. Generate high-entropy keys, give each a non-secret audit
 label, and never share database credentials with agents.
 
+See [Error API access](docs/error-api-access.md) for credential issuance,
+client setup, rotation, revocation, and validation rules.
+
 To expose the loopback listener to the tailnet, configure Tailscale Serve on the
 host (for example, forward a tailnet HTTPS name to
 `http://127.0.0.1:8000`). Do not change Compose to a public bind. Tailnet ACLs
