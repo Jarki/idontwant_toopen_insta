@@ -8,10 +8,11 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import AwareDatetime
 
+from .auth import Principal
 from .dependencies import (
-    AuthenticatedPrincipal,
-    TriagePrincipal,
-    get_repository,
+    get_authenticated_principal,
+    get_error_repository,
+    get_triage_principal,
 )
 from .repository.base import ErrorRepository
 from .schemas import (
@@ -64,8 +65,8 @@ def _page(
 
 @router.get("/health", response_model=HealthResponse)
 def health(
-    repository: Annotated[ErrorRepository, Depends(get_repository)],
-    _principal: AuthenticatedPrincipal,
+    repository: Annotated[ErrorRepository, Depends(get_error_repository)],
+    _principal: Annotated[Principal, Depends(get_authenticated_principal)],
 ) -> HealthResponse:
     repository.health()
     return HealthResponse()
@@ -73,8 +74,8 @@ def health(
 
 @router.get("/errors", response_model=ErrorGroupPage)
 def list_errors(
-    repository: Annotated[ErrorRepository, Depends(get_repository)],
-    _principal: AuthenticatedPrincipal,
+    repository: Annotated[ErrorRepository, Depends(get_error_repository)],
+    _principal: Annotated[Principal, Depends(get_authenticated_principal)],
     status_filter: Annotated[Status | None, Query(alias="status")] = None,
     provider: Annotated[str | None, Query(min_length=1, max_length=64)] = None,
     severity: Severity | None = None,
@@ -104,8 +105,8 @@ def list_errors(
 @router.get("/errors/{reference}", response_model=ErrorGroup)
 def get_error(
     reference: str,
-    repository: Annotated[ErrorRepository, Depends(get_repository)],
-    _principal: AuthenticatedPrincipal,
+    repository: Annotated[ErrorRepository, Depends(get_error_repository)],
+    _principal: Annotated[Principal, Depends(get_authenticated_principal)],
 ) -> ErrorGroup:
     result = repository.get_group_for_occurrence(_reference_id(reference))
     if result is None:
@@ -116,8 +117,8 @@ def get_error(
 @router.get("/errors/{reference}/occurrences", response_model=OccurrencePage)
 def occurrences(
     reference: str,
-    repository: Annotated[ErrorRepository, Depends(get_repository)],
-    _principal: AuthenticatedPrincipal,
+    repository: Annotated[ErrorRepository, Depends(get_error_repository)],
+    _principal: Annotated[Principal, Depends(get_authenticated_principal)],
     limit: Annotated[int, Query(ge=1, le=10)] = 10,
     cursor: str | None = None,
 ) -> OccurrencePage:
@@ -132,8 +133,8 @@ def occurrences(
 @router.get("/errors/{reference}/reproduction-cases", response_model=ReproductionPage)
 def reproduction_cases(
     reference: str,
-    repository: Annotated[ErrorRepository, Depends(get_repository)],
-    _principal: AuthenticatedPrincipal,
+    repository: Annotated[ErrorRepository, Depends(get_error_repository)],
+    _principal: Annotated[Principal, Depends(get_authenticated_principal)],
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: str | None = None,
 ) -> ReproductionPage:
@@ -149,8 +150,8 @@ def reproduction_cases(
 @router.get("/errors/{reference}/notes", response_model=NotePage)
 def notes(
     reference: str,
-    repository: Annotated[ErrorRepository, Depends(get_repository)],
-    _principal: AuthenticatedPrincipal,
+    repository: Annotated[ErrorRepository, Depends(get_error_repository)],
+    _principal: Annotated[Principal, Depends(get_authenticated_principal)],
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     cursor: str | None = None,
 ) -> NotePage:
@@ -166,8 +167,8 @@ def notes(
 def patch_error(
     reference: str,
     patch: ErrorPatch,
-    repository: Annotated[ErrorRepository, Depends(get_repository)],
-    _principal: TriagePrincipal,
+    repository: Annotated[ErrorRepository, Depends(get_error_repository)],
+    _principal: Annotated[Principal, Depends(get_triage_principal)],
 ) -> ErrorGroup:
     result = repository.update_group(_reference_id(reference), patch)
     if result is None:
@@ -179,8 +180,8 @@ def patch_error(
 def create_note(
     reference: str,
     request: NoteCreate,
-    repository: Annotated[ErrorRepository, Depends(get_repository)],
-    principal: TriagePrincipal,
+    repository: Annotated[ErrorRepository, Depends(get_error_repository)],
+    principal: Annotated[Principal, Depends(get_triage_principal)],
 ) -> ErrorNote:
     result = repository.add_note(
         _reference_id(reference), request.note, principal.label
