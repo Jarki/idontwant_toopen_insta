@@ -335,6 +335,30 @@ def test_authentication_logs_identity_without_disclosing_keys(
     assert invalid not in caplog.text
 
 
+def test_dev_authentication_logs_raw_supplied_keys(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = ApiSettings(
+        read_key_current=READ,
+        read_label_current="reader",
+        triage_key_current=TRIAGE,
+        triage_label_current="operator",
+        log_raw_credentials=True,
+    )
+    client = TestClient(
+        create_app(FakeRepository(), settings), raise_server_exceptions=False
+    )
+    invalid = "invalid-key-that-is-at-least-thirty-two"
+
+    with caplog.at_level(logging.INFO, logger="error_api.auth"):
+        assert client.get("/v1/health", headers=auth(READ)).status_code == 200
+        assert client.get("/v1/health", headers=auth(invalid)).status_code == 401
+
+    assert f"credential={READ!r}" in caplog.text
+    assert f"credential={invalid!r}" in caplog.text
+    assert "fingerprint=" not in caplog.text
+
+
 def test_all_reads_are_bounded_and_reproduction_is_separate(
     api: tuple[TestClient, FakeRepository],
 ) -> None:

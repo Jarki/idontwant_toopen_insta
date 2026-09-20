@@ -62,6 +62,8 @@ def main() -> None:
             else None
         ),
         triage_label_next=_optional("ERROR_API_TRIAGE_LABEL_NEXT"),
+        log_raw_credentials=os.getenv("ERROR_API_LOG_RAW_CREDENTIALS", "false").lower()
+        == "true",
     )
     repository = PostgreSQLErrorRepository(
         database_url,

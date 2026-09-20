@@ -145,10 +145,11 @@ uv run bot-ops errors note ERR-1842 'Reproduced in dev'
 
 ## Debug authentication
 
-The Error API logs the non-secret label, scope, and first 12 hexadecimal
-characters of the credential's SHA-256 digest after successful authentication.
-It logs the same digest fingerprint for a rejected bearer key. Raw keys are
-never logged.
+Dev Compose explicitly enables raw credential logging with
+`ERROR_API_LOG_RAW_CREDENTIALS=true`. Successful authentication logs the
+credential label, scope, and supplied bearer key. Rejected bearer attempts log
+the supplied key and rejection reason. This is intentionally not enabled by
+the production Compose overlay.
 
 Follow the service logs on the deployment host:
 
@@ -161,15 +162,10 @@ docker compose \
   logs --tail=100 --follow error-api
 ```
 
-Calculate the fingerprint of the key configured on a client without printing
-the key:
-
-```bash
-python -c 'import hashlib, os; print(hashlib.sha256(os.environ["ERROR_API_KEY"].encode()).hexdigest()[:12])'
-```
-
-Match that value against `fingerprint=...` in the service log. Successful
-entries also include `label=...` and `scope=read|triage`.
+Follow the log while reproducing the request. A successful entry has
+`credential accepted`, `label=...`, and `scope=read|triage`; a rejected entry
+has `credential rejected` and its reason. Rotate the dev keys after debugging
+if the captured logs have been copied outside the host.
 
 ## Rotate a key without downtime
 
