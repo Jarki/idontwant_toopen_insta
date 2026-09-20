@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import hashlib
 import logging
 import os
 import socket
@@ -307,6 +308,31 @@ def test_authentication_rotation_and_scopes(
         ).status_code
         == 403
     )
+
+
+def test_authentication_logs_identity_without_disclosing_keys(
+    api: tuple[TestClient, FakeRepository],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    client, _ = api
+    invalid = "invalid-key-that-is-at-least-thirty-two"
+
+    with caplog.at_level(logging.INFO, logger="error_api.auth"):
+        assert client.get("/v1/health", headers=auth(READ)).status_code == 200
+        assert client.get("/v1/health", headers=auth(invalid)).status_code == 401
+
+    read_fingerprint = hashlib.sha256(READ.encode()).hexdigest()[:12]
+    invalid_fingerprint = hashlib.sha256(invalid.encode()).hexdigest()[:12]
+    assert (
+        "credential accepted "
+        f"label=reader scope=read fingerprint={read_fingerprint}" in caplog.text
+    )
+    assert (
+        "credential rejected "
+        f"reason=unknown fingerprint={invalid_fingerprint}" in caplog.text
+    )
+    assert READ not in caplog.text
+    assert invalid not in caplog.text
 
 
 def test_all_reads_are_bounded_and_reproduction_is_separate(

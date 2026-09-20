@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 from dataclasses import dataclass
 
 from starlette.authentication import AuthCredentials, AuthenticationBackend, BaseUser
 from starlette.requests import HTTPConnection
 
 from .config import BEARER_TOKEN_PATTERN, ApiSettings, CredentialScope
+
+_FINGERPRINT_HEX_LENGTH = 12
+_LOGGER = logging.getLogger("error_api.auth")
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,6 +59,20 @@ class ApiKeyAuthenticationBackend(AuthenticationBackend):
         for secret_digest, principal in self._credentials:
             if hmac.compare_digest(supplied_digest, secret_digest):
                 matched = principal
+        fingerprint = supplied_digest.hex()[:_FINGERPRINT_HEX_LENGTH]
         if not well_formed or matched is None:
+            if authorization is not None:
+                reason = "malformed" if not well_formed else "unknown"
+                _LOGGER.warning(
+                    "Error API credential rejected reason=%s fingerprint=%s",
+                    reason,
+                    fingerprint,
+                )
             return None
+        _LOGGER.info(
+            "Error API credential accepted label=%s scope=%s fingerprint=%s",
+            matched.label,
+            matched.scope,
+            fingerprint,
+        )
         return AuthCredentials(("authenticated", matched.scope)), matched

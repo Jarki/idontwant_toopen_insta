@@ -143,6 +143,34 @@ uv run bot-ops errors status ERR-1842 investigating
 uv run bot-ops errors note ERR-1842 'Reproduced in dev'
 ```
 
+## Debug authentication
+
+The Error API logs the non-secret label, scope, and first 12 hexadecimal
+characters of the credential's SHA-256 digest after successful authentication.
+It logs the same digest fingerprint for a rejected bearer key. Raw keys are
+never logged.
+
+Follow the service logs on the deployment host:
+
+```bash
+docker compose \
+  --env-file .env \
+  -p ig-reel-downloader-dev \
+  -f docker/compose.yaml \
+  -f docker/compose.dev.yaml \
+  logs --tail=100 --follow error-api
+```
+
+Calculate the fingerprint of the key configured on a client without printing
+the key:
+
+```bash
+python -c 'import hashlib, os; print(hashlib.sha256(os.environ["ERROR_API_KEY"].encode()).hexdigest()[:12])'
+```
+
+Match that value against `fingerprint=...` in the service log. Successful
+entries also include `label=...` and `scope=read|triage`.
+
 ## Rotate a key without downtime
 
 Rotate one scope at a time:

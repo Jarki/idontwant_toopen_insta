@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import os
 
 import uvicorn
@@ -37,6 +38,10 @@ def _integer(name: str, default: int, minimum: int, maximum: int) -> int:
 
 
 def main() -> None:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(levelname)s %(name)s %(message)s",
+    )
     load_dotenv()
     # Resolve and validate every setting before constructing the server.
     database_url = _required("ERROR_API_DATABASE_URL")
