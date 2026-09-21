@@ -128,9 +128,11 @@ def test_instagram_post_rejects_extra_path_segments() -> None:
     )
 
 
+@pytest.mark.parametrize("cookies_provided", [False, True])
 def test_download_maps_ytdlp_info_to_media_item(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    cookies_provided: bool,
 ) -> None:
     calls: list[object] = []
 
@@ -175,7 +177,12 @@ def test_download_maps_ytdlp_info_to_media_item(
         "ig_reel_downloader.downloaders.instagram.yt_dlp.YoutubeDL",
         FakeYoutubeDL,
     )
-    downloader = InstagramReelDownloader(cookie_filepath=None)
+    cookie_path = tmp_path / "cookies.txt"
+    # Invalid contents also catch attempts to load the supplied file.
+    cookie_path.write_text("must not be read")
+    downloader = InstagramReelDownloader(
+        cookie_filepath=cookie_path if cookies_provided else None
+    )
 
     result = downloader.download(
         make_request(downloader, "https://www.instagram.com/reel/ABC123"),
@@ -207,15 +214,18 @@ def test_download_maps_ytdlp_info_to_media_item(
     )
 
 
+@pytest.mark.parametrize("cookies_provided", [False, True])
 def test_instagram_post_download_maps_mixed_carousel_assets(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    cookies_provided: bool,
 ) -> None:
     instances: list[object] = []
     downloaded_images: list[tuple[str, Path, Path | None]] = []
 
     class FakeYoutubeDL:
         def __init__(self, options: dict[str, object]) -> None:
+            assert "cookiefile" not in options
             self.options = options
             self.processed_infos: list[dict[str, object]] = []
             instances.append(self)
@@ -292,7 +302,12 @@ def test_instagram_post_download_maps_mixed_carousel_assets(
         "ig_reel_downloader.downloaders.instagram._download_image_file",
         fake_download_image_file,
     )
-    downloader = InstagramPostDownloader()
+    cookie_path = tmp_path / "cookies.txt"
+    # Invalid contents also catch attempts to load the supplied file.
+    cookie_path.write_text("must not be read")
+    downloader = InstagramPostDownloader(
+        cookie_filepath=cookie_path if cookies_provided else None
+    )
 
     result = downloader.download(
         make_post_request(downloader),
@@ -495,12 +510,15 @@ def test_instagram_post_download_returns_unknown_for_empty_entries(
     assert result.failure_reason == "unknown"
 
 
+@pytest.mark.parametrize("cookies_provided", [False, True])
 def test_instagram_post_download_returns_auth_failure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    cookies_provided: bool,
 ) -> None:
     class FakeYoutubeDL:
         def __init__(self, options: dict[str, object]) -> None:
+            assert "cookiefile" not in options
             self.options = options
 
         def __enter__(self) -> "FakeYoutubeDL":
@@ -519,7 +537,12 @@ def test_instagram_post_download_returns_auth_failure(
         "ig_reel_downloader.downloaders.instagram.yt_dlp.YoutubeDL",
         FakeYoutubeDL,
     )
-    downloader = InstagramPostDownloader()
+    cookie_path = tmp_path / "cookies.txt"
+    # Invalid contents also catch attempts to load the supplied file.
+    cookie_path.write_text("must not be read")
+    downloader = InstagramPostDownloader(
+        cookie_filepath=cookie_path if cookies_provided else None
+    )
 
     result = downloader.download(
         make_post_request(downloader),
@@ -530,13 +553,15 @@ def test_instagram_post_download_returns_auth_failure(
     assert result.failure_reason == "auth"
 
 
+@pytest.mark.parametrize("cookies_provided", [False, True])
 def test_download_returns_auth_failure(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    cookies_provided: bool,
 ) -> None:
     class FakeYoutubeDL:
         def __init__(self, options: dict[str, object]) -> None:
-            pass
+            assert "cookiefile" not in options
 
         def __enter__(self) -> "FakeYoutubeDL":
             return self
@@ -554,7 +579,12 @@ def test_download_returns_auth_failure(
         "ig_reel_downloader.downloaders.instagram.yt_dlp.YoutubeDL",
         FakeYoutubeDL,
     )
-    downloader = InstagramReelDownloader()
+    cookie_path = tmp_path / "cookies.txt"
+    # Invalid contents also catch attempts to load the supplied file.
+    cookie_path.write_text("must not be read")
+    downloader = InstagramReelDownloader(
+        cookie_filepath=cookie_path if cookies_provided else None
+    )
 
     result = downloader.download(
         make_request(downloader, "https://www.instagram.com/reel/ABC123"),

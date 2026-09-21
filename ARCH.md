@@ -161,7 +161,7 @@ Downloader interfaces live in `downloaders/base.py`:
   - Output template: `<output_dir>/%(id)s.%(ext)s`
   - Format: `best`
   - Quiet mode enabled
-  - Optional `cookiefile` if `assets/cookies.txt` exists
+  - No account cookies: supplied cookie paths are ignored for both Reels and Posts, including post images
 - It extracts metadata first with `extract_info(..., download=False)`, computes the final local filepath with `prepare_filename(info)`, downloads the URL, and maps metadata into a generic `MediaItem` with one video `MediaAsset`.
 
 Download failures are normalized into:
@@ -279,7 +279,7 @@ Cached media rows are considered time-fresh only while:
 Runtime filesystem state is limited to two paths:
 
 - `output/` (or `OUTPUT_DIR`): downloaded media files, named by the provider item ID and extension.
-- `assets/cookies.txt`: optional Instagram cookies for restricted reels.
+- `assets/cookies.txt`: optional cookies for providers other than Instagram.
 
 The database is accessed over the network; no `data/` directory is required at runtime.
 
@@ -389,7 +389,7 @@ A disabled downloader is omitted from URL detection, so matching links receive n
 
 \* Required by deployment preflight or the named Compose services, not by every runtime.
 
-Optional cookies should be placed at `assets/cookies.txt`; the code passes them to `yt-dlp` only when the file exists.
+Optional cookies should be placed at `assets/cookies.txt`; non-Instagram downloaders pass them to `yt-dlp` only when the file exists. Instagram downloads are temporarily anonymous-only for account safety, even when cookies are supplied. Media requiring login cannot be downloaded; existing cache behavior is unchanged.
 
 Tailnet HTTPS exposure is host administration: Tailscale Serve forwards to the
 loopback listener, and ACLs restrict agent identities. Compose never binds the

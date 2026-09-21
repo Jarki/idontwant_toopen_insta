@@ -60,7 +60,9 @@ class InstagramReelDownloader:
     media_kind = "reel"
 
     def __init__(self, cookie_filepath: Path | None = None) -> None:
-        self.cookie_filepath = cookie_filepath
+        # Keep the argument for compatibility, but never use account cookies.
+        # Instagram downloads are temporarily anonymous-only for account safety.
+        self.cookie_filepath: Path | None = None
 
     def extract_candidates(self, text: str) -> list[UrlCandidate]:
         candidates: list[UrlCandidate] = []
@@ -182,7 +184,9 @@ class InstagramPostDownloader:
     media_kind = "post"
 
     def __init__(self, cookie_filepath: Path | None = None) -> None:
-        self.cookie_filepath = cookie_filepath
+        # Keep the argument for compatibility, but never use account cookies.
+        # Instagram downloads are temporarily anonymous-only for account safety.
+        self.cookie_filepath: Path | None = None
 
     def extract_candidates(self, text: str) -> list[UrlCandidate]:
         candidates: list[UrlCandidate] = []
