@@ -335,28 +335,20 @@ def test_authentication_logs_identity_without_disclosing_keys(
     assert invalid not in caplog.text
 
 
-def test_dev_authentication_logs_raw_supplied_keys(
+@pytest.mark.parametrize("key", [READ, TRIAGE, "unknown-bearer-key", "malformed key"])
+def test_authentication_never_logs_raw_keys(
+    api: tuple[TestClient, FakeRepository],
     caplog: pytest.LogCaptureFixture,
+    key: str,
 ) -> None:
-    settings = ApiSettings(
-        read_key_current=READ,
-        read_label_current="reader",
-        triage_key_current=TRIAGE,
-        triage_label_current="operator",
-        log_raw_credentials=True,
-    )
-    client = TestClient(
-        create_app(FakeRepository(), settings), raise_server_exceptions=False
-    )
-    invalid = "invalid-key-that-is-at-least-thirty-two"
-
+    client, _ = api
     with caplog.at_level(logging.INFO, logger="error_api.auth"):
-        assert client.get("/v1/health", headers=auth(READ)).status_code == 200
-        assert client.get("/v1/health", headers=auth(invalid)).status_code == 401
+        response = client.get("/v1/health", headers=auth(key))
 
-    assert f"credential={READ!r}" in caplog.text
-    assert f"credential={invalid!r}" in caplog.text
-    assert "fingerprint=" not in caplog.text
+    assert response.status_code == (200 if key in (READ, TRIAGE) else 401)
+    assert key not in caplog.text
+    assert "credential=" not in caplog.text
+    assert "fingerprint=" in caplog.text
 
 
 def test_all_reads_are_bounded_and_reproduction_is_separate(

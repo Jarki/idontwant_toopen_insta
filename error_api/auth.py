@@ -34,7 +34,6 @@ class ApiKeyAuthenticationBackend(AuthenticationBackend):
     """Match configured keys in constant time and expose one request principal."""
 
     def __init__(self, settings: ApiSettings) -> None:
-        self._log_raw_credentials = settings.log_raw_credentials
         self._credentials = tuple(
             (
                 hashlib.sha256(
@@ -64,31 +63,16 @@ class ApiKeyAuthenticationBackend(AuthenticationBackend):
         if not well_formed or matched is None:
             if authorization is not None:
                 reason = "malformed" if not well_formed else "unknown"
-                if self._log_raw_credentials:
-                    _LOGGER.warning(
-                        "Error API credential rejected reason=%s credential=%r",
-                        reason,
-                        supplied,
-                    )
-                else:
-                    _LOGGER.warning(
-                        "Error API credential rejected reason=%s fingerprint=%s",
-                        reason,
-                        fingerprint,
-                    )
+                _LOGGER.warning(
+                    "Error API credential rejected reason=%s fingerprint=%s",
+                    reason,
+                    fingerprint,
+                )
             return None
-        if self._log_raw_credentials:
-            _LOGGER.info(
-                "Error API credential accepted label=%s scope=%s credential=%r",
-                matched.label,
-                matched.scope,
-                supplied,
-            )
-        else:
-            _LOGGER.info(
-                "Error API credential accepted label=%s scope=%s fingerprint=%s",
-                matched.label,
-                matched.scope,
-                fingerprint,
-            )
+        _LOGGER.info(
+            "Error API credential accepted label=%s scope=%s fingerprint=%s",
+            matched.label,
+            matched.scope,
+            fingerprint,
+        )
         return AuthCredentials(("authenticated", matched.scope)), matched

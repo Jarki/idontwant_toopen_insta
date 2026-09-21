@@ -150,10 +150,6 @@ def test_compose_overlays_use_one_image_and_distinct_api_ports(
             "protocol": "tcp",
         }
     ]
-    raw_logging = services["error-api"]["environment"].get(
-        "ERROR_API_LOG_RAW_CREDENTIALS"
-    )
-    assert raw_logging == ("true" if overlay == "docker/compose.dev.yaml" else None)
 
 
 def test_compose_overlay_api_port_can_be_explicitly_overridden() -> None:

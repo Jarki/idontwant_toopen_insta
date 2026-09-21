@@ -37,7 +37,6 @@ class ApiSettings(BaseModel):
         default=None, min_length=32, max_length=4096
     )
     triage_label_next: str | None = None
-    log_raw_credentials: bool = False
 
     @model_validator(mode="after")
     def validate_credentials(self) -> ApiSettings:
