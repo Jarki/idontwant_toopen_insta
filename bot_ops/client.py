@@ -12,11 +12,15 @@ import ssl
 import threading
 import time
 import urllib.parse
+import urllib.request
 from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, TypeVar, cast
 
+from curl_cffi import requests as curl_requests
+from curl_cffi.curl import CURL_WRITEFUNC_ERROR
+from curl_cffi.requests.session import HttpMethod
 from pydantic import AwareDatetime, BaseModel, ConfigDict, ValidationError
 
 _REFERENCE = re.compile(r"ERR-[1-9][0-9]{0,18}\Z")
@@ -183,6 +187,46 @@ def _resolve_addresses(
     return cast(list[tuple[int, int, int, str, tuple[Any, ...]]], result)
 
 
+def _proxy_request(
+    method: str, url: str, headers: Mapping[str, str], body: bytes | None, proxy: str
+) -> Response:
+    # libcurl provides a total deadline (including proxy CONNECT and TLS) and
+    # environment proxy support without weakening the direct transport's limits.
+    chunks: list[bytes] = []
+    size = 0
+    oversized = False
+
+    def receive(chunk: bytes) -> int:
+        nonlocal size, oversized
+        size += len(chunk)
+        if size > _MAX_RESPONSE_BYTES:
+            oversized = True
+            return CURL_WRITEFUNC_ERROR
+        chunks.append(chunk)
+        return len(chunk)
+
+    try:
+        with curl_requests.Session() as session:
+            response = session.request(
+                cast(HttpMethod, method),
+                url,
+                headers=dict(headers),
+                data=body,
+                proxy=proxy,
+                timeout=_EXCHANGE_SECONDS,
+                allow_redirects=False,
+                verify=True,
+                content_callback=receive,
+            )
+    except (curl_requests.RequestsError, ValueError) as error:
+        if oversized:
+            raise ServerError("Error API response exceeded size limit") from None
+        raise TransportError("could not complete Error API exchange") from error
+    if oversized:
+        raise ServerError("Error API response exceeded size limit")
+    return Response(status=response.status_code, body=b"".join(chunks))
+
+
 class HttpTransport:
     """Single-exchange transport: no redirects, bounded bytes, total deadline."""
 
@@ -193,6 +237,10 @@ class HttpTransport:
         host = parsed.hostname
         if host is None:
             raise TransportError("could not complete Error API exchange")
+        proxies = urllib.request.getproxies()
+        proxy = proxies.get(parsed.scheme) or proxies.get("all")
+        if proxy and not urllib.request.proxy_bypass(parsed.netloc):
+            return _proxy_request(method, url, headers, body, proxy)
         deadline = time.monotonic() + _EXCHANGE_SECONDS
         try:
             port = parsed.port or (443 if parsed.scheme == "https" else 80)

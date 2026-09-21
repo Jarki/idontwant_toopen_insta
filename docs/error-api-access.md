@@ -129,6 +129,10 @@ export ERROR_API_URL='https://errors.example-tailnet.ts.net'
 export ERROR_API_KEY='<scoped-key>'
 ```
 
+The client honors `HTTP_PROXY`, `HTTPS_PROXY`, `ALL_PROXY`, and `NO_PROXY`
+(including lowercase variants). Only configure trusted proxies; TLS verification,
+redirect rejection, response-size limits, and the total request deadline remain enabled.
+
 Verify read access:
 
 ```bash
