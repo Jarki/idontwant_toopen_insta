@@ -37,8 +37,25 @@ services:
       DB_MIGRATION_PASSWORD: ${DB_MIGRATION_PASSWORD}
       DB_APP_USER: ${DB_APP_USER}
       DB_APP_PASSWORD: ${DB_APP_PASSWORD}
+      DB_ERROR_API_USER: ${DB_ERROR_API_USER}
+      DB_ERROR_API_PASSWORD: ${DB_ERROR_API_PASSWORD}
     restart: "no"
 
+
+  error-api-migrate:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.app
+    entrypoint: ["/app/.venv/bin/alembic"]
+    command: ["-c", "error_api_alembic.ini", "upgrade", "head"]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      DB_MIGRATION_URL: ${DB_MIGRATION_URL}
+      DB_APP_USER: ${DB_APP_USER}
+      DB_ERROR_API_USER: ${DB_ERROR_API_USER}
+    restart: "no"
 
   migrate:
     build:
@@ -52,6 +69,7 @@ services:
     environment:
       DATABASE_URL: ${DB_MIGRATION_URL}
       DB_APP_USER: ${DB_APP_USER}
+      DB_ERROR_API_USER: ${DB_ERROR_API_USER}
     restart: "no"
 
   downloader:
@@ -59,7 +77,7 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.app
     depends_on:
-      migrate:
+      error-api-migrate:
         condition: service_completed_successfully
     environment:
       DATABASE_URL: ${DATABASE_URL}
@@ -75,9 +93,52 @@ services:
       REDDIT_DOWNLOADER_ENABLED: "${REDDIT_DOWNLOADER_ENABLED:-true}"
       X_DOWNLOADER_ENABLED: "${X_DOWNLOADER_ENABLED:-true}"
       YOUTUBE_DOWNLOADER_ENABLED: "${YOUTUBE_DOWNLOADER_ENABLED:-true}"
+      ERROR_LEDGER_ENABLED: "${ERROR_LEDGER_ENABLED:-true}"
+      APP_RELEASE: "${APP_RELEASE:-development}"
+      ERROR_REPORTER_QUEUE_SIZE: "${ERROR_REPORTER_QUEUE_SIZE:-256}"
+      ERROR_REPORTER_RETRIES: "${ERROR_REPORTER_RETRIES:-2}"
+      ERROR_REPORTER_RETRY_BACKOFF_SECONDS: "${ERROR_REPORTER_RETRY_BACKOFF_SECONDS:-0.05}"
     volumes:
       - ../${OUTPUT_DIR:-output}:/app/${OUTPUT_DIR:-output}
       - ../assets:/app/assets
+    restart: unless-stopped
+
+  error-api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.app
+    entrypoint: ["/app/.venv/bin/python", "-m", "error_api"]
+    depends_on:
+      error-api-migrate:
+        condition: service_completed_successfully
+    environment:
+      ERROR_API_DATABASE_URL: ${ERROR_API_DATABASE_URL}
+      ERROR_API_READ_KEY: ${ERROR_API_READ_KEY}
+      ERROR_API_READ_LABEL: ${ERROR_API_READ_LABEL}
+      ERROR_API_READ_KEY_NEXT: "${ERROR_API_READ_KEY_NEXT:-}"
+      ERROR_API_READ_LABEL_NEXT: "${ERROR_API_READ_LABEL_NEXT:-}"
+      ERROR_API_TRIAGE_KEY: ${ERROR_API_TRIAGE_KEY}
+      ERROR_API_TRIAGE_LABEL: ${ERROR_API_TRIAGE_LABEL}
+      ERROR_API_TRIAGE_KEY_NEXT: "${ERROR_API_TRIAGE_KEY_NEXT:-}"
+      ERROR_API_TRIAGE_LABEL_NEXT: "${ERROR_API_TRIAGE_LABEL_NEXT:-}"
+      ERROR_API_HOST: "0.0.0.0"
+      ERROR_API_PORT: "8000"
+      ERROR_API_STATEMENT_TIMEOUT_MS: "${ERROR_API_STATEMENT_TIMEOUT_MS:-3000}"
+    ports:
+      - "127.0.0.1:${ERROR_API_HOST_PORT:-8000}:8000"
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          /app/.venv/bin/python -c 'import os, urllib.request;
+          request = urllib.request.Request("http://127.0.0.1:8000/v1/health",
+          headers={"Authorization": "Bearer " + os.environ["ERROR_API_READ_KEY"]});
+          response = urllib.request.urlopen(request, timeout=5);
+          assert response.status == 200'
+      interval: 10s
+      timeout: 6s
+      retries: 6
+      start_period: 5s
     restart: unless-stopped
 
 volumes:

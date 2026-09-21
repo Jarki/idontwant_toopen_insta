@@ -4,6 +4,7 @@ import logging
 from dataclasses import dataclass
 from pathlib import Path
 
+from ig_reel_downloader import error_reporter
 from ig_reel_downloader.constants import X_PAGE_METADATA_VERSION
 from ig_reel_downloader.downloaders.base import (
     DownloadContext,
@@ -40,6 +41,17 @@ class MediaFetchService:
         try:
             resolve_result = candidate.downloader.resolve(candidate)
         except ResolutionError as error:
+            if error.failure_reason == "unknown":
+                with error_reporter.bind_context(
+                    media_request_ids=(media_request_id,),
+                    provider=candidate.provider,
+                    media_kind=candidate.link_type,
+                    stage="resolve",
+                ):
+                    logger.exception(
+                        "Unexpected normalized media resolution failure",
+                        extra={"event_code": "media.resolve_normalized_unknown"},
+                    )
             self._record_failure(
                 media_request_id,
                 candidate,
@@ -52,7 +64,16 @@ class MediaFetchService:
                 failure_reason=error.failure_reason,
             )
         except Exception:
-            logger.exception("Unexpected error while resolving %s", result_url)
+            with error_reporter.bind_context(
+                media_request_ids=(media_request_id,),
+                provider=candidate.provider,
+                media_kind=candidate.link_type,
+                stage="resolve",
+            ):
+                logger.exception(
+                    "Unexpected error while resolving media",
+                    extra={"event_code": "media.resolve_unexpected"},
+                )
             self._record_failure(
                 media_request_id,
                 candidate,
@@ -115,18 +136,28 @@ class MediaFetchService:
             ref.provider_item_id,
         )
         try:
-            download_result = request.downloader.download(
-                request,
-                DownloadContext(output_dir=self.output_dir),
-            )
+            with error_reporter.bind_context(
+                media_request_ids=(media_request_id,),
+                provider=ref.provider,
+                media_kind=ref.media_kind,
+                stage="download",
+            ):
+                download_result = request.downloader.download(
+                    request,
+                    DownloadContext(output_dir=self.output_dir),
+                )
         except Exception:
             failure_url = request.normalized_url or request.url
-            logger.exception(
-                "Unexpected error while downloading %s:%s %s",
-                ref.provider,
-                ref.media_kind,
-                ref.provider_item_id,
-            )
+            with error_reporter.bind_context(
+                media_request_ids=(media_request_id,),
+                provider=ref.provider,
+                media_kind=ref.media_kind,
+                stage="download",
+            ):
+                logger.exception(
+                    "Unexpected error while downloading media",
+                    extra={"event_code": "media.download_unexpected"},
+                )
             self._record_failure(
                 media_request_id,
                 candidate,
@@ -164,14 +195,16 @@ class MediaFetchService:
 
         if not _identity_matches(download_result.media, ref):
             failure_url = request.normalized_url or request.url
-            logger.error(
-                "Downloader returned identity mismatch for %s: expected %s got %s:%s:%s",
-                failure_url,
-                ref.media_id,
-                download_result.media.provider,
-                download_result.media.media_kind,
-                download_result.media.provider_item_id,
-            )
+            with error_reporter.bind_context(
+                media_request_ids=(media_request_id,),
+                provider=ref.provider,
+                media_kind=ref.media_kind,
+                stage="validate_identity",
+            ):
+                logger.error(
+                    "Downloader returned an unexpected media identity",
+                    extra={"event_code": "media.identity_mismatch"},
+                )
             self._record_failure(
                 media_request_id,
                 candidate,

@@ -215,15 +215,16 @@ class YouTubeDownloader:
                 return MediaDownloadResult(media=media)
         except Exception as error:
             failure_reason = _classify_youtube_error(error)
-            if failure_reason == "auth":
+            if failure_reason in ("auth", "blocked", "unsupported"):
                 logger.warning(
-                    "Failed to download YouTube video from %s: authentication required (%s)",
-                    url,
+                    "YouTube download failed: %s (%s)",
+                    failure_reason,
                     error,
                 )
             else:
                 logger.exception(
-                    "Failed to download YouTube video from %s (%s)", url, error
+                    "Unexpected YouTube download failure",
+                    extra={"event_code": "provider.youtube.download_unexpected"},
                 )
             return MediaDownloadResult(media=None, failure_reason=failure_reason)
 

@@ -136,8 +136,7 @@ For each text message:
    - An invalid stored ID falls back to uploading the local file and refreshes the stored ID.
    - Each post retains its own caption rather than being flattened into a media group with unrelated posts.
    - Requests are marked delivered only after Telegram confirms the send.
-7. Failed downloads or unsupported rendered items are summarized as chat messages.
-8. Telegram upload `TimedOut` errors are logged and reported to the user with a friendly timeout message.
+7. Download, rendering, and upload-timeout failures remain silent in Telegram while ordinary logging and request outcome persistence continue. Successful items from the same message are still delivered.
 
 ### Quiet-skip behavior
 
@@ -175,9 +174,8 @@ Download failures are normalized into:
 Each downloader translates its own typed internal errors and provider-specific
 `yt-dlp` messages into these domain failure reasons. Shared downloader support
 contains no provider-specific error strings. TikTok bot-detection failures are
-retried up to three times. If all attempts
-fail, the error is logged as a warning and produces a retry-later message instead
-of escaping the Telegram handler. An opt-in live smoke test in
+retried up to three times. If all attempts fail, the error is logged as a warning
+and remains silent in Telegram instead of escaping the handler. An opt-in live smoke test in
 `tests/e2e/test_tiktok_live.py` exercises one URL or a newline-delimited corpus
 from the current host/IP.
 
@@ -305,35 +303,41 @@ The Docker image:
 
 ### Compose services
 
-`docker/compose.yaml` defines three database-related services and the downloader:
+`docker/compose.yaml` defines three one-shot database gates and two independent
+long-running runtimes:
 
-- `postgres`: a PostgreSQL container with persistent named volume and `pg_isready` healthcheck. Uses the official PostgreSQL image, not the app image.
-- `postgres-bootstrap`: a one-shot service that runs after PostgreSQL is healthy. It creates or validates the migration and application roles idempotently, grants privileges, and exits. Rerunnable against an existing volume.
-- `migrate`: a one-shot service that uses the app image to run `/app/.venv/bin/alembic upgrade head`. It depends on `postgres-bootstrap` completing successfully.
-- `downloader`: the long-running bot service. It depends on `migrate` completing successfully before startup.
+- `postgres`: persistent PostgreSQL with `pg_isready`; port 5432 is exposed only
+  inside the Compose network and is never published on the host.
+- `postgres-bootstrap`: creates or validates distinct owner, migration, bot,
+  and Error API roles after PostgreSQL is healthy and removes unsafe runtime
+  memberships/default privileges.
+- `migrate`: applies the public Alembic history as the migration role.
+- `error-api-migrate`: applies the independent observability Alembic history
+  with the same migration role after the public history completes.
+- `downloader`: the Telegram bot and direct bounded ledger reporter.
+- `error-api`: the separately authenticated HTTP runtime, published only on
+  loopback. The production overlay defaults to port `8000`, development to
+  `8001`, and `ERROR_API_HOST_PORT` overrides either default.
 
-The default startup order is: `postgres` healthy → `postgres-bootstrap` complete → `migrate` complete → `downloader`.
+The enforced graph is `postgres` healthy → `postgres-bootstrap` complete →
+`migrate` complete → `error-api-migrate` complete → `downloader` and
+`error-api` independently. Neither runtime applies migrations. The downloader
+depends on observability schema readiness, not API process availability.
 
-`downloader` has these mounts:
-
-- `../${OUTPUT_DIR:-output}:/app/${OUTPUT_DIR:-output}`
-- `../assets:/app/assets`
-
-Runtime configuration is injected explicitly from Compose interpolation; the
-container does not mount `.env`, so bootstrap and migration passwords are not
-available to the downloader process.
-
-`downloader` restarts with `unless-stopped`; `postgres` restarts with policy; `postgres-bootstrap` and `migrate` do not restart.
-
-Port `5432` is not published to the host by default. Administrative access uses a network-attached Compose service or a temporary controlled host port.
+The downloader mounts `output/` and `assets/`. Runtime configuration is
+injected explicitly; `.env` is not mounted, so owner/migration credentials and
+API keys are absent from the bot process. Conversely the API receives only its
+restricted database URL and scoped key material. One-shot services do not
+restart; PostgreSQL and both runtimes use `unless-stopped`.
 
 ### Database roles
 
-Three separate PostgreSQL roles enforce least privilege:
+Four separate PostgreSQL roles enforce least privilege:
 
 - **Bootstrap/owner**: created from `POSTGRES_USER`/`POSTGRES_PASSWORD`; used only for role grants, maintenance, and backups.
 - **Migration** (`DB_MIGRATION_URL`): owns the application schema and runs DDL for Alembic migrations.
 - **Application** (`DATABASE_URL`): restricted to DML on runtime tables and usage of their required sequences; it cannot access Alembic metadata or legacy rows and is never a superuser or schema owner.
+- **Error API** (`ERROR_API_DATABASE_URL`): restricted to curated observability reads and approved triage writes; it cannot access public application data or run DDL.
 
 ### Cleanup loop
 
@@ -354,7 +358,8 @@ The documented environment variables are:
 | --- | --- | --- | --- |
 | `BOT_TOKEN` | yes | none | Telegram bot token. |
 | `DATABASE_URL` | yes | none | PostgreSQL application connection URL (`postgresql+psycopg://` scheme). |
-| `DB_MIGRATION_URL` | yes* | none | PostgreSQL migration connection URL. Required for bootstrap/migrate services. |
+| `DB_MIGRATION_URL` | yes* | none | PostgreSQL migration connection URL. Required for main and Error API migrations. |
+| `ERROR_API_DATABASE_URL` | yes* | none | Restricted Error API database connection URL; never used for migrations. |
 | `POSTGRES_DB` | yes* | none | PostgreSQL database name. Required for bootstrap service. |
 | `POSTGRES_USER` | yes* | none | PostgreSQL bootstrap/owner role. Required for bootstrap service. |
 | `POSTGRES_PASSWORD` | yes* | none | PostgreSQL bootstrap/owner password. Required for bootstrap service. |
@@ -369,12 +374,34 @@ The documented environment variables are:
 | `REDDIT_DOWNLOADER_ENABLED` | no | `true` | Register the Reddit downloader. |
 | `X_DOWNLOADER_ENABLED` | no | `true` | Register the X downloader. |
 | `YOUTUBE_DOWNLOADER_ENABLED` | no | `true` | Register the YouTube downloader. |
+| `ERROR_LEDGER_ENABLED` | no | `true` | Enable the bot's direct bounded ledger reporter. |
+| `APP_RELEASE` | yes* | none | Immutable image/commit identifier attached to occurrences. |
+| `ERROR_REPORTER_QUEUE_SIZE` | no | `256` | Bounded queue size (1-256). |
+| `ERROR_REPORTER_RETRIES` | no | `2` | Writer-thread retry count (0-2). |
+| `ERROR_REPORTER_RETRY_BACKOFF_SECONDS` | no | `0.05` | Writer-thread backoff (0-0.05 seconds). |
+| `ERROR_API_READ_KEY` / `ERROR_API_READ_LABEL` | yes* | none | Read-only API credential and audit label. |
+| `ERROR_API_TRIAGE_KEY` / `ERROR_API_TRIAGE_LABEL` | yes* | none | Restricted workflow credential and audit label. |
+| `ERROR_API_*_KEY_NEXT` / `ERROR_API_*_LABEL_NEXT` | no | none | Optional paired key-rotation slots. |
+| `ERROR_API_HOST_PORT` | no | prod `8000`, dev `8001` | Explicit loopback-only published host-port override. |
+| `ERROR_API_STATEMENT_TIMEOUT_MS` | no | `3000` | Bounded API SQL timeout (100-30000 ms). |
 
 A disabled downloader is omitted from URL detection, so matching links receive no bot response. The development and production deployment workflows expose these flags as checkbox inputs.
 
-\* Required by the Compose bootstrap and migration services, not by the downloader runtime.
+\* Required by deployment preflight or the named Compose services, not by every runtime.
 
 Optional cookies should be placed at `assets/cookies.txt`; the code passes them to `yt-dlp` only when the file exists.
+
+Tailnet HTTPS exposure is host administration: Tailscale Serve forwards to the
+loopback listener, and ACLs restrict agent identities. Compose never binds the
+API publicly, and API-key authentication remains mandatory on the tailnet.
+Read and triage keys are independently scoped and can be rotated without bot
+restart by temporarily configuring the matching next key/label pair.
+
+Operational recovery preserves the bot/API separation. An API outage leaves
+polling and direct ledger writes running. Migration recovery reruns bootstrap,
+the public migration, then the Error API migration before restarting both
+runtimes. Agents use `uv run bot-ops` through the authenticated HTTP contract;
+they receive neither shell access nor database credentials.
 
 ## Quality gates
 

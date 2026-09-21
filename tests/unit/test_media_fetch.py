@@ -1,9 +1,14 @@
 import datetime
+import logging
 from pathlib import Path
 
+import pytest
+
+from ig_reel_downloader import error_reporter, media_fetch as media_fetch_module
 from ig_reel_downloader.constants import X_PAGE_METADATA_VERSION
 from ig_reel_downloader.downloaders.base import (
     DownloadContext,
+    DownloadFailureReason,
     MediaDownloadResult,
     ProviderItemRef,
     ResolutionError,
@@ -366,6 +371,51 @@ def test_fetch_handles_resolution_error_without_cache_lookup_or_download(
     )
 
 
+def test_fetch_reports_normalized_unknown_resolution_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    downloader = FakeDownloader(
+        MediaDownloadResult(media=None),
+        resolution_error=ResolutionError("https://example.com/bad", "unknown"),
+    )
+    service = MediaFetchService(FakeRepository(cached=None), output_dir=tmp_path)
+    calls: list[dict[str, object]] = []
+    monkeypatch.setattr(
+        media_fetch_module.logger,
+        "exception",
+        lambda _message, **kwargs: calls.append(kwargs),
+    )
+
+    result = service.fetch(make_candidate(downloader), media_request_id=99)
+
+    assert result.failure_reason == "unknown"
+    assert calls == [{"extra": {"event_code": "media.resolve_normalized_unknown"}}]
+
+
+@pytest.mark.parametrize("failure_reason", ["auth", "blocked", "unsupported"])
+def test_fetch_excludes_recognized_resolution_errors_from_error_reporting(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failure_reason: DownloadFailureReason,
+) -> None:
+    downloader = FakeDownloader(
+        MediaDownloadResult(media=None),
+        resolution_error=ResolutionError(
+            "https://example.com/recognized",
+            failure_reason,
+        ),
+    )
+    service = MediaFetchService(FakeRepository(cached=None), output_dir=tmp_path)
+    monkeypatch.setattr(
+        media_fetch_module.logger,
+        "exception",
+        lambda *_args, **_kwargs: pytest.fail("recognized outcome was reported"),
+    )
+
+    service.fetch(make_candidate(downloader), media_request_id=99)
+
+
 def test_fetch_records_unexpected_resolution_exception_as_unknown(
     tmp_path: Path,
 ) -> None:
@@ -382,6 +432,52 @@ def test_fetch_records_unexpected_resolution_exception_as_unknown(
     assert result.failure_reason == "unknown"
     assert repository.lookup is None
     assert repository.failed_requests[0][0:2] == (99, "unknown")
+
+
+def test_provider_error_snapshot_uses_resolved_download_context(tmp_path: Path) -> None:
+    snapshots: list[error_reporter.ErrorSnapshot] = []
+
+    class ReportingDownloader(FakeDownloader):
+        def resolve(self, candidate: UrlCandidate) -> ResolveResult:
+            request = super().resolve(candidate).request
+            assert request is not None
+            return ResolveResult(
+                request=ResolvedMediaRequest(
+                    url=request.url,
+                    normalized_url=request.normalized_url,
+                    downloader=self,
+                    provider_item_ref=ProviderItemRef("instagram", "story", "ABC123"),
+                )
+            )
+
+        def download(
+            self,
+            request: ResolvedMediaRequest,
+            context: DownloadContext,
+        ) -> MediaDownloadResult:
+            record = logging.LogRecord(
+                "provider",
+                logging.ERROR,
+                __file__,
+                1,
+                "provider failed",
+                (),
+                None,
+            )
+            record.event_code = "provider.download_unexpected"
+            snapshots.append(error_reporter.snapshot_from_record(record))
+            return super().download(request, context)
+
+    downloader = ReportingDownloader(MediaDownloadResult(media=None))
+    service = MediaFetchService(FakeRepository(cached=None), output_dir=tmp_path)
+
+    service.fetch(make_candidate(downloader), media_request_id=99)
+
+    assert len(snapshots) == 1
+    assert snapshots[0].media_request_ids == (99,)
+    assert snapshots[0].provider == "instagram"
+    assert snapshots[0].media_kind == "story"
+    assert snapshots[0].component == "download"
 
 
 def test_fetch_records_unexpected_download_exception_as_unknown(

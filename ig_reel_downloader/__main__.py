@@ -40,6 +40,31 @@ def _get_bool_env(name: str, default: bool) -> bool:
     raise ValueError(msg)
 
 
+def _get_int_env(name: str, default: int, minimum: int, maximum: int) -> int:
+    value = os.getenv(name, str(default))
+    try:
+        parsed = int(value)
+    except ValueError as error:
+        raise ValueError(f"{name} must be an integer") from error
+    if not minimum <= parsed <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return parsed
+
+
+def _get_bounded_float_env(
+    name: str, default: float, minimum: float, maximum: float
+) -> float:
+    parsed = _get_float_env(name, default)
+    if not minimum <= parsed <= maximum:
+        raise ValueError(f"{name} must be between {minimum} and {maximum}")
+    return parsed
+
+
+class _DisabledReporter:
+    def stop(self) -> None:
+        pass
+
+
 def _build_downloaders(
     cookie_filepath: Path,
 ) -> list[ig_reel_downloader.downloaders.Downloader]:
@@ -107,32 +132,50 @@ def main() -> None:
         msg = "DATABASE_URL must use the postgresql+psycopg:// dialect"
         raise ValueError(msg)
 
-    repo = ig_reel_downloader.repository.postgres.PostgreSQLRepository(database_url)
-    registry = ig_reel_downloader.downloaders.DownloaderRegistry(
-        _build_downloaders(cookie_filepath)
+    reporter: (
+        ig_reel_downloader.error_reporter.DatabaseErrorReporter | _DisabledReporter
     )
-    fetch_service = ig_reel_downloader.media_fetch.MediaFetchService(
-        repo,
-        output_dir=output_dir,
-    )
-    renderer_registry = ig_reel_downloader.renderers.default_renderer_registry()
-    sender = ig_reel_downloader.telegram_sender.TelegramMediaSender(
-        telegram_media_write_timeout=telegram_media_write_timeout,
-        telegram_read_timeout=telegram_read_timeout,
-    )
+    if _get_bool_env("ERROR_LEDGER_ENABLED", True):
+        reporter = ig_reel_downloader.error_reporter.install_reporter(
+            database_url,
+            release=os.getenv("APP_RELEASE"),
+            queue_size=_get_int_env("ERROR_REPORTER_QUEUE_SIZE", 256, 1, 256),
+            retries=_get_int_env("ERROR_REPORTER_RETRIES", 2, 0, 2),
+            retry_backoff=_get_bounded_float_env(
+                "ERROR_REPORTER_RETRY_BACKOFF_SECONDS", 0.05, 0.0, 0.05
+            ),
+        )
+    else:
+        reporter = _DisabledReporter()
+    try:
+        repo = ig_reel_downloader.repository.postgres.PostgreSQLRepository(database_url)
+        registry = ig_reel_downloader.downloaders.DownloaderRegistry(
+            _build_downloaders(cookie_filepath)
+        )
+        fetch_service = ig_reel_downloader.media_fetch.MediaFetchService(
+            repo,
+            output_dir=output_dir,
+        )
+        renderer_registry = ig_reel_downloader.renderers.default_renderer_registry()
+        sender = ig_reel_downloader.telegram_sender.TelegramMediaSender(
+            telegram_media_write_timeout=telegram_media_write_timeout,
+            telegram_read_timeout=telegram_read_timeout,
+        )
 
-    app = ig_reel_downloader.app.IgReelDownloaderApp(
-        bot_token,
-        registry,
-        fetch_service,
-        renderer_registry,
-        sender,
-        telegram_media_write_timeout=telegram_media_write_timeout,
-        telegram_read_timeout=telegram_read_timeout,
-        judgmental_chance=judgmental_chance,
-        judgmental_gifs=ig_reel_downloader.judgmental.JUDGMENTAL_GIFS,
-    )
-    app.run()
+        app = ig_reel_downloader.app.IgReelDownloaderApp(
+            bot_token,
+            registry,
+            fetch_service,
+            renderer_registry,
+            sender,
+            telegram_media_write_timeout=telegram_media_write_timeout,
+            telegram_read_timeout=telegram_read_timeout,
+            judgmental_chance=judgmental_chance,
+            judgmental_gifs=ig_reel_downloader.judgmental.JUDGMENTAL_GIFS,
+        )
+        app.run()
+    finally:
+        reporter.stop()
 
 
 if __name__ == "__main__":

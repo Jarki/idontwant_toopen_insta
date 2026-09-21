@@ -66,6 +66,9 @@ jobs:
         with:
           ref: ${{ inputs.compose_ref || github.ref_name }}
 
+      - name: Set deployment release
+        run: echo "APP_RELEASE=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
@@ -164,7 +167,7 @@ jobs:
             -f docker/compose.prod.yaml \
             run --rm postgres-bootstrap
 
-      - name: Run migrations
+      - name: Run main migration
         env:
           IMAGE_TAG: ${{ inputs.image_tag }}
         run: |
@@ -179,7 +182,22 @@ jobs:
             -f docker/compose.prod.yaml \
             run --rm migrate
 
-      - name: Start downloader
+      - name: Run Error API migration
+        env:
+          IMAGE_TAG: ${{ inputs.image_tag }}
+        run: |
+          set -euo pipefail
+          deploy_dir="${HOME}/deploy/ig-reel-downloader-prod"
+          cd "${deploy_dir}"
+
+          docker compose \
+            --env-file "${deploy_dir}/.env" \
+            -p ig-reel-downloader-prod \
+            -f docker/compose.yaml \
+            -f docker/compose.prod.yaml \
+            run --rm error-api-migrate
+
+      - name: Start runtimes
         env:
           IMAGE_TAG: ${{ inputs.image_tag }}
           INSTAGRAM_REEL_DOWNLOADER_ENABLED: ${{ inputs.enable_instagram_reels }}
@@ -198,7 +216,7 @@ jobs:
             -p ig-reel-downloader-prod \
             -f docker/compose.yaml \
             -f docker/compose.prod.yaml \
-            up -d --remove-orphans downloader
+            up -d --wait --wait-timeout 90 --remove-orphans downloader error-api
 
       - name: Show status
         env:

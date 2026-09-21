@@ -3,9 +3,19 @@ services:
     build: !reset null
     image: ghcr.io/jarki/idontwant_toopen_insta:${IMAGE_TAG:-latest}
 
+  error-api-migrate:
+    build: !reset null
+    image: ghcr.io/jarki/idontwant_toopen_insta:${IMAGE_TAG:-latest}
+
   downloader:
     build: !reset null
     image: ghcr.io/jarki/idontwant_toopen_insta:${IMAGE_TAG:-latest}
+
+  error-api:
+    build: !reset null
+    image: ghcr.io/jarki/idontwant_toopen_insta:${IMAGE_TAG:-latest}
+    ports: !override
+      - "127.0.0.1:${ERROR_API_HOST_PORT:-8001}:8000"
 
   postgres-bootstrap:
     build: !reset null

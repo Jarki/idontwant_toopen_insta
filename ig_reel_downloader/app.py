@@ -2,7 +2,6 @@ import asyncio
 import collections
 import datetime
 import logging
-from contextlib import suppress
 
 from telegram import Update
 from telegram.error import BadRequest, TimedOut
@@ -15,8 +14,8 @@ from telegram.ext import (
     filters,
 )
 
-from . import judgmental as judgmental_module
-from .downloaders import DownloaderRegistry, DownloadFailureReason, UrlCandidate
+from . import error_reporter, judgmental as judgmental_module
+from .downloaders import DownloaderRegistry, UrlCandidate
 from .media_fetch import MediaFetchResult, MediaFetchService
 from .renderers import RendererRegistry, UnsupportedMediaError
 from .repository import models
@@ -103,19 +102,58 @@ class IgReelDownloaderApp:
         self.app.add_handler(CommandHandler("stats", self._stats_handler))
         self.app.add_handler(CommandHandler("top", self._top_handler))
         self.app.add_handler(MessageHandler(filters.TEXT, self._message_handler))
+        self.app.add_error_handler(self._unexpected_error_handler)
 
-    def _format_download_error(
+    def _fetch_with_context(
         self,
-        reel_url: str,
-        failure_reason: DownloadFailureReason | None,
-    ) -> str:
-        if failure_reason == "auth":
-            return f"Could not download (auth expired): {reel_url}"
-        if failure_reason == "blocked":
-            return (
-                f"Download was temporarily blocked; please try again later: {reel_url}"
+        candidate: UrlCandidate,
+        media_request_id: int,
+    ) -> MediaFetchResult:
+        with error_reporter.bind_context(
+            media_request_ids=(media_request_id,),
+            provider=candidate.provider,
+            media_kind=candidate.link_type,
+            stage="fetch",
+        ):
+            return self.fetch_service.fetch(candidate, media_request_id)
+
+    def _report_unexpected_once(
+        self,
+        error: BaseException,
+        *,
+        message: str,
+        event_code: str,
+    ) -> None:
+        if getattr(error, "_ig_error_reported", False):
+            return
+        object.__setattr__(error, "_ig_error_reported", True)
+        logger.error(
+            message,
+            exc_info=(type(error), error, error.__traceback__),
+            extra={
+                "event_code": event_code,
+                "redact_exception_message": True,
+            },
+        )
+
+    async def _unexpected_error_handler(
+        self,
+        update: object,
+        context: ContextTypes.DEFAULT_TYPE,
+    ) -> None:
+        del update
+        error = context.error
+        if isinstance(error, BaseException):
+            self._report_unexpected_once(
+                error,
+                message="Unhandled Telegram update error",
+                event_code="telegram.unexpected_handler",
             )
-        return f"Could not download {reel_url}"
+        else:
+            logger.error(
+                "Unhandled Telegram update error",
+                extra={"event_code": "telegram.unexpected_handler"},
+            )
 
     async def _get_media_items(
         self,
@@ -123,7 +161,7 @@ class IgReelDownloaderApp:
         media_request_ids: list[int],
     ) -> list[MediaFetchResult]:
         tasks = [
-            asyncio.to_thread(self.fetch_service.fetch, candidate, request_id)
+            asyncio.to_thread(self._fetch_with_context, candidate, request_id)
             for candidate, request_id in zip(
                 candidates,
                 media_request_ids,
@@ -135,6 +173,7 @@ class IgReelDownloaderApp:
     async def _store_telegram_file_ids(
         self,
         render_results: list[MediaRenderResult],
+        request_ids_by_media_object: dict[int, collections.deque[int]],
     ) -> None:
         for render_result in render_results:
             for asset_index, file_id in render_result.telegram_file_ids.items():
@@ -146,27 +185,54 @@ class IgReelDownloaderApp:
                         file_id,
                     )
                 except Exception:
-                    logger.exception(
-                        "Failed to store Telegram file_id for %s asset %d",
-                        render_result.media.id,
-                        asset_index,
-                    )
+                    with error_reporter.bind_context(
+                        media_request_ids=tuple(
+                            request_ids_by_media_object[id(render_result.media)]
+                        ),
+                        provider=render_result.media.provider,
+                        media_kind=render_result.media.media_kind,
+                        stage="persist_telegram_file_id",
+                    ):
+                        logger.exception(
+                            "Failed to store Telegram file_id for media asset",
+                            extra={"event_code": "telegram.file_id_persist_failed"},
+                        )
 
     async def _record_deliveries(
         self,
         render_results: list[MediaRenderResult],
         request_ids_by_media_object: dict[int, collections.deque[int]],
     ) -> None:
-        await self._store_telegram_file_ids(render_results)
+        await self._store_telegram_file_ids(
+            render_results,
+            request_ids_by_media_object,
+        )
         delivered_request_ids = [
             request_ids_by_media_object[id(result.media)].popleft()
             for result in render_results
             if result.sent
         ]
-        await asyncio.to_thread(
-            self.fetch_service.repository.mark_media_requests_delivered,
-            delivered_request_ids,
-        )
+        delivered_context_ids = tuple(dict.fromkeys(delivered_request_ids))
+        try:
+            with error_reporter.bind_context(
+                media_request_ids=delivered_context_ids,
+                stage="persist_delivery",
+            ):
+                await asyncio.to_thread(
+                    self.fetch_service.repository.mark_media_requests_delivered,
+                    delivered_request_ids,
+                )
+        except Exception as exc:
+            with error_reporter.bind_context(
+                media_request_ids=delivered_context_ids,
+                stage="persist_delivery",
+            ):
+                self._report_unexpected_once(
+                    exc,
+                    message="Failed to persist delivered media requests",
+                    event_code="telegram.delivery_persist_failed",
+                )
+            raise
 
     async def _record_media_requests(
         self,
@@ -435,7 +501,6 @@ class IgReelDownloaderApp:
         )
 
         fetch_results = await self._get_media_items(candidates, media_request_ids)
-        errors: list[str] = []
         media_items: list[models.MediaItem] = []
         request_ids_by_media_object: dict[int, collections.deque[int]] = {}
         for request_id, result in zip(
@@ -443,20 +508,14 @@ class IgReelDownloaderApp:
             fetch_results,
             strict=True,
         ):
-            if result.skipped:
-                continue
-            if result.media is None:
-                errors.append(
-                    self._format_download_error(result.url, result.failure_reason)
-                )
-            else:
+            if result.media is not None:
                 media_items.append(result.media)
                 request_ids_by_media_object.setdefault(
                     id(result.media),
                     collections.deque(),
                 ).append(request_id)
 
-        if not media_items and not errors:
+        if not media_items:
             return
 
         if media_items:
@@ -473,68 +532,82 @@ class IgReelDownloaderApp:
 
         rendered_items = []
         for media in media_items:
-            try:
-                rendered_items.append(
-                    self.renderer_registry.render(media, TELEGRAM_RENDER_CONSTRAINTS)
+            request_ids = tuple(request_ids_by_media_object[id(media)])
+            with error_reporter.bind_context(
+                media_request_ids=request_ids,
+                provider=media.provider,
+                media_kind=media.media_kind,
+                stage="render",
+            ):
+                try:
+                    rendered_items.append(
+                        self.renderer_registry.render(
+                            media, TELEGRAM_RENDER_CONSTRAINTS
+                        )
+                    )
+                except UnsupportedMediaError:
+                    continue
+                except Exception as exc:
+                    self._report_unexpected_once(
+                        exc,
+                        message="Unexpected media rendering failure",
+                        event_code="telegram.render_unexpected",
+                    )
+                    raise
+
+        upload_request_ids = tuple(
+            dict.fromkeys(
+                request_id
+                for rendered_item in rendered_items
+                for request_id in request_ids_by_media_object.get(
+                    id(rendered_item.source), ()
                 )
-            except UnsupportedMediaError:
-                errors.append(
-                    self._format_download_error(media.original_url, "unsupported")
-                )
+            )
+        )
 
         try:
-            render_results = await self.sender.send(update, rendered_items)
+            with error_reporter.bind_context(
+                media_request_ids=upload_request_ids,
+                stage="telegram_upload",
+            ):
+                try:
+                    render_results = await self.sender.send(update, rendered_items)
+                except (MediaRenderTimedOut, TimedOut):
+                    raise
+                except Exception as exc:
+                    self._report_unexpected_once(
+                        exc,
+                        message="Unexpected Telegram media upload failure",
+                        event_code="telegram.upload_unexpected",
+                    )
+                    raise
         except MediaRenderTimedOut as exc:
             await self._record_deliveries(
                 [*exc.completed_results, *exc.partial_results],
                 request_ids_by_media_object,
             )
-            logger.exception(
-                "Timed out after sending %d of %d media items for user %s",
-                len(exc.completed_results),
-                len(media_items),
-                sender_id,
-            )
-            chat = update.effective_chat
-            if chat is not None:
-                with suppress(TimedOut):
-                    await chat.send_message(
-                        "Timed out while uploading video(s) to Telegram. "
-                        "Some media may have been delivered."
-                    )
+            with error_reporter.bind_context(
+                media_request_ids=upload_request_ids,
+                stage="telegram_upload",
+            ):
+                logger.exception(
+                    "Timed out after partially sending media items",
+                    extra={"event_code": "telegram.media_upload_timeout"},
+                )
         except TimedOut:
-            logger.exception(
-                "Timed out while sending %s videos for user %s. "
-                "Increase TELEGRAM_MEDIA_WRITE_TIMEOUT if uploads are slow.",
-                len(media_items),
-                sender_id,
-            )
-            chat = update.effective_chat
-            if chat is not None:
-                with suppress(TimedOut):
-                    await chat.send_message(
-                        "Timed out while uploading video(s) to Telegram. "
-                        "The file may be large or the network may be slow."
-                    )
+            with error_reporter.bind_context(
+                media_request_ids=upload_request_ids,
+                stage="telegram_upload",
+            ):
+                logger.exception(
+                    "Timed out while sending media items",
+                    extra={"event_code": "telegram.media_upload_timeout"},
+                )
         else:
             await self._record_deliveries(
                 render_results,
                 request_ids_by_media_object,
             )
-            for render_result in render_results:
-                if not render_result.sent:
-                    errors.append(
-                        self._format_download_error(
-                            render_result.media.original_url,
-                            render_result.failure_reason,
-                        )
-                    )
-
-        if errors:
-            errors_text = "\n".join(errors)
-            chat = update.effective_chat
-            if chat is not None:
-                await chat.send_message(errors_text)
 
     def run(self) -> None:
         self.app.run_polling()
