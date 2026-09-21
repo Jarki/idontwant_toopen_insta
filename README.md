@@ -101,6 +101,29 @@ TIKTOK_SMOKE_TEST_URLS_FILE=/path/to/tiktok-urls.txt \
 The test is skipped unless one of these variables is set. It downloads videos to
 pytest's temporary directory and does not contact Telegram or PostgreSQL.
 
+### YouTube extractor smoke tests
+
+Run the opt-in live regression tests (requires `ffmpeg` and `ffprobe`):
+
+```bash
+YOUTUBE_SMOKE_TEST=1 uv run pytest tests/e2e/test_youtube_live.py -v -s
+```
+
+The built-in corpus includes `https://www.youtube.com/shorts/CGMmA9B4TZE`
+(ERR-1, format unavailable) and its watch URL to exercise metadata reuse.
+Optionally set `YOUTUBE_SMOKE_TEST_URLS_FILE=/path/to/youtube-urls.txt` to
+append public Shorts or watch URLs under 60 seconds, one per line.
+Tests download anonymously into pytest's temporary directory and verify that the
+returned final file contains video and audio using ffprobe. They do not contact
+Telegram or PostgreSQL, use account cookies, or update the error ledger.
+They are skipped by default; live failures can depend on IP, YouTube availability,
+and extractor support. No JavaScript runtime is currently bundled; yt-dlp may
+warn that some formats are unavailable without one.
+
+YouTube selects separate video and audio streams with a combined-format fallback;
+ffmpeg (already included in the app image) merges them. The downloader stores the
+actual postprocessed filepath rather than predicting its extension.
+
 ### Judgmental GIFs
 
 If `JUDGMENTAL_CHANCE` is enabled, the bot can reply with a stored judgmental Telegram GIF instead of downloading. To seed one, send a GIF/animation to Telegram, then reply to that GIF with:

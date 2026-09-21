@@ -290,7 +290,7 @@ def test_youtube_download_maps_single_video(
                 "outtmpl": str(
                     tmp_path / "youtube" / "video" / "ABC123" / "%(id)s.%(ext)s"
                 ),
-                "format": "best",
+                "format": "bestvideo+bestaudio/best",
                 "quiet": True,
             }
 
@@ -302,7 +302,7 @@ def test_youtube_download_maps_single_video(
 
         def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
             assert url == "https://www.youtube.com/watch?v=ABC123"
-            assert download is False
+            assert download is True
             return {
                 "id": "ABC123",
                 "title": "YouTube",
@@ -317,6 +317,7 @@ def test_youtube_download_maps_single_video(
                 "timestamp": 1_700_000_000,
                 "ext": "mp4",
                 "duration": 59,
+                "requested_downloads": [{"filepath": str(tmp_path / "merged.mkv")}],
             }
 
         def prepare_filename(self, info: dict[str, object]) -> str:
@@ -337,6 +338,7 @@ def test_youtube_download_maps_single_video(
         normalized_url="https://www.youtube.com/watch?v=ABC123",
     )
 
+    (tmp_path / "merged.mkv").write_bytes(b"video")
     result = downloader.download(request, DownloadContext(output_dir=tmp_path))
 
     assert result.failure_reason is None
@@ -359,6 +361,7 @@ def test_youtube_download_maps_single_video(
         "duration": 59,
     }
     assert len(result.media.assets) == 1
+    assert result.media.assets[0].filepath == str(tmp_path / "merged.mkv")
     assert result.media.assets[0].asset_type == "video"
 
 
@@ -379,12 +382,15 @@ def test_youtube_download_reuses_request_info(
         def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
             raise AssertionError("metadata should be reused from the resolved request")
 
-        def prepare_filename(self, info: dict[str, object]) -> str:
+        def process_ie_result(
+            self, info: dict[str, object], *, download: bool
+        ) -> dict[str, object]:
             assert info["id"] == "ABC123"
-            return str(tmp_path / "ABC123.mp4")
-
-        def download(self, urls: list[str]) -> None:
-            assert urls == ["https://www.youtube.com/watch?v=ABC123"]
+            assert download is True
+            return {
+                **info,
+                "requested_downloads": [{"filepath": str(tmp_path / "merged.mkv")}],
+            }
 
     monkeypatch.setattr(
         "ig_reel_downloader.downloaders.youtube.yt_dlp.YoutubeDL",
@@ -399,7 +405,65 @@ def test_youtube_download_reuses_request_info(
         info={"id": "ABC123", "title": "YouTube", "ext": "mp4"},
     )
 
+    (tmp_path / "merged.mkv").write_bytes(b"video")
     result = downloader.download(request, DownloadContext(output_dir=tmp_path))
 
     assert result.media is not None
     assert result.media.id == "youtube:video:ABC123"
+
+
+@pytest.mark.parametrize("split_streams", [True, False])
+@pytest.mark.parametrize("write_file", [True, False])
+def test_youtube_real_format_selection(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    split_streams: bool,
+    write_file: bool,
+) -> None:
+    """Use the real yt-dlp selector, replacing only file/network processing."""
+    import yt_dlp
+
+    selected: list[str] = []
+    final_path = tmp_path / "final.mkv"
+
+    def process_info(self: object, info: dict[str, object]) -> None:
+        selected.append(str(info["format_id"]))
+        info["filepath"] = str(final_path)
+        if write_file:
+            final_path.write_bytes(b"merged video")
+
+    monkeypatch.setattr(yt_dlp.YoutubeDL, "process_info", process_info)
+    formats = (
+        [
+            {"format_id": "audio", "vcodec": "none", "acodec": "aac", "ext": "m4a"},
+            {"format_id": "video", "vcodec": "h264", "acodec": "none", "ext": "mp4"},
+        ]
+        if split_streams
+        else [
+            {"format_id": "combined", "vcodec": "h264", "acodec": "aac", "ext": "mp4"}
+        ]
+    )
+    downloader = YouTubeDownloader()
+    request = ResolvedMediaRequest(
+        url="https://www.youtube.com/shorts/ABC123",
+        downloader=downloader,
+        provider_item_ref=ProviderItemRef("youtube", "short", "ABC123"),
+        info={
+            "id": "ABC123",
+            "title": "Offline regression",
+            "extractor": "youtube",
+            "formats": [
+                {**fmt, "url": f"https://example.invalid/{fmt['format_id']}"}
+                for fmt in formats
+            ],
+        },
+    )
+    result = downloader.download(request, DownloadContext(output_dir=tmp_path))
+    assert selected == ["video+audio" if split_streams else "combined"]
+    if write_file:
+        assert result.media is not None
+        assert result.media.assets[0].filepath == str(final_path)
+        assert result.failure_reason is None
+    else:
+        assert result.media is None
+        assert result.failure_reason == "unknown"

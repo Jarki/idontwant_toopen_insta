@@ -189,15 +189,27 @@ class YouTubeDownloader:
             provider_item_id=ref.provider_item_id,
         )
 
+        # YouTube commonly exposes video and audio as separate streams.
+        ydl_opts["format"] = "bestvideo+bestaudio/best"
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = (
-                    cast("_InfoDict", request.info)
+                    ydl.process_ie_result(
+                        cast("_InfoDict", request.info), download=True
+                    )
                     if request.info is not None
-                    else ydl.extract_info(url, download=False)
+                    else ydl.extract_info(url, download=True)
                 )
-                filepath = ydl.prepare_filename(info)
-                ydl.download([url])
+                # Postprocessing may change the extension; use the actual final path.
+                downloads = info.get("requested_downloads")
+                if not isinstance(downloads, list) or len(downloads) != 1:
+                    raise ValueError("Expected one completed YouTube download")
+                completed = downloads[0]
+                if not isinstance(completed, dict):
+                    raise ValueError("Missing YouTube download metadata")
+                filepath = completed.get("filepath")
+                if not isinstance(filepath, str) or not Path(filepath).is_file():
+                    raise FileNotFoundError("YouTube download produced no final file")
                 now = datetime.now()
                 media = MediaItem(
                     id=ref.media_id,
