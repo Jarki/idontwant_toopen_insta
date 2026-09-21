@@ -25,6 +25,13 @@ from bot_ops.client import (
 KEY = "k" * 32
 
 
+@pytest.fixture(autouse=True)
+def isolated_proxy_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    for name in tuple(os.environ):
+        if name.lower().endswith("_proxy"):
+            monkeypatch.delenv(name)
+
+
 def group_payload(**changes: object) -> dict[str, object]:
     result: dict[str, object] = {
         "reference": "ERR-11",
@@ -637,3 +644,96 @@ def test_invalid_success_contract_is_server_failure(payload: object) -> None:
     fake = FakeTransport(Response(200, encoded(payload)))
     with pytest.raises(ServerError, match="invalid response"):
         client(fake).show("ERR-1")
+
+
+@pytest.mark.parametrize("variable", ["HTTPS_PROXY", "https_proxy", "ALL_PROXY"])
+def test_https_proxy_selection(variable: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv(variable, "http://proxy.invalid:8080")
+    calls = []
+
+    def request(method, url, headers, body, proxy):
+        calls.append((method, url, headers, body, proxy))
+        return Response(200, encoded(group_payload()))
+
+    monkeypatch.setattr(client_module, "_proxy_request", request)
+    ErrorApiClient("https://api.invalid", KEY).show("ERR-1")
+    assert calls == [
+        (
+            "GET",
+            "https://api.invalid/v1/errors/ERR-1",
+            {"Authorization": f"Bearer {KEY}", "Accept": "application/json"},
+            None,
+            "http://proxy.invalid:8080",
+        )
+    ]
+
+
+def test_no_proxy_uses_direct_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HTTP_PROXY", "http://127.0.0.1:1")
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1")
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            self.send_response(200)
+            self.end_headers()
+            self.wfile.write(encoded(group_payload()))
+
+        def log_message(self, *args):
+            pass
+
+    server, thread, url = _serve(Handler)
+    try:
+        assert ErrorApiClient(url, KEY).show("ERR-1")["reference"] == "ERR-11"
+    finally:
+        _stop(server, thread)
+
+
+@pytest.mark.parametrize("mode", ["success", "redirect", "oversized", "trickle"])
+def test_proxy_exchange_limits(mode: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    received = []
+    monkeypatch.setattr(client_module, "_MAX_RESPONSE_BYTES", 1024)
+    if mode == "trickle":
+        monkeypatch.setattr(client_module, "_EXCHANGE_SECONDS", 0.1)
+
+    class Proxy(http.server.BaseHTTPRequestHandler):
+        def do_GET(self):
+            received.append((self.path, self.headers.get("Authorization")))
+            self.send_response(302 if mode == "redirect" else 200)
+            self.send_header("Location", "http://127.0.0.1:1/stolen")
+            self.end_headers()
+            try:
+                if mode == "trickle":
+                    for _ in range(20):
+                        self.wfile.write(b"x")
+                        self.wfile.flush()
+                        time.sleep(0.03)
+                else:
+                    self.wfile.write(
+                        b"x" * 2048 if mode == "oversized" else encoded(group_payload())
+                    )
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def log_message(self, *args):
+            pass
+
+    server, thread, proxy = _serve(Proxy)
+    monkeypatch.setenv("http_proxy", proxy)
+    started = time.monotonic()
+    try:
+        client = ErrorApiClient("http://127.0.0.1:12345", KEY)
+        if mode == "success":
+            assert client.show("ERR-1")["reference"] == "ERR-11"
+        elif mode == "redirect":
+            with pytest.raises(ApiError, match="HTTP 302"):
+                client.show("ERR-1")
+        elif mode == "oversized":
+            with pytest.raises(ServerError, match="size limit"):
+                client.show("ERR-1")
+        else:
+            with pytest.raises(TransportError):
+                client.show("ERR-1")
+            assert time.monotonic() - started < 0.5
+    finally:
+        _stop(server, thread)
+    assert received == [("http://127.0.0.1:12345/v1/errors/ERR-1", f"Bearer {KEY}")]
