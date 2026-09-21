@@ -44,13 +44,27 @@ def test_youtube_live_download(tmp_path: Path, url: str) -> None:
     assert len(result.media.assets) == 1
     path = Path(result.media.assets[0].filepath)
     assert path.is_file()
+    assert path.suffix == ".mp4"
     assert path.stat().st_size > 0
     probe = subprocess.run(
-        ["ffprobe", "-v", "error", "-show_streams", "-of", "json", str(path)],
+        [
+            "ffprobe",
+            "-v",
+            "error",
+            "-show_streams",
+            "-show_format",
+            "-of",
+            "json",
+            str(path),
+        ],
         check=True,
         capture_output=True,
         text=True,
         timeout=30,
     )
-    streams = json.loads(probe.stdout)["streams"]
+    metadata = json.loads(probe.stdout)
+    assert "mp4" in metadata["format"]["format_name"].split(",")
+    streams = metadata["streams"]
     assert {"video", "audio"} <= {stream["codec_type"] for stream in streams}
+    assert all(s["codec_name"] == "h264" for s in streams if s["codec_type"] == "video")
+    assert all(s["codec_name"] == "aac" for s in streams if s["codec_type"] == "audio")

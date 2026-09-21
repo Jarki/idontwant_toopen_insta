@@ -290,7 +290,11 @@ def test_youtube_download_maps_single_video(
                 "outtmpl": str(
                     tmp_path / "youtube" / "video" / "ABC123" / "%(id)s.%(ext)s"
                 ),
-                "format": "bestvideo+bestaudio/best",
+                "format": (
+                    "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a][acodec^=mp4a]"
+                    "/best[ext=mp4][vcodec^=avc1][acodec^=mp4a]"
+                ),
+                "merge_output_format": "mp4",
                 "quiet": True,
             }
 
@@ -412,6 +416,7 @@ def test_youtube_download_reuses_request_info(
     assert result.media.id == "youtube:video:ABC123"
 
 
+@pytest.mark.parametrize("compatible", [True, False])
 @pytest.mark.parametrize("split_streams", [True, False])
 @pytest.mark.parametrize("write_file", [True, False])
 def test_youtube_real_format_selection(
@@ -419,6 +424,7 @@ def test_youtube_real_format_selection(
     tmp_path: Path,
     split_streams: bool,
     write_file: bool,
+    compatible: bool,
 ) -> None:
     """Use the real yt-dlp selector, replacing only file/network processing."""
     import yt_dlp
@@ -435,12 +441,48 @@ def test_youtube_real_format_selection(
     monkeypatch.setattr(yt_dlp.YoutubeDL, "process_info", process_info)
     formats = (
         [
-            {"format_id": "audio", "vcodec": "none", "acodec": "aac", "ext": "m4a"},
-            {"format_id": "video", "vcodec": "h264", "acodec": "none", "ext": "mp4"},
+            {
+                "format_id": "audio",
+                "vcodec": "none",
+                "acodec": "mp4a.40.2",
+                "ext": "m4a",
+            },
+            {
+                "format_id": "video",
+                "vcodec": "avc1.64001f",
+                "acodec": "none",
+                "ext": "mp4",
+            },
         ]
         if split_streams
         else [
-            {"format_id": "combined", "vcodec": "h264", "acodec": "aac", "ext": "mp4"}
+            {
+                "format_id": "combined",
+                "vcodec": "avc1.64001f",
+                "acodec": "mp4a.40.2",
+                "ext": "mp4",
+            }
+        ]
+    )
+    if not compatible:
+        formats = []
+    # Higher-quality incompatible streams must not win selection, even in MP4.
+    formats.extend(
+        [
+            {
+                "format_id": "vp9",
+                "vcodec": "vp9",
+                "acodec": "opus",
+                "ext": "webm",
+                "height": 2160,
+            },
+            {
+                "format_id": "av1",
+                "vcodec": "av01.0.12M.08",
+                "acodec": "mp4a.40.2",
+                "ext": "mp4",
+                "height": 2160,
+            },
         ]
     )
     downloader = YouTubeDownloader()
@@ -459,6 +501,11 @@ def test_youtube_real_format_selection(
         },
     )
     result = downloader.download(request, DownloadContext(output_dir=tmp_path))
+    if not compatible:
+        assert selected == []
+        assert result.media is None
+        assert result.failure_reason == "unknown"
+        return
     assert selected == ["video+audio" if split_streams else "combined"]
     if write_file:
         assert result.media is not None

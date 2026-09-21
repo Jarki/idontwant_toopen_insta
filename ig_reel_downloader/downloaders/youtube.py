@@ -189,8 +189,13 @@ class YouTubeDownloader:
             provider_item_id=ref.provider_item_id,
         )
 
-        # YouTube commonly exposes video and audio as separate streams.
-        ydl_opts["format"] = "bestvideo+bestaudio/best"
+        # Telegram's inline player needs MP4/H.264/AAC, not merely any A/V file.
+        # Do not fall back to WebM, VP9 or AV1 when compatible formats are absent.
+        ydl_opts["format"] = (
+            "bestvideo[ext=mp4][vcodec^=avc1]+bestaudio[ext=m4a][acodec^=mp4a]"
+            "/best[ext=mp4][vcodec^=avc1][acodec^=mp4a]"
+        )
+        ydl_opts["merge_output_format"] = "mp4"
         try:
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = (

@@ -114,15 +114,18 @@ The built-in corpus includes `https://www.youtube.com/shorts/CGMmA9B4TZE`
 Optionally set `YOUTUBE_SMOKE_TEST_URLS_FILE=/path/to/youtube-urls.txt` to
 append public Shorts or watch URLs under 60 seconds, one per line.
 Tests download anonymously into pytest's temporary directory and verify that the
-returned final file contains video and audio using ffprobe. They do not contact
+returned final file is MP4 with H.264 video and AAC audio using ffprobe. They do not contact
 Telegram or PostgreSQL, use account cookies, or update the error ledger.
 They are skipped by default; live failures can depend on IP, YouTube availability,
 and extractor support. No JavaScript runtime is currently bundled; yt-dlp may
 warn that some formats are unavailable without one.
 
-YouTube selects separate video and audio streams with a combined-format fallback;
-ffmpeg (already included in the app image) merges them. The downloader stores the
-actual postprocessed filepath rather than predicting its extension.
+YouTube selects MP4/H.264 video and M4A/AAC audio streams with a compatible
+combined-MP4 fallback; ffmpeg (already included in the app image) merges them.
+It does not fall back to WebM or incompatible codecs, so videos without compatible
+formats fail rather than being delivered as non-playable attachments. The downloader
+stores the actual postprocessed filepath rather than predicting its extension.
+Existing cached files are not converted or invalidated by this selection change.
 
 ### Judgmental GIFs
 
