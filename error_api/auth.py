@@ -69,10 +69,4 @@ class ApiKeyAuthenticationBackend(AuthenticationBackend):
                     fingerprint,
                 )
             return None
-        _LOGGER.info(
-            "Error API credential accepted label=%s scope=%s fingerprint=%s",
-            matched.label,
-            matched.scope,
-            fingerprint,
-        )
         return AuthCredentials(("authenticated", matched.scope)), matched

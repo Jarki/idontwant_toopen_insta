@@ -310,7 +310,7 @@ def test_authentication_rotation_and_scopes(
     )
 
 
-def test_authentication_logs_identity_without_disclosing_keys(
+def test_authentication_logs_only_rejections_without_disclosing_keys(
     api: tuple[TestClient, FakeRepository],
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -321,12 +321,8 @@ def test_authentication_logs_identity_without_disclosing_keys(
         assert client.get("/v1/health", headers=auth(READ)).status_code == 200
         assert client.get("/v1/health", headers=auth(invalid)).status_code == 401
 
-    read_fingerprint = hashlib.sha256(READ.encode()).hexdigest()[:12]
     invalid_fingerprint = hashlib.sha256(invalid.encode()).hexdigest()[:12]
-    assert (
-        "credential accepted "
-        f"label=reader scope=read fingerprint={read_fingerprint}" in caplog.text
-    )
+    assert "credential accepted" not in caplog.text
     assert (
         "credential rejected "
         f"reason=unknown fingerprint={invalid_fingerprint}" in caplog.text
@@ -348,7 +344,12 @@ def test_authentication_never_logs_raw_keys(
     assert response.status_code == (200 if key in (READ, TRIAGE) else 401)
     assert key not in caplog.text
     assert "credential=" not in caplog.text
-    assert "fingerprint=" in caplog.text
+    if key in (READ, TRIAGE):
+        assert not [
+            record for record in caplog.records if record.name == "error_api.auth"
+        ]
+    else:
+        assert "fingerprint=" in caplog.text
 
 
 def test_all_reads_are_bounded_and_reproduction_is_separate(

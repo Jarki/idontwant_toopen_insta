@@ -150,9 +150,9 @@ uv run bot-ops errors note ERR-1842 'Reproduced in dev'
 ## Debug authentication
 
 Authentication logs never include supplied bearer keys. Successful authentication
-logs the credential label, scope, and a truncated SHA-256 fingerprint. Rejected
-attempts log the rejection reason and fingerprint. This applies in both dev and
-prod; raw credential logging is not supported.
+is not logged. Rejected attempts log the rejection reason and a truncated SHA-256
+fingerprint. This applies in both dev and prod; raw credential logging is not
+supported.
 
 Follow the service logs on the deployment host:
 
@@ -165,9 +165,9 @@ docker compose \
   logs --tail=100 --follow error-api
 ```
 
-Follow the log while reproducing the request. A successful entry has
-`credential accepted`, `label=...`, and `scope=read|triage`; a rejected entry
-has `credential rejected` and its reason. Both include `fingerprint=...`.
+Follow the log while reproducing the request. A rejected entry has
+`credential rejected`, its reason, and `fingerprint=...`. Successful requests
+produce no authentication log entry.
 
 Earlier dev versions logged raw keys. Rotate any keys used with those versions
 and handle retained logs and copies as sensitive credentials. Updating the code
