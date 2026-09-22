@@ -17,6 +17,9 @@ fi
 # shellcheck source=/dev/null
 set -a
 source "$ENV_FILE"
+if [ -f "${DEPLOY_DIR}/.dashboard.env" ]; then
+    source "${DEPLOY_DIR}/.dashboard.env"
+fi
 set +a
 
 errors=0
@@ -43,6 +46,13 @@ reject_known_value() {
         errors=$((errors + 1))
     fi
 }
+
+# Dashboard credentials are generated once by CI/CD, not required for bot-only use.
+if [ -f "${DEPLOY_DIR}/.dashboard.env" ]; then
+    check_var "DB_DASHBOARD_USER" "Read-only dashboard user"
+    check_var "DB_DASHBOARD_PASSWORD" "Read-only dashboard password"
+    check_var "DASHBOARD_DATABASE_URL" "Dashboard database URL" "postgresql+psycopg://*"
+fi
 
 # --- Runtime secrets and PostgreSQL credentials ---
 check_var "BOT_TOKEN"            "Telegram bot token"
@@ -118,7 +128,7 @@ for ((i = 0; i < ${#key_names[@]}; i++)); do
 done
 password_names=(
     POSTGRES_PASSWORD DB_MIGRATION_PASSWORD
-    DB_APP_PASSWORD DB_ERROR_API_PASSWORD
+    DB_APP_PASSWORD DB_ERROR_API_PASSWORD DB_DASHBOARD_PASSWORD
 )
 for ((i = 0; i < ${#password_names[@]}; i++)); do
     for ((j = i + 1; j < ${#password_names[@]}; j++)); do
@@ -131,7 +141,7 @@ for ((i = 0; i < ${#password_names[@]}; i++)); do
     done
 done
 
-roles=("${POSTGRES_USER:-}" "${DB_MIGRATION_USER:-}" "${DB_APP_USER:-}" "${DB_ERROR_API_USER:-}")
+roles=("${POSTGRES_USER:-}" "${DB_MIGRATION_USER:-}" "${DB_APP_USER:-}" "${DB_ERROR_API_USER:-}" "${DB_DASHBOARD_USER:-}")
 for ((i = 0; i < ${#roles[@]}; i++)); do
     for ((j = i + 1; j < ${#roles[@]}; j++)); do
         if [ -n "${roles[i]}" ] && [ "${roles[i]}" = "${roles[j]}" ]; then
@@ -170,7 +180,7 @@ validate_url() {
     local expected_user="$2"
     local expected_password="$3"
     local url="${!var_name:-}"
-    [ -n "$url" ] || return
+    [ -n "$url" ] || return 0
 
     local expected_url
     expected_url="postgresql+psycopg://$(urlencode "$expected_user"):$(urlencode "$expected_password")@postgres:5432/$(urlencode "${POSTGRES_DB:-}")"
@@ -183,6 +193,8 @@ validate_url() {
 validate_url "DB_MIGRATION_URL" "${DB_MIGRATION_USER:-}" "${DB_MIGRATION_PASSWORD:-}"
 validate_url "DATABASE_URL" "${DB_APP_USER:-}" "${DB_APP_PASSWORD:-}"
 validate_url "ERROR_API_DATABASE_URL" "${DB_ERROR_API_USER:-}" "${DB_ERROR_API_PASSWORD:-}"
+
+validate_url "DASHBOARD_DATABASE_URL" "${DB_DASHBOARD_USER:-}" "${DB_DASHBOARD_PASSWORD:-}"
 
 if [ $errors -gt 0 ]; then
     echo "::error::Preflight FAILED with ${errors} error(s)"

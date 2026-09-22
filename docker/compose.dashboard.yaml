@@ -1,0 +1,44 @@
+# Optional standalone dashboard; combine with compose.yaml.
+services:
+  dashboard:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.app
+    entrypoint: ["/app/.venv/bin/python", "-m", "dashboard"]
+    depends_on:
+      dashboard-bootstrap:
+        condition: service_completed_successfully
+    environment:
+      DASHBOARD_DATABASE_URL: ${DASHBOARD_DATABASE_URL:?Set a dedicated read-only dashboard database URL}
+      DASHBOARD_HOST: "0.0.0.0"
+      DASHBOARD_PORT: "8080"
+    ports:
+      - "${DASHBOARD_BIND_HOST:-0.0.0.0}:${DASHBOARD_PORT:-8080}:8080"
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/dashboard?days=1', timeout=30).close()"]
+      interval: 30s
+      timeout: 35s
+      retries: 3
+      start_period: 5s
+    restart: unless-stopped
+
+  dashboard-bootstrap:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.app
+    entrypoint: ["/app/.venv/bin/python", "docker/scripts/dashboard_bootstrap.py"]
+    depends_on:
+      error-api-migrate:
+        condition: service_completed_successfully
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      DB_MIGRATION_USER: ${DB_MIGRATION_USER}
+      DB_APP_USER: ${DB_APP_USER}
+      DB_ERROR_API_USER: ${DB_ERROR_API_USER}
+      DB_DASHBOARD_USER: ${DB_DASHBOARD_USER:?Dashboard reader not configured}
+      DB_DASHBOARD_PASSWORD: ${DB_DASHBOARD_PASSWORD:?Dashboard reader not configured}
+    restart: "no"

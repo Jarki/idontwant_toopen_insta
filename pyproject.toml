@@ -24,7 +24,7 @@ dependencies = [
 bot-ops = "bot_ops.__main__:main"
 
 [tool.hatch.build.targets.wheel]
-packages = ["ig_reel_downloader", "error_api", "bot_ops"]
+packages = ["ig_reel_downloader", "error_api", "bot_ops", "dashboard"]
 
 [build-system]
 requires = ["hatchling"]
@@ -42,7 +42,7 @@ format = "ruff format ."
 format-check = "ruff format --check ."
 
 # Type checking
-typecheck = "mypy ig_reel_downloader error_api/__init__.py error_api/__main__.py error_api/app.py error_api/repository bot_ops"
+typecheck = "mypy ig_reel_downloader error_api/__init__.py error_api/__main__.py error_api/app.py error_api/repository bot_ops dashboard"
 
 # Agent pre-handoff gate: auto-fixes then validates (continues on failure so devs see all results)
 verify = {sequence = ["format", "lint-fix", "typecheck", "test"], ignore_fail = "return_non_zero"}
@@ -63,6 +63,7 @@ error-db-revision = "alembic -c error_api_alembic.ini revision --autogenerate -m
 
 # Run the bot
 bot = "python -m ig_reel_downloader"
+dashboard = "python -m dashboard"
 
 # Trigger the Pi dev deployment via workflow_dispatch.
 # Agents must not run this task unless the user explicitly asks for a deployment.

@@ -20,3 +20,15 @@ services:
   postgres-bootstrap:
     build: !reset null
     image: ghcr.io/jarki/idontwant_toopen_insta:${IMAGE_TAG:-latest}
+
+  dashboard:
+    profiles: [dashboard]
+    build: !reset null
+    image: ghcr.io/jarki/idontwant_toopen_insta:${IMAGE_TAG:-latest}
+    ports: !override
+      - "${DASHBOARD_BIND_HOST:-0.0.0.0}:${DASHBOARD_PORT:-8081}:8080"
+
+  dashboard-bootstrap:
+    profiles: [dashboard]
+    build: !reset null
+    image: ghcr.io/jarki/idontwant_toopen_insta:${IMAGE_TAG:-latest}

@@ -15,3 +15,5 @@ output
 *.db
 *.mp4
 .vscode
+.dashboard.env
+.dashboard.env.*.tmp

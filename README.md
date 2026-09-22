@@ -297,3 +297,12 @@ The runtime bot only writes to the filesystem for downloaded media:
 - `assets/`: optional cookies and static resources.
 
 The database is accessed over the network; no `data/` directory mount is required at runtime.
+
+## Web dashboard
+
+A separate read-only dashboard listens on port **8080**, with tabs for general
+usage, successes/errors, and error types/statuses. Run `uv run poe dashboard`.
+See [dashboard setup](docs/dashboard.md) for the dedicated database role,
+automatic CI/CD setup, port settings, and access-security considerations.
+The existing deploy workflows include it automatically: dev uses **8081**, prod
+uses **8080**. No new secrets or manual database setup are needed.
