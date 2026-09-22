@@ -366,3 +366,117 @@ def test_deployment_workflows_start_both_runtimes_and_prod_runs_both_gates() -> 
     )
     assert "--wait --wait-timeout 90" in dev_start["run"]
     assert "--wait --wait-timeout 90" in prod_start["run"]
+
+
+@pytest.mark.parametrize(("environment", "port"), [("dev", "8081"), ("prod", "8080")])
+def test_dashboard_deploy_uses_image_readonly_gate_and_own_port(
+    environment: str, port: str
+) -> None:
+    values = {
+        **_environment(),
+        "DB_DASHBOARD_USER": "db_dashboard",
+        "DB_DASHBOARD_PASSWORD": "dashboard-secret",
+        "DASHBOARD_DATABASE_URL": "postgresql+psycopg://db_dashboard:dashboard-secret@postgres:5432/reels",
+    }
+    result = subprocess.run(
+        [
+            "docker",
+            "compose",
+            "--profile",
+            "dashboard",
+            "-f",
+            str(BASE_COMPOSE),
+            "-f",
+            str(PROJECT_ROOT / "docker/compose.dashboard.yaml"),
+            "-f",
+            str(PROJECT_ROOT / f"docker/compose.{environment}.yaml"),
+            "config",
+            "--format",
+            "json",
+        ],
+        env={**os.environ, **values},
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    services = json.loads(result.stdout)["services"]
+    dashboard = services["dashboard"]
+    assert dashboard["ports"][0]["published"] == port
+    assert (
+        dashboard["depends_on"]["dashboard-bootstrap"]["condition"]
+        == "service_completed_successfully"
+    )
+    assert "POSTGRES_PASSWORD" not in dashboard["environment"]
+    assert "DB_DASHBOARD_PASSWORD" not in services["downloader"]["environment"]
+    assert "DASHBOARD_DATABASE_URL" not in services["error-api"]["environment"]
+    assert "healthcheck" in dashboard
+    for service in ("dashboard", "dashboard-bootstrap"):
+        assert "build" not in services[service]
+        assert services[service]["image"] == services["downloader"]["image"]
+    assert (
+        services["dashboard-bootstrap"]["depends_on"]["error-api-migrate"]["condition"]
+        == "service_completed_successfully"
+    )
+    workflow = yaml.safe_load(
+        (PROJECT_ROOT / f".github/workflows/deploy-{environment}.yml").read_text()
+    )
+    steps = workflow["jobs"]["deploy"]["steps"]
+    names = [step["name"] for step in steps]
+    assert names.index("Prepare dashboard credentials") < names.index("Preflight")
+    for step in steps:
+        run = step.get("run", "")
+        if "docker compose" in run:
+            assert '--env-file "${deploy_dir}/.dashboard.env"' in run
+            assert "-f docker/compose.dashboard.yaml" in run
+            assert "--profile dashboard" in run
+        if "--remove-orphans" in run:
+            assert "downloader error-api dashboard" in run
+
+
+def test_generated_dashboard_credentials_persist_and_preflight(tmp_path: Path) -> None:
+    import sys
+
+    script = PROJECT_ROOT / "docker/scripts/prepare_dashboard.py"
+    env = {**os.environ, "POSTGRES_DB": "reels"}
+    for _ in range(2):
+        result = subprocess.run(
+            [sys.executable, str(script), str(tmp_path)],
+            env=env,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert result.stdout == ""
+        credential = tmp_path / ".dashboard.env"
+        if _ == 0:
+            original = credential.read_bytes()
+        else:
+            assert credential.read_bytes() == original
+        assert credential.stat().st_mode & 0o777 == 0o600
+    result = _run_preflight(tmp_path, _environment())
+    assert result.returncode == 0, result.stdout + result.stderr
+    credential.write_text(credential.read_text().replace("db_dashboard", "db_app"))
+    result = _run_preflight(tmp_path, _environment())
+    assert result.returncode != 0
+    assert "role names must be distinct" in result.stdout
+
+
+def test_dashboard_preparation_rejects_symlink(tmp_path: Path) -> None:
+    import sys
+
+    original = tmp_path / "original"
+    original.write_text("do not change")
+    (tmp_path / ".dashboard.env").symlink_to(original)
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(PROJECT_ROOT / "docker/scripts/prepare_dashboard.py"),
+            str(tmp_path),
+        ],
+        env={**os.environ, "POSTGRES_DB": "reels"},
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode != 0
+    assert original.read_text() == "do not change"

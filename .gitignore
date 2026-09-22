@@ -225,3 +225,7 @@ output/
 docs/superpowers/specs/
 docs/superpowers/plans/
 .pi-subagents/
+
+# Runner-local generated dashboard credentials
+.dashboard.env
+.dashboard.env.*.tmp

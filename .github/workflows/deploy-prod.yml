@@ -102,6 +102,15 @@ jobs:
             exit 1
           fi
 
+      - name: Prepare dashboard credentials
+        run: |
+          set -euo pipefail
+          deploy_dir="${HOME}/deploy/ig-reel-downloader-prod"
+          set -a
+          source "${deploy_dir}/.env"
+          set +a
+          python3 "${GITHUB_WORKSPACE}/docker/scripts/prepare_dashboard.py" "${deploy_dir}"
+
       - name: Preflight
         run: |
           set -euo pipefail
@@ -117,6 +126,8 @@ jobs:
           raw_base="https://raw.githubusercontent.com/${GITHUB_REPOSITORY}/${COMPOSE_REF}"
 
           mkdir -p "${deploy_dir}/docker"
+          curl -fsSL "${raw_base}/docker/compose.dashboard.yaml" \
+            -o "${deploy_dir}/docker/compose.dashboard.yaml"
           curl -fsSL "${raw_base}/docker/compose.yaml" \
             -o "${deploy_dir}/docker/compose.yaml"
           curl -fsSL "${raw_base}/docker/compose.prod.yaml" \
@@ -132,8 +143,11 @@ jobs:
 
           docker compose \
             --env-file "${deploy_dir}/.env" \
+            --env-file "${deploy_dir}/.dashboard.env" \
+            --profile dashboard \
             -p ig-reel-downloader-prod \
             -f docker/compose.yaml \
+            -f docker/compose.dashboard.yaml \
             -f docker/compose.prod.yaml \
             pull
 
@@ -147,8 +161,11 @@ jobs:
 
           docker compose \
             --env-file "${deploy_dir}/.env" \
+            --env-file "${deploy_dir}/.dashboard.env" \
+            --profile dashboard \
             -p ig-reel-downloader-prod \
             -f docker/compose.yaml \
+            -f docker/compose.dashboard.yaml \
             -f docker/compose.prod.yaml \
             up -d --wait postgres
 
@@ -162,8 +179,11 @@ jobs:
 
           docker compose \
             --env-file "${deploy_dir}/.env" \
+            --env-file "${deploy_dir}/.dashboard.env" \
+            --profile dashboard \
             -p ig-reel-downloader-prod \
             -f docker/compose.yaml \
+            -f docker/compose.dashboard.yaml \
             -f docker/compose.prod.yaml \
             run --rm postgres-bootstrap
 
@@ -177,8 +197,11 @@ jobs:
 
           docker compose \
             --env-file "${deploy_dir}/.env" \
+            --env-file "${deploy_dir}/.dashboard.env" \
+            --profile dashboard \
             -p ig-reel-downloader-prod \
             -f docker/compose.yaml \
+            -f docker/compose.dashboard.yaml \
             -f docker/compose.prod.yaml \
             run --rm migrate
 
@@ -192,8 +215,11 @@ jobs:
 
           docker compose \
             --env-file "${deploy_dir}/.env" \
+            --env-file "${deploy_dir}/.dashboard.env" \
+            --profile dashboard \
             -p ig-reel-downloader-prod \
             -f docker/compose.yaml \
+            -f docker/compose.dashboard.yaml \
             -f docker/compose.prod.yaml \
             run --rm error-api-migrate
 
@@ -213,10 +239,13 @@ jobs:
 
           docker compose \
             --env-file "${deploy_dir}/.env" \
+            --env-file "${deploy_dir}/.dashboard.env" \
+            --profile dashboard \
             -p ig-reel-downloader-prod \
             -f docker/compose.yaml \
+            -f docker/compose.dashboard.yaml \
             -f docker/compose.prod.yaml \
-            up -d --wait --wait-timeout 90 --remove-orphans downloader error-api
+            up -d --wait --wait-timeout 90 --remove-orphans downloader error-api dashboard
 
       - name: Show status
         env:
@@ -228,7 +257,10 @@ jobs:
 
           docker compose \
             --env-file "${deploy_dir}/.env" \
+            --env-file "${deploy_dir}/.dashboard.env" \
+            --profile dashboard \
             -p ig-reel-downloader-prod \
             -f docker/compose.yaml \
+            -f docker/compose.dashboard.yaml \
             -f docker/compose.prod.yaml \
             ps

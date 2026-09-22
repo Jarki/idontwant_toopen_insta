@@ -438,3 +438,14 @@ Likely future extension points are:
 - Add provider presentation by subclassing `BaseMediaRenderer` and registering it by provider/media kind; keep Telegram limits and delivery mechanics in `TelegramMediaSender`.
 - Add future DB schema changes as Alembic revisions under `migrations/versions/`.
 - Broaden Instagram URL extraction inside `InstagramReelDownloader` if broader URL support is explicitly requested.
+
+## Optional standalone dashboard
+
+`dashboard/` is an independent read-only FastAPI process on port 8080, with an
+optional `docker/compose.dashboard.yaml` overlay. It queries aggregate request
+metrics and selected observability columns through its own restricted login;
+it neither calls nor modifies the Error API runtime. Existing bot processes and migrations are unchanged. Both deploy workflows now
+include the dashboard overlay, generate persistent runner-local reader credentials,
+and run a separate post-migration reader bootstrap before dashboard startup.
+Deployed ports default to dev 8081 and prod 8080. See [dashboard](docs/dashboard.md)
+for role provisioning, metrics, and network-access restrictions.
