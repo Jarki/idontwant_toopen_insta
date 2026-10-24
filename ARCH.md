@@ -188,8 +188,11 @@ extractor does not return images. Downloads preserve image order and enforce a
 
 ## Persistence model
 
-PostgreSQL stores media, ordered assets, users, and request outcomes. See the
-[database persistence model](docs/database.md#persistence-model) for schema and cache details.
+`PostgreSQLRepository` implements the repository protocol using short-lived SQLAlchemy sessions.
+Media rows are keyed by provider, media kind, and item ID; ordered assets store local paths
+and reusable Telegram file IDs. Users and requests track download and delivery outcomes.
+Cache refreshes replace assets atomically and preserve `created_at`. Reuse requires a fresh
+`updated_at` and every local file to exist. See [database tasks](docs/database.md) for migrations.
 
 ## Filesystem state
 
