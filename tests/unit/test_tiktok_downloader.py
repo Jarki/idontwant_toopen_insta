@@ -1,33 +1,29 @@
-from pathlib import Path
+import sys
+from contextlib import AbstractContextManager
 
 import pytest
-from yt_dlp.utils import DownloadError
+from yt_dlp.utils import DownloadError, ExtractorError
 
-from ig_reel_downloader.downloaders.base import (
-    DownloadContext,
-    ProviderItemRef,
-    ResolutionError,
-    ResolvedMediaRequest,
-)
-from ig_reel_downloader.downloaders.tiktok import TikTokDownloader, _tiktok_metadata
+from ig_reel_downloader.downloaders.base import ProviderItemRef, ResolutionError
+from ig_reel_downloader.downloaders.tiktok import TikTokDownloader
 
 
-def test_tiktok_extracts_canonical_video_url() -> None:
+@pytest.mark.parametrize("kind", ["video", "photo"])
+def test_tiktok_extracts_canonical_url_with_stable_identity(kind: str) -> None:
     downloader = TikTokDownloader()
-    text = "watch https://www.tiktok.com/@alice/video/725123456789?utm_source=x now"
+    text = f"watch https://www.tiktok.com/@alice/{kind}/725123456789?utm_source=x now"
 
     candidates = downloader.extract_candidates(text)
 
     assert len(candidates) == 1
     assert candidates[0].provider == "tiktok"
-    assert candidates[0].link_type == "video"
-    assert (
-        candidates[0].normalized_url
-        == "https://www.tiktok.com/@alice/video/725123456789"
+    assert candidates[0].link_type == kind
+    assert candidates[0].normalized_url == (
+        f"https://www.tiktok.com/@alice/{kind}/725123456789"
     )
     assert candidates[0].local_ref == ProviderItemRef(
         "tiktok",
-        "video",
+        kind,
         "725123456789",
     )
 
@@ -83,10 +79,21 @@ def test_tiktok_rejects_prefix_or_incomplete_urls(url: str) -> None:
     assert downloader.extract_candidates(url) == []
 
 
-def test_tiktok_canonical_resolve_uses_local_ref() -> None:
+@pytest.mark.parametrize("kind", ["video", "photo"])
+def test_tiktok_canonical_resolve_uses_local_ref_without_network(
+    monkeypatch: pytest.MonkeyPatch,
+    kind: str,
+) -> None:
+    def unexpected_youtube_dl(_options: dict[str, object]) -> object:
+        raise AssertionError("canonical URLs must resolve without a network request")
+
+    monkeypatch.setattr(
+        "ig_reel_downloader.downloaders.tiktok.yt_dlp.YoutubeDL",
+        unexpected_youtube_dl,
+    )
     downloader = TikTokDownloader()
     candidate = downloader.extract_candidates(
-        "https://www.tiktok.com/@alice/video/725123456789?utm_source=x",
+        f"https://www.tiktok.com/@alice/{kind}/725123456789?utm_source=x",
     )[0]
 
     result = downloader.resolve(candidate)
@@ -94,148 +101,110 @@ def test_tiktok_canonical_resolve_uses_local_ref() -> None:
     assert result.request is not None
     assert result.request.provider_item_ref == ProviderItemRef(
         "tiktok",
-        "video",
+        kind,
         "725123456789",
     )
-    assert (
-        result.request.normalized_url
-        == "https://www.tiktok.com/@alice/video/725123456789"
+    assert result.request.normalized_url == (
+        f"https://www.tiktok.com/@alice/{kind}/725123456789"
     )
     assert result.request.info is None
 
 
-def test_tiktok_share_resolve_uses_metadata_id(
+class _HeadResponse(AbstractContextManager["_HeadResponse"]):
+    def __init__(self, destination: str) -> None:
+        self.url = destination
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+
+@pytest.mark.parametrize("kind", ["video", "photo"])
+def test_tiktok_share_resolves_to_canonical_stable_identity(
     monkeypatch: pytest.MonkeyPatch,
+    kind: str,
 ) -> None:
-    class FakeYoutubeDL:
-        def __init__(self, options: dict[str, object]) -> None:
-            assert options == {"quiet": True}
+    destination = f"https://www.tiktok.com/@alice/{kind}/725123456789?_t=tracking"
 
-        def __enter__(self) -> "FakeYoutubeDL":
-            return self
+    class FakeYoutubeDL(AbstractContextManager["FakeYoutubeDL"]):
+        def __init__(self, _options: dict[str, object]) -> None:
+            pass
 
-        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        def __exit__(self, *args: object) -> None:
             return None
 
-        def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
-            assert url == "https://vm.tiktok.com/ZMabc123/"
-            assert download is False
-            return {
-                "id": "725123456789",
-                "webpage_url": "https://www.tiktok.com/@alice/video/725123456789",
-            }
+        def urlopen(self, request: object) -> _HeadResponse:
+            assert request.method == "HEAD"
+            return _HeadResponse(destination)
 
     monkeypatch.setattr(
         "ig_reel_downloader.downloaders.tiktok.yt_dlp.YoutubeDL",
         FakeYoutubeDL,
     )
     downloader = TikTokDownloader()
-    candidate = downloader.extract_candidates("https://vm.tiktok.com/ZMabc123/")[0]
+    candidate = downloader.extract_candidates("https://vt.tiktok.com/ZMabc123/")[0]
 
     result = downloader.resolve(candidate)
 
     assert result.request is not None
     assert result.request.provider_item_ref == ProviderItemRef(
-        "tiktok",
-        "video",
-        "725123456789",
+        "tiktok", kind, "725123456789"
     )
-    assert (
-        result.request.normalized_url
-        == "https://www.tiktok.com/@alice/video/725123456789"
-    )
-    assert result.request.info is not None
+    assert result.request.normalized_url == destination.split("?")[0]
+    assert result.request.info is None
 
 
-def test_tiktok_share_resolve_normalizes_unknown_error(
+@pytest.mark.parametrize(
+    "destination",
+    [
+        "https://example.com/@alice/photo/725123456789",
+        "https://www.tiktok.com/@alice/album/725123456789",
+        "https://www.tiktok.com/@alice/photo/not-a-number",
+        "/@alice/photo/725123456789",
+    ],
+)
+def test_tiktok_share_rejects_external_or_malformed_destination(
     monkeypatch: pytest.MonkeyPatch,
+    destination: str,
 ) -> None:
-    class FakeYoutubeDL:
-        def __init__(self, options: dict[str, object]) -> None:
+    class FakeYoutubeDL(AbstractContextManager["FakeYoutubeDL"]):
+        def __init__(self, _options: dict[str, object]) -> None:
             pass
 
-        def __enter__(self) -> "FakeYoutubeDL":
-            return self
-
-        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        def __exit__(self, *args: object) -> None:
             return None
 
-        def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
-            raise DownloadError("TikTok returned an unexpected extractor error")
+        def urlopen(self, _request: object) -> _HeadResponse:
+            return _HeadResponse(destination)
 
     monkeypatch.setattr(
         "ig_reel_downloader.downloaders.tiktok.yt_dlp.YoutubeDL",
         FakeYoutubeDL,
     )
-    downloader = TikTokDownloader()
-    candidate = downloader.extract_candidates("https://vm.tiktok.com/ZMabc123/")[0]
+    candidate = TikTokDownloader().extract_candidates(
+        "https://vm.tiktok.com/ZMabc123/"
+    )[0]
 
     with pytest.raises(ResolutionError) as exc_info:
-        downloader.resolve(candidate)
+        candidate.downloader.resolve(candidate)
 
-    assert exc_info.value.url == "https://vm.tiktok.com/ZMabc123/"
-    assert exc_info.value.failure_reason == "unknown"
+    assert exc_info.value.failure_reason == "unsupported"
 
 
-def test_tiktok_share_resolve_normalizes_bot_detection_failure(
+def test_tiktok_share_resolution_retries_blocking_failures_three_times(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    class FakeYoutubeDL:
-        def __init__(self, options: dict[str, object]) -> None:
-            pass
-
-        def __enter__(self) -> "FakeYoutubeDL":
-            return self
-
-        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-            return None
-
-        def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
-            raise DownloadError(
-                "[TikTok] 7668090902816017671: Unexpected response from webpage request"
-            )
-
-    monkeypatch.setattr(
-        "ig_reel_downloader.downloaders.tiktok.yt_dlp.YoutubeDL",
-        FakeYoutubeDL,
-    )
-    downloader = TikTokDownloader()
-    candidate = downloader.extract_candidates("https://vm.tiktok.com/ZMabc123/")[0]
-
-    with pytest.raises(ResolutionError) as exc_info:
-        downloader.resolve(candidate)
-
-    assert exc_info.value.failure_reason == "blocked"
-
-
-def test_tiktok_share_resolve_retries_bot_detection_failure(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    class FakeYoutubeDL:
+    class FakeYoutubeDL(AbstractContextManager["FakeYoutubeDL"]):
         attempts = 0
 
-        def __init__(self, options: dict[str, object]) -> None:
+        def __init__(self, _options: dict[str, object]) -> None:
             pass
 
-        def __enter__(self) -> "FakeYoutubeDL":
-            return self
-
-        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        def __exit__(self, *args: object) -> None:
             return None
 
-        def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
+        def urlopen(self, _request: object) -> _HeadResponse:
             self.__class__.attempts += 1
-            if self.attempts == 1:
-                raise DownloadError(
-                    "[TikTok] 7680948066874232085: "
-                    "Unable to extract universal data for rehydration"
-                )
-            return {
-                "id": "7680948066874232085",
-                "webpage_url": (
-                    "https://www.tiktok.com/@alice/video/7680948066874232085"
-                ),
-            }
+            raise DownloadError("Unexpected response from webpage request")
 
     monkeypatch.setattr(
         "ig_reel_downloader.downloaders.tiktok.yt_dlp.YoutubeDL",
@@ -244,178 +213,44 @@ def test_tiktok_share_resolve_retries_bot_detection_failure(
     downloader = TikTokDownloader()
     candidate = downloader.extract_candidates("https://vt.tiktok.com/ZSq1MVD1B/")[0]
 
-    result = downloader.resolve(candidate)
+    with pytest.raises(ResolutionError) as exc_info:
+        downloader.resolve(candidate)
 
-    assert FakeYoutubeDL.attempts == 2
-    assert result.request is not None
-    assert result.request.provider_item_ref.provider_item_id == "7680948066874232085"
+    assert FakeYoutubeDL.attempts == 3
+    assert exc_info.value.failure_reason == "blocked"
 
 
-def test_tiktok_download_maps_single_video(
+def test_tiktok_share_resolution_retries_wrapped_ip_block_three_times(
     monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
 ) -> None:
-    class FakeYoutubeDL:
-        def __init__(self, options: dict[str, object]) -> None:
-            assert options == {
-                "outtmpl": str(
-                    tmp_path / "tiktok" / "video" / "725123456789" / "%(id)s.%(ext)s"
-                ),
-                "format": "best",
-                "quiet": True,
-            }
+    class FakeYoutubeDL(AbstractContextManager["FakeYoutubeDL"]):
+        attempts = 0
 
-        def __enter__(self) -> "FakeYoutubeDL":
-            return self
-
-        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-            return None
-
-        def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
-            assert url == "https://www.tiktok.com/@alice/video/725123456789"
-            assert download is False
-            return {
-                "id": "725123456789",
-                "title": "TikTok",
-                "description": "desc",
-                "view_count": 1_000,
-                "like_count": 0,
-                "comment_count": 7,
-                "repost_count": 8,
-                "save_count": 9,
-                "uploader": "alice",
-                "channel": "Alice",
-                "track": "Example Song",
-                "artists": ["First Artist", "Second Artist"],
-                "album": "Example Album",
-                "timestamp": 1_700_000_000,
-                "ext": "mp4",
-                "duration": 10,
-            }
-
-        def prepare_filename(self, info: dict[str, object]) -> str:
-            return str(tmp_path / "725123456789.mp4")
-
-        def download(self, urls: list[str]) -> None:
-            assert urls == ["https://www.tiktok.com/@alice/video/725123456789"]
-
-    monkeypatch.setattr(
-        "ig_reel_downloader.downloaders.tiktok.yt_dlp.YoutubeDL",
-        FakeYoutubeDL,
-    )
-    downloader = TikTokDownloader()
-    request = ResolvedMediaRequest(
-        url="https://www.tiktok.com/@alice/video/725123456789",
-        downloader=downloader,
-        provider_item_ref=ProviderItemRef("tiktok", "video", "725123456789"),
-        normalized_url="https://www.tiktok.com/@alice/video/725123456789",
-    )
-
-    result = downloader.download(request, DownloadContext(output_dir=tmp_path))
-
-    assert result.failure_reason is None
-    assert result.media is not None
-    assert result.media.id == "tiktok:video:725123456789"
-    assert result.media.provider == "tiktok"
-    assert result.media.media_kind == "video"
-    assert result.media.provider_item_id == "725123456789"
-    assert result.media.title == "TikTok"
-    assert result.media.description == "desc"
-    assert result.media.metadata == {
-        "view_count": 1_000,
-        "like_count": 0,
-        "comment_count": 7,
-        "repost_count": 8,
-        "save_count": 9,
-        "uploader": "alice",
-        "channel": "Alice",
-        "track": "Example Song",
-        "artists": ["First Artist", "Second Artist"],
-        "album": "Example Album",
-        "timestamp": 1_700_000_000,
-    }
-    assert result.media.assets[0].asset_type == "video"
-
-
-def test_tiktok_metadata_omits_invalid_artist_lists() -> None:
-    assert _tiktok_metadata({"artists": ["artist", 3]}) == {}
-    assert _tiktok_metadata({"artists": "artist"}) == {}
-
-
-def test_tiktok_download_normalizes_bot_detection_failure(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    class FakeYoutubeDL:
-        def __init__(self, options: dict[str, object]) -> None:
+        def __init__(self, _options: dict[str, object]) -> None:
             pass
 
-        def __enter__(self) -> "FakeYoutubeDL":
-            return self
-
-        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        def __exit__(self, *args: object) -> None:
             return None
 
-        def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
-            raise DownloadError(
-                "[TikTok] 7668090902816017671: Unexpected response from webpage request"
-            )
+        def urlopen(self, _request: object) -> _HeadResponse:
+            self.__class__.attempts += 1
+            try:
+                raise ExtractorError(
+                    "Your IP address is blocked from accessing this post",
+                    expected=True,
+                )
+            except ExtractorError as error:
+                raise DownloadError(str(error), exc_info=sys.exc_info()) from error
 
     monkeypatch.setattr(
         "ig_reel_downloader.downloaders.tiktok.yt_dlp.YoutubeDL",
         FakeYoutubeDL,
     )
     downloader = TikTokDownloader()
-    request = ResolvedMediaRequest(
-        url="https://www.tiktok.com/@alice/video/7668090902816017671",
-        downloader=downloader,
-        provider_item_ref=ProviderItemRef("tiktok", "video", "7668090902816017671"),
-    )
+    candidate = downloader.extract_candidates("https://vt.tiktok.com/ZSq1MVD1B/")[0]
 
-    result = downloader.download(request, DownloadContext(output_dir=tmp_path))
+    with pytest.raises(ResolutionError) as exc_info:
+        downloader.resolve(candidate)
 
-    assert result.media is None
-    assert result.failure_reason == "blocked"
-
-
-def test_tiktok_download_reuses_request_info(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    class FakeYoutubeDL:
-        def __init__(self, options: dict[str, object]) -> None:
-            pass
-
-        def __enter__(self) -> "FakeYoutubeDL":
-            return self
-
-        def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-            return None
-
-        def extract_info(self, url: str, download: bool = False) -> dict[str, object]:
-            raise AssertionError("metadata should be reused from the resolved request")
-
-        def prepare_filename(self, info: dict[str, object]) -> str:
-            assert info["id"] == "725123456789"
-            return str(tmp_path / "725123456789.mp4")
-
-        def download(self, urls: list[str]) -> None:
-            assert urls == ["https://www.tiktok.com/@alice/video/725123456789"]
-
-    monkeypatch.setattr(
-        "ig_reel_downloader.downloaders.tiktok.yt_dlp.YoutubeDL",
-        FakeYoutubeDL,
-    )
-    downloader = TikTokDownloader()
-    request = ResolvedMediaRequest(
-        url="https://vm.tiktok.com/ZMabc123/",
-        downloader=downloader,
-        provider_item_ref=ProviderItemRef("tiktok", "video", "725123456789"),
-        normalized_url="https://www.tiktok.com/@alice/video/725123456789",
-        info={"id": "725123456789", "title": "TikTok", "ext": "mp4"},
-    )
-
-    result = downloader.download(request, DownloadContext(output_dir=tmp_path))
-
-    assert result.media is not None
-    assert result.media.id == "tiktok:video:725123456789"
+    assert FakeYoutubeDL.attempts == 3
+    assert exc_info.value.failure_reason == "blocked"

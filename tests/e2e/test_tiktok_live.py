@@ -44,3 +44,6 @@ def test_tiktok_live_download(tmp_path: Path, url: str | None) -> None:
     assert result.media.provider == "tiktok"
     assert result.media.assets
     assert all(Path(asset.filepath).is_file() for asset in result.media.assets)
+    assert [asset.asset_index for asset in result.media.assets] == list(
+        range(len(result.media.assets))
+    )
