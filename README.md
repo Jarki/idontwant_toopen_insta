@@ -53,9 +53,7 @@ Send a supported link to the bot and it will download the media when supported:
 
 X videos larger than 100 MB, or whose size cannot be determined, are rejected before download.
 
-TikTok photo posts are sent as photos or ordered albums, without background music.
-Both direct `/photo/` URLs and `vm.tiktok.com` / `vt.tiktok.com` short links are
-supported. Albums larger than ten images are split into Telegram media groups.
+TikTok photos are sent individually or as albums, without background music.
 
 Usage totals are available through Telegram commands:
 
@@ -104,13 +102,6 @@ TIKTOK_SMOKE_TEST_URLS_FILE=/path/to/tiktok-urls.txt \
 
 The test is skipped unless one of these variables is set. It downloads media to
 pytest's temporary directory and does not contact Telegram or PostgreSQL.
-
-For example, exercise photo extraction and image downloads with:
-
-```bash
-TIKTOK_SMOKE_TEST_URL='https://vt.tiktok.com/ZSgHPXXAA' \
-  uv run pytest tests/e2e/test_tiktok_live.py -v -s
-```
 
 ### YouTube extractor smoke tests
 
