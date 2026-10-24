@@ -1,6 +1,6 @@
 # Instagram Reel Downloader
 
-This is a Telegram bot that downloads short videos and Instagram post media from supported social links.
+This is a Telegram bot that downloads videos and photo posts from supported social links.
 
 ## Installation
 
@@ -45,13 +45,17 @@ Send a supported link to the bot and it will download the media when supported:
 
 - Instagram Reels
 - Instagram posts, including carousel posts
-- TikTok videos
+- TikTok videos and photo posts, including multi-image slideshows
 - Reddit hosted videos, images, image galleries, link-post previews, and text posts
 - X (formerly Twitter) posts, including text, photos, and video
 - YouTube Shorts
 - Normal YouTube videos under 60 seconds
 
 X videos larger than 100 MB, or whose size cannot be determined, are rejected before download.
+
+TikTok photo posts are sent as photos or ordered albums, without background music.
+Both direct `/photo/` URLs and `vm.tiktok.com` / `vt.tiktok.com` short links are
+supported. Albums larger than ten images are split into Telegram media groups.
 
 Usage totals are available through Telegram commands:
 
@@ -84,7 +88,7 @@ deployed bot. Deployments build the branch selected in **Use workflow from**;
 TikTok may return bot-detection responses depending on the machine's public IP and
 TLS fingerprint. The automated suite simulates known failure responses without
 network access. To reproduce the real extractor behavior from the bot host, run
-the opt-in smoke test with a currently public TikTok video:
+the opt-in smoke test with a currently public TikTok video or photo post:
 
 ```bash
 TIKTOK_SMOKE_TEST_URL='https://www.tiktok.com/@user/video/1234567890' \
@@ -98,8 +102,15 @@ TIKTOK_SMOKE_TEST_URLS_FILE=/path/to/tiktok-urls.txt \
   uv run pytest tests/e2e/test_tiktok_live.py -v -s
 ```
 
-The test is skipped unless one of these variables is set. It downloads videos to
+The test is skipped unless one of these variables is set. It downloads media to
 pytest's temporary directory and does not contact Telegram or PostgreSQL.
+
+For example, exercise photo extraction and image downloads with:
+
+```bash
+TIKTOK_SMOKE_TEST_URL='https://vt.tiktok.com/ZSgHPXXAA' \
+  uv run pytest tests/e2e/test_tiktok_live.py -v -s
+```
 
 ### YouTube extractor smoke tests
 

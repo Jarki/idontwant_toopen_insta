@@ -179,6 +179,18 @@ and remains silent in Telegram instead of escaping the handler. An opt-in live s
 `tests/e2e/test_tiktok_live.py` exercises one URL or a newline-delimited corpus
 from the current host/IP.
 
+TikTok also supports direct `/photo/<id>` URLs and photo posts reached through
+short links. Photo extraction uses the installed `yt-dlp` TikTok extractor's
+private raw web-data API against the `/video/<same-id>` representation; the
+public extractor otherwise rejects photo URLs or exposes only slideshow audio.
+This upstream coupling is isolated in the TikTok downloader. Photo requests use
+`tiktok:photo:<id>` identities, distinct from existing video cache keys. Original
+image sources are downloaded in post order from TikTok CDN URLs, with a 20 MiB
+per-image streaming limit and temporary-file replacement. Incomplete albums are
+not returned as successful media. Existing photo/album delivery, Telegram file-ID
+reuse, cache freshness, and file-retention behavior remain unchanged. Background
+music is not downloaded or delivered with photo posts.
+
 ## Persistence model
 
 ### Domain model

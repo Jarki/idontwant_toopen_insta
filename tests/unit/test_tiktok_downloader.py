@@ -1,7 +1,9 @@
+import io
+import sys
 from pathlib import Path
 
 import pytest
-from yt_dlp.utils import DownloadError
+from yt_dlp.utils import DownloadError, UnsupportedError
 
 from ig_reel_downloader.downloaders.base import (
     DownloadContext,
@@ -419,3 +421,217 @@ def test_tiktok_download_reuses_request_info(
 
     assert result.media is not None
     assert result.media.id == "tiktok:video:725123456789"
+
+
+@pytest.mark.parametrize("count", [1, 3, 11])
+def test_tiktok_photo_download_preserves_all_images_and_metadata(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, count: int
+) -> None:
+    photo_url = "https://www.tiktok.com/@alice/photo/725123456789"
+    images = [
+        {
+            "imageURL": {"urlList": [f"https://p16.tiktokcdn.com/image-{i}.jpg"]},
+            "imageWidth": 640 + i,
+            "imageHeight": 480,
+        }
+        for i in range(count)
+    ]
+    item = {
+        "id": "725123456789",
+        "desc": "A photo post",
+        "author": {"uniqueId": "alice", "nickname": "Alice"},
+        "stats": {"diggCount": 42},
+        "imagePost": {"images": images},
+    }
+
+    class ImageResponse(io.BytesIO):
+        def __init__(self, url: str, content: bytes) -> None:
+            super().__init__(content)
+            self.url = url
+            self.headers = {"Content-Type": "image/jpeg"}
+
+    class FakeYoutubeDL:
+        def __init__(self, options: dict[str, object]) -> None:
+            pass
+
+        def __enter__(self) -> "FakeYoutubeDL":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            pass
+
+        def urlopen(self, request: object) -> ImageResponse:
+            url = request.full_url
+            index = int(url.rsplit("-", 1)[1].split(".")[0])
+            return ImageResponse(url, f"image-{index}".encode())
+
+    def extract_web_data(self: object, url: str, post_id: str) -> tuple[dict, int]:
+        assert url == photo_url.replace("/photo/", "/video/")
+        return item, 0
+
+    monkeypatch.setattr(
+        "ig_reel_downloader.downloaders.tiktok.yt_dlp.YoutubeDL", FakeYoutubeDL
+    )
+    monkeypatch.setattr(
+        "ig_reel_downloader.downloaders.tiktok.TikTokIE._extract_web_data_and_status",
+        extract_web_data,
+    )
+    downloader = TikTokDownloader()
+    candidate = downloader.extract_candidates(photo_url + "?is_from_webapp=1")[0]
+    request = downloader.resolve(candidate).request
+    assert request is not None
+    result = downloader.download(request, DownloadContext(output_dir=tmp_path))
+
+    assert result.media is not None
+    assert result.media.id == "tiktok:photo:725123456789"
+    assert result.media.original_url == photo_url
+    assert result.media.description == "A photo post"
+    assert result.media.metadata["uploader"] == "alice"
+    assert result.media.metadata["like_count"] == 42
+    assert [
+        (a.asset_index, a.asset_type, a.width, a.height, Path(a.filepath).read_bytes())
+        for a in result.media.assets
+    ] == [(i, "image", 640 + i, 480, f"image-{i}".encode()) for i in range(count)]
+
+
+def test_tiktok_share_photo_resolves_typed_unsupported_destination(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    destination = "https://www.tiktok.com/@alice/photo/725123456789?_t=tracking"
+    raw_item = {
+        "id": "725123456789",
+        "desc": "Photo",
+        "imagePost": {
+            "images": [{"imageURL": {"urlList": ["https://p16.tiktokcdn.com/a.jpg"]}}]
+        },
+    }
+
+    class FakeYoutubeDL:
+        def __init__(self, options: dict[str, object]) -> None:
+            pass
+
+        def __enter__(self) -> "FakeYoutubeDL":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            pass
+
+        def extract_info(self, url: str, download: bool = False) -> None:
+            try:
+                raise UnsupportedError(destination)
+            except UnsupportedError as error:
+                raise DownloadError(str(error), exc_info=sys.exc_info()) from error
+
+    monkeypatch.setattr(
+        "ig_reel_downloader.downloaders.tiktok.yt_dlp.YoutubeDL", FakeYoutubeDL
+    )
+    monkeypatch.setattr(
+        "ig_reel_downloader.downloaders.tiktok.TikTokIE._extract_web_data_and_status",
+        lambda _self, _url, _post_id: (raw_item, 0),
+    )
+    downloader = TikTokDownloader()
+    candidate = downloader.extract_candidates("https://vt.tiktok.com/PhotoShare/")[0]
+    result = downloader.resolve(candidate)
+
+    assert result.request is not None
+    assert result.request.provider_item_ref == ProviderItemRef(
+        "tiktok", "photo", "725123456789"
+    )
+    assert result.request.normalized_url == destination.split("?")[0]
+    assert result.request.info["images"] == raw_item["imagePost"]["images"]
+
+
+@pytest.mark.parametrize(
+    "raw_item,status",
+    [
+        ({}, 10216),
+        ({"id": "999", "imagePost": {"images": [{}]}}, 0),
+        ({"id": "725123456789", "imagePost": {"images": []}}, 0),
+    ],
+)
+def test_tiktok_photo_missing_or_mismatched_post_is_not_delivered(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    raw_item: dict,
+    status: int,
+) -> None:
+    monkeypatch.setattr(
+        "ig_reel_downloader.downloaders.tiktok.TikTokIE._extract_web_data_and_status",
+        lambda _self, _url, _post_id: (raw_item, status),
+    )
+    downloader = TikTokDownloader()
+    candidate = downloader.extract_candidates(
+        "https://www.tiktok.com/@alice/photo/725123456789"
+    )[0]
+    request = downloader.resolve(candidate).request
+    assert request is not None
+
+    result = downloader.download(request, DownloadContext(output_dir=tmp_path))
+
+    assert result.media is None
+    assert result.failure_reason == "unsupported"
+
+
+@pytest.mark.parametrize(
+    "failure", ["html", "external_redirect", "empty", "too_large", "read_error"]
+)
+def test_tiktok_incomplete_photo_album_is_not_delivered(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, failure: str
+) -> None:
+    class ImageResponse(io.BytesIO):
+        def __init__(self, index: int) -> None:
+            super().__init__(b"" if failure == "empty" and index == 1 else b"photo")
+            self.url = "https://p16.tiktokcdn.com/a.jpg"
+            self.headers = {"Content-Type": "image/jpeg"}
+            self.index = index
+            if index == 1 and failure == "html":
+                self.headers["Content-Type"] = "text/html"
+            if index == 1 and failure == "external_redirect":
+                self.url = "https://example.com/not-a-tiktok-image"
+
+        def read(self, size: int = -1) -> bytes:
+            if self.index == 1 and failure == "read_error":
+                raise OSError("connection closed")
+            return super().read(size)
+
+    class FakeYoutubeDL:
+        def __init__(self, options: dict[str, object]) -> None:
+            self.calls = 0
+
+        def __enter__(self) -> "FakeYoutubeDL":
+            return self
+
+        def __exit__(self, *args: object) -> None:
+            pass
+
+        def urlopen(self, request: object) -> ImageResponse:
+            response = ImageResponse(self.calls)
+            self.calls += 1
+            return response
+
+    monkeypatch.setattr(
+        "ig_reel_downloader.downloaders.tiktok.yt_dlp.YoutubeDL", FakeYoutubeDL
+    )
+    if failure == "too_large":
+        monkeypatch.setattr(
+            "ig_reel_downloader.downloaders.tiktok.MAX_TIKTOK_IMAGE_BYTES", 4
+        )
+    downloader = TikTokDownloader()
+    request = ResolvedMediaRequest(
+        url="https://www.tiktok.com/@alice/photo/725123456789",
+        downloader=downloader,
+        provider_item_ref=ProviderItemRef("tiktok", "photo", "725123456789"),
+        info={
+            "images": [
+                {"imageURL": {"urlList": ["https://p16.tiktokcdn.com/a.jpg"]}},
+                {"imageURL": {"urlList": ["https://p16.tiktokcdn.com/b.jpg"]}},
+            ]
+        },
+    )
+    result = downloader.download(request, DownloadContext(output_dir=tmp_path))
+
+    assert result.media is None
+    assert result.failure_reason == (
+        "unknown" if failure == "read_error" else "unsupported"
+    )
+    assert list(tmp_path.rglob("*.part")) == []
